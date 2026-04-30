@@ -1,6 +1,6 @@
-mod state;
-mod network;
 mod input;
+mod network;
+mod state;
 mod ui;
 
 use crate::state::AppState;
@@ -9,13 +9,13 @@ use eframe::egui;
 #[tokio::main]
 async fn main() -> eframe::Result<()> {
     let state = AppState::new();
-    
+
     // Start background tasks
     let net_state = state.clone();
     tokio::spawn(async move {
         network::start_network_task(net_state).await;
     });
-    
+
     input::start_input_tasks(state.clone());
 
     let options = eframe::NativeOptions {

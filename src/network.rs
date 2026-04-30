@@ -17,14 +17,12 @@ pub async fn start_network_task(state: Arc<AppState>) {
             Ok((mut ws_stream, _)) => {
                 println!("Connected to Rocket League via WebSocket!");
                 while let Some(msg) = ws_stream.next().await {
-                    if let Ok(msg) = msg {
-                        if let Ok(text) = msg.to_text() {
-                            if let Ok(json) = serde_json::from_str::<Value>(text) {
-                                if json["Event"] == "UpdateState" {
-                                    handle_update_state(&state, &json["Data"]);
-                                }
-                            }
-                        }
+                    if let Ok(msg) = msg
+                        && let Ok(text) = msg.to_text()
+                        && let Ok(json) = serde_json::from_str::<Value>(text)
+                        && json["Event"] == "UpdateState"
+                    {
+                        handle_update_state(&state, &json["Data"]);
                     }
                 }
             }

@@ -1,4 +1,4 @@
-use crate::state::{AppState, AnchorPos};
+use crate::state::{AnchorPos, AppState};
 use eframe::egui;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -28,7 +28,7 @@ impl eframe::App for MainApp {
                 if ui.add(egui::Slider::new(&mut config.transparency, 0..=255)).changed() {
                     changed = true;
                 }
-                
+
                 ui.label("HUD Scale");
                 if ui.add(egui::Slider::new(&mut config.ui_scale, 0.5..=2.5)).changed() {
                     changed = true;
@@ -74,7 +74,7 @@ impl eframe::App for MainApp {
                     ui.label("Resolution:");
                     let current_res = config.window_size;
                     let res_text = format!("{}x{}", current_res[0], current_res[1]);
-                    
+
                     egui::ComboBox::from_id_source("res_presets")
                         .selected_text(res_text)
                         .show_ui(ui, |ui| {
@@ -83,7 +83,7 @@ impl eframe::App for MainApp {
                             ui.selectable_value(&mut config.window_size, [3840.0, 2160.0], "4K");
                             ui.selectable_value(&mut config.window_size, [3440.0, 1440.0], "Ultrawide");
                         });
-                        
+
                     if config.window_size != current_res {
                         changed = true;
                     }
@@ -94,7 +94,7 @@ impl eframe::App for MainApp {
 
             ui.group(|ui| {
                 ui.heading("Hotkeys");
-                
+
                 ui.horizontal(|ui| {
                     ui.label("Keyboard:");
                     let is_recording = self.state.is_recording_kb.load(Ordering::SeqCst);
@@ -128,10 +128,10 @@ impl eframe::App for MainApp {
                 config.save();
                 self.state.config.store(Arc::new(config));
             }
-            
+
             ui.add_space(10.0);
             ui.label(egui::RichText::new("Note: If the overlay appears on the wrong monitor, use your OS shortcuts (e.g. Win+Shift+Arrow) to move the window.").weak());
-            
+
             ui.add_space(10.0);
 
             // Launch / Stop Button
@@ -142,7 +142,7 @@ impl eframe::App for MainApp {
             }
 
             ui.add_space(10.0);
-            
+
             let is_visible = self.state.is_visible.load(Ordering::SeqCst);
             ui.horizontal(|ui| {
                 ui.label("Overlay Visibility:");
@@ -152,7 +152,7 @@ impl eframe::App for MainApp {
                     ui.colored_label(egui::Color32::RED, "HIDDEN");
                 }
             });
-            
+
             let is_connected = self.state.is_connected.load(Ordering::SeqCst);
             ui.horizontal(|ui| {
                 ui.label("Rocket League Connection:");
@@ -186,7 +186,7 @@ impl eframe::App for MainApp {
                     .with_mouse_passthrough(true),
                 move |ctx, class| {
                     assert!(class == egui::ViewportClass::Immediate);
-                    
+
                     if state.is_visible.load(Ordering::SeqCst) {
                         render_overlay(ctx, &state);
                     }
@@ -201,12 +201,7 @@ impl eframe::App for MainApp {
 fn render_overlay(ctx: &egui::Context, state: &Arc<AppState>) {
     let config = state.config.load();
     let players = state.players.load();
-    
-    // Scale local visuals
-    let mut visuals = egui::Visuals::dark();
-    // We can't easily scale the whole UI here without affecting the context,
-    // so we'll just scale the Area offset and the content manually or via a layer.
-    
+
     // Position based on AnchorPos
     let (anchor, base_offset) = match config.anchor {
         AnchorPos::TopLeft => (egui::Align2::LEFT_TOP, egui::vec2(20.0, 20.0)),
@@ -224,7 +219,7 @@ fn render_overlay(ctx: &egui::Context, state: &Arc<AppState>) {
         .show(ctx, |ui| {
             // Apply scale to this UI block
             ui.set_row_height(ui.spacing().interact_size.y * config.ui_scale);
-            
+
             egui::Frame::none()
                 .fill(egui::Color32::from_black_alpha(config.transparency))
                 .rounding(5.0 * config.ui_scale)
@@ -236,19 +231,21 @@ fn render_overlay(ctx: &egui::Context, state: &Arc<AppState>) {
                             .strong();
                         ui.label(header_text);
                         ui.add_space(5.0 * config.ui_scale);
-                        
-                        let mut sorted_players: Vec<_> = players.values()
+
+                        let mut sorted_players: Vec<_> = players
+                            .values()
                             .filter(|p| config.show_bots || !p.is_bot)
                             .collect();
-                            
-                        sorted_players.sort_by(|a, b| {
-                            a.team.cmp(&b.team).then_with(|| a.name.cmp(&b.name))
-                        });
+
+                        sorted_players
+                            .sort_by(|a, b| a.team.cmp(&b.team).then_with(|| a.name.cmp(&b.name)));
 
                         if sorted_players.is_empty() {
-                            ui.label(egui::RichText::new("Waiting for players...")
-                                .size(12.0 * config.ui_scale)
-                                .italics());
+                            ui.label(
+                                egui::RichText::new("Waiting for players...")
+                                    .size(12.0 * config.ui_scale)
+                                    .italics(),
+                            );
                         } else {
                             for p in sorted_players {
                                 ui.horizontal(|ui| {
@@ -257,18 +254,25 @@ fn render_overlay(ctx: &egui::Context, state: &Arc<AppState>) {
                                     } else {
                                         egui::Color32::from_rgb(255, 140, 0)
                                     };
-                                    
+
                                     let dot = egui::RichText::new("■")
                                         .color(team_color)
                                         .size(12.0 * config.ui_scale);
                                     ui.label(dot);
-                                    
+
+                                    let name_color = if p.is_bot {
+                                        egui::Color32::from_gray(150)
+                                    } else {
+                                        egui::Color32::WHITE
+                                    };
+
                                     let name = egui::RichText::new(&p.name)
+                                        .color(name_color)
                                         .size(12.0 * config.ui_scale);
                                     ui.label(name);
-                                    
+
                                     ui.add_space(10.0 * config.ui_scale);
-                                    
+
                                     let platform = egui::RichText::new(&p.platform)
                                         .size(12.0 * config.ui_scale)
                                         .strong();

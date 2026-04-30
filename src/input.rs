@@ -1,13 +1,13 @@
 use crate::state::AppState;
+use gilrs::{Event, Gilrs};
+use rdev::{EventType, listen};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use gilrs::{Gilrs, Event};
-use rdev::{listen, EventType};
 
 pub fn start_input_tasks(state: Arc<AppState>) {
     let state_ctrl = state.clone();
-    std::thread::spawn(move || {
-        if let Ok(mut gilrs) = Gilrs::new() {
+    std::thread::spawn(move || match Gilrs::new() {
+        Ok(mut gilrs) => {
             println!("Gamepad listener started.");
             loop {
                 while let Some(Event { event, .. }) = gilrs.next_event() {
@@ -37,7 +37,8 @@ pub fn start_input_tasks(state: Arc<AppState>) {
                     }
                 }
             }
-        } else {
+        }
+        _ => {
             eprintln!("Failed to initialize Gamepad listener.");
         }
     });
@@ -45,31 +46,29 @@ pub fn start_input_tasks(state: Arc<AppState>) {
     let state_kb = state.clone();
     std::thread::spawn(move || {
         println!("Keyboard listener started.");
-        if let Err(e) = listen(move |event| {
-            match event.event_type {
-                EventType::KeyPress(key) => {
-                    if state_kb.is_recording_kb.load(Ordering::SeqCst) {
-                        let mut new_config = (**state_kb.config.load()).clone();
-                        new_config.hotkey_kb = format!("{:?}", key);
-                        new_config.save();
-                        state_kb.config.store(Arc::new(new_config));
-                        state_kb.is_recording_kb.store(false, Ordering::SeqCst);
-                        println!("Keyboard hotkey updated to: {:?}", key);
-                    } else {
-                        let config = state_kb.config.load();
-                        if format!("{:?}", key) == config.hotkey_kb {
-                            state_kb.is_visible.store(true, Ordering::SeqCst);
-                        }
-                    }
-                }
-                EventType::KeyRelease(key) => {
+        if let Err(e) = listen(move |event| match event.event_type {
+            EventType::KeyPress(key) => {
+                if state_kb.is_recording_kb.load(Ordering::SeqCst) {
+                    let mut new_config = (**state_kb.config.load()).clone();
+                    new_config.hotkey_kb = format!("{:?}", key);
+                    new_config.save();
+                    state_kb.config.store(Arc::new(new_config));
+                    state_kb.is_recording_kb.store(false, Ordering::SeqCst);
+                    println!("Keyboard hotkey updated to: {:?}", key);
+                } else {
                     let config = state_kb.config.load();
                     if format!("{:?}", key) == config.hotkey_kb {
-                        state_kb.is_visible.store(false, Ordering::SeqCst);
+                        state_kb.is_visible.store(true, Ordering::SeqCst);
                     }
                 }
-                _ => {}
             }
+            EventType::KeyRelease(key) => {
+                let config = state_kb.config.load();
+                if format!("{:?}", key) == config.hotkey_kb {
+                    state_kb.is_visible.store(false, Ordering::SeqCst);
+                }
+            }
+            _ => {}
         }) {
             eprintln!("Failed to initialize Keyboard listener: {:?}", e);
         }

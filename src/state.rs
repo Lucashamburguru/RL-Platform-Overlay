@@ -3,8 +3,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub enum AnchorPos {
@@ -46,12 +46,11 @@ impl Default for Config {
 impl Config {
     pub fn load() -> Self {
         let path = Path::new("config.toml");
-        if path.exists() {
-            if let Ok(content) = fs::read_to_string(path) {
-                if let Ok(config) = toml::from_str(&content) {
-                    return config;
-                }
-            }
+        if path.exists()
+            && let Ok(content) = fs::read_to_string(path)
+            && let Ok(config) = toml::from_str(&content)
+        {
+            return config;
         }
         let config = Config::default();
         config.save();
