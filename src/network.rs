@@ -96,6 +96,13 @@ pub async fn start_network_task(state: Arc<AppState>) {
 }
 
 fn handle_update_state(state: &Arc<AppState>, data: &Value) {
+    static mut LOGGED: bool = false;
+    unsafe {
+        if !LOGGED {
+            println!("FULL UPDATE STATE DATA: {}", serde_json::to_string_pretty(data).unwrap_or_default());
+            LOGGED = true;
+        }
+    }
     let mut new_players = HashMap::new();
     if let Some(players) = data["Players"].as_array() {
         if players.is_empty() {
