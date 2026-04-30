@@ -69,6 +69,25 @@ impl eframe::App for MainApp {
                         changed = true;
                     }
                 });
+
+                ui.horizontal(|ui| {
+                    ui.label("Resolution:");
+                    let current_res = config.window_size;
+                    let res_text = format!("{}x{}", current_res[0], current_res[1]);
+                    
+                    egui::ComboBox::from_id_source("res_presets")
+                        .selected_text(res_text)
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut config.window_size, [1920.0, 1080.0], "1080p");
+                            ui.selectable_value(&mut config.window_size, [2560.0, 1440.0], "1440p");
+                            ui.selectable_value(&mut config.window_size, [3840.0, 2160.0], "4K");
+                            ui.selectable_value(&mut config.window_size, [3440.0, 1440.0], "Ultrawide");
+                        });
+                        
+                    if config.window_size != current_res {
+                        changed = true;
+                    }
+                });
             });
 
             if changed {
@@ -119,11 +138,13 @@ impl eframe::App for MainApp {
         // 2. Show Overlay Viewport (The HUD)
         let is_launched = self.state.is_launched.load(Ordering::SeqCst);
         if is_launched {
+            let config = self.state.config.load();
             let state = self.state.clone();
             ctx.show_viewport_immediate(
                 egui::ViewportId::from_hash_of("overlay"),
                 egui::ViewportBuilder::default()
                     .with_title("RL Overlay HUD")
+                    .with_inner_size(config.window_size)
                     .with_transparent(true)
                     .with_always_on_top()
                     .with_decorations(false)
