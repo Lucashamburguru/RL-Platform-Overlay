@@ -96,15 +96,16 @@ pub async fn start_network_task(state: Arc<AppState>) {
 }
 
 fn handle_update_state(state: &Arc<AppState>, data: &Value) {
-    static mut LOGGED: bool = false;
-    unsafe {
-        if !LOGGED {
-            println!("FULL UPDATE STATE DATA: {}", serde_json::to_string_pretty(data).unwrap_or_default());
-            LOGGED = true;
-        }
+    if let Some(obj) = data.as_object() {
+        let keys: Vec<_> = obj.keys().collect();
+        println!("UpdateState Keys: {:?}", keys);
     }
+    
+    // Try both "Players" and "players" just in case
+    let players_val = data.get("Players").or_else(|| data.get("players"));
+
     let mut new_players = HashMap::new();
-    if let Some(players) = data["Players"].as_array() {
+    if let Some(players) = players_val.and_then(|p| p.as_array()) {
         if players.is_empty() {
             println!("UpdateState: Players array is EMPTY");
         }
@@ -124,12 +125,11 @@ fn handle_update_state(state: &Arc<AppState>, data: &Value) {
             });
         }
     } else {
-        println!("UpdateState: No 'Players' field found in Data");
+        println!("UpdateState: No 'Players' or 'players' field found in Data. Value was: {:?}", players_val);
     }
     
     let count = new_players.len();
     state.players.store(Arc::new(new_players));
-    println!("State Updated: {} players in lobby", count);
 }
 
 fn parse_platform(id: &str) -> (String, bool) {
