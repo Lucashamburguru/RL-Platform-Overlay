@@ -15,9 +15,6 @@ impl MainApp {
 
 impl eframe::App for MainApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Ensure the settings window scale is NOT affected by the overlay scale
-        ctx.set_pixels_per_point(1.0);
-
         // 1. Show Settings UI
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("RL Overlay Settings");
@@ -32,7 +29,7 @@ impl eframe::App for MainApp {
                     changed = true;
                 }
                 
-                ui.label("UI Scale");
+                ui.label("HUD Scale");
                 if ui.add(egui::Slider::new(&mut config.ui_scale, 0.5..=2.5)).changed() {
                     changed = true;
                 }
@@ -101,7 +98,6 @@ impl eframe::App for MainApp {
                     ui.colored_label(egui::Color32::RED, "HIDDEN");
                 }
             });
-            ui.label("Use your configured hotkey to toggle the overlay.");
             
             let is_connected = self.state.is_connected.load(Ordering::SeqCst);
             ui.horizontal(|ui| {
@@ -131,18 +127,10 @@ impl eframe::App for MainApp {
                     .with_transparent(true)
                     .with_always_on_top()
                     .with_decorations(false)
-                    .with_mouse_passthrough(true)
-                    .with_inner_size(self.state.config.load().window_size),
+                    .with_mouse_passthrough(true),
                 move |ctx, class| {
                     assert!(class == egui::ViewportClass::Immediate);
                     
-                    // Clear color MUST be transparent for overlay
-                    let visuals = egui::Visuals::dark();
-                    ctx.set_visuals(visuals);
-                    
-                    // Scale ONLY the overlay
-                    ctx.set_pixels_per_point(state.config.load().ui_scale);
-
                     if state.is_visible.load(Ordering::SeqCst) {
                         render_overlay(ctx, &state);
                     }
@@ -158,8 +146,13 @@ fn render_overlay(ctx: &egui::Context, state: &Arc<AppState>) {
     let config = state.config.load();
     let players = state.players.load();
     
+    // Scale local visuals
+    let mut visuals = egui::Visuals::dark();
+    // We can't easily scale the whole UI here without affecting the context,
+    // so we'll just scale the Area offset and the content manually or via a layer.
+    
     // Position based on AnchorPos
-    let (anchor, offset) = match config.anchor {
+    let (anchor, base_offset) = match config.anchor {
         AnchorPos::TopLeft => (egui::Align2::LEFT_TOP, egui::vec2(20.0, 20.0)),
         AnchorPos::TopRight => (egui::Align2::RIGHT_TOP, egui::vec2(-20.0, 20.0)),
         AnchorPos::BottomLeft => (egui::Align2::LEFT_BOTTOM, egui::vec2(20.0, -20.0)),
@@ -167,44 +160,67 @@ fn render_overlay(ctx: &egui::Context, state: &Arc<AppState>) {
         AnchorPos::CenterRight => (egui::Align2::RIGHT_CENTER, egui::vec2(-20.0, 0.0)),
     };
 
+    // Apply UI scale to the offset as well
+    let offset = base_offset * config.ui_scale;
+
     egui::Area::new("overlay_area".into())
         .anchor(anchor, offset)
         .show(ctx, |ui| {
+            // Apply scale to this UI block
+            ui.set_row_height(ui.spacing().interact_size.y * config.ui_scale);
+            
             egui::Frame::none()
                 .fill(egui::Color32::from_black_alpha(config.transparency))
-                .rounding(5.0)
-                .inner_margin(10.0)
+                .rounding(5.0 * config.ui_scale)
+                .inner_margin(10.0 * config.ui_scale)
                 .show(ui, |ui| {
-                    ui.heading("Lobby Platforms");
-                    ui.add_space(5.0);
-                    
-                    let mut sorted_players: Vec<_> = players.values()
-                        .filter(|p| config.show_bots || !p.is_bot)
-                        .collect();
+                    ui.vertical(|ui| {
+                        let header_text = egui::RichText::new("Lobby Platforms")
+                            .size(14.0 * config.ui_scale)
+                            .strong();
+                        ui.label(header_text);
+                        ui.add_space(5.0 * config.ui_scale);
                         
-                    sorted_players.sort_by(|a, b| {
-                        a.team.cmp(&b.team).then_with(|| a.name.cmp(&b.name))
-                    });
+                        let mut sorted_players: Vec<_> = players.values()
+                            .filter(|p| config.show_bots || !p.is_bot)
+                            .collect();
+                            
+                        sorted_players.sort_by(|a, b| {
+                            a.team.cmp(&b.team).then_with(|| a.name.cmp(&b.name))
+                        });
 
-                    if sorted_players.is_empty() {
-                        ui.label(egui::RichText::new("Waiting for players...").italics());
-                    } else {
-                        for p in sorted_players {
-                            ui.horizontal(|ui| {
-                                let color = if p.team == 0 {
-                                    egui::Color32::from_rgb(0, 150, 255) // Blue team
-                                } else {
-                                    egui::Color32::from_rgb(255, 140, 0) // Orange team
-                                };
-                                ui.colored_label(color, "■");
-                                ui.label(&p.name);
-                                ui.add_space(10.0);
-                                ui.label(egui::RichText::new(&p.platform).strong());
-                            });
+                        if sorted_players.is_empty() {
+                            ui.label(egui::RichText::new("Waiting for players...")
+                                .size(12.0 * config.ui_scale)
+                                .italics());
+                        } else {
+                            for p in sorted_players {
+                                ui.horizontal(|ui| {
+                                    let team_color = if p.team == 0 {
+                                        egui::Color32::from_rgb(0, 150, 255)
+                                    } else {
+                                        egui::Color32::from_rgb(255, 140, 0)
+                                    };
+                                    
+                                    let dot = egui::RichText::new("■")
+                                        .color(team_color)
+                                        .size(12.0 * config.ui_scale);
+                                    ui.label(dot);
+                                    
+                                    let name = egui::RichText::new(&p.name)
+                                        .size(12.0 * config.ui_scale);
+                                    ui.label(name);
+                                    
+                                    ui.add_space(10.0 * config.ui_scale);
+                                    
+                                    let platform = egui::RichText::new(&p.platform)
+                                        .size(12.0 * config.ui_scale)
+                                        .strong();
+                                    ui.label(platform);
+                                });
+                            }
                         }
-                    }
+                    });
                 });
         });
-    
-    ctx.request_repaint();
 }
