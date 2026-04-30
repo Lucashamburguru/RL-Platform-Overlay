@@ -24,9 +24,10 @@ async fn main() -> eframe::Result<()> {
             .with_transparent(true)
             .with_always_on_top()
             .with_decorations(false)
-            .with_active(false)
             .with_mouse_passthrough(true)
-            .with_inner_size([1920.0, 1080.0]), // Assume 1080p for now
+            .with_inner_size([1920.0, 1080.0])
+            .with_taskbar(false)
+            .with_title("RL Platform Overlay"),
         ..Default::default()
     };
 
