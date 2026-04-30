@@ -98,14 +98,16 @@ pub async fn start_network_task(state: Arc<AppState>) {
 fn handle_update_state(state: &Arc<AppState>, data: &Value) {
     let mut new_players = HashMap::new();
     if let Some(players) = data["Players"].as_array() {
-        println!("Received UpdateState with {} players", players.len());
+        if players.is_empty() {
+            println!("UpdateState: Players array is EMPTY");
+        }
         for p in players {
             let name = p["Name"].as_str().unwrap_or("Unknown").to_string();
             let primary_id = p["PrimaryId"].as_str().unwrap_or("");
             let (platform, is_bot) = parse_platform(primary_id);
             let team = p["TeamNum"].as_u64().unwrap_or(0) as u8;
             
-            println!("Player: {} | Platform: {} | Bot: {}", name, platform, is_bot);
+            println!("Parsed Player: {} (Team {}, ID: {}) -> Platform: {}", name, team, primary_id, platform);
             
             new_players.insert(name.clone(), PlayerInfo {
                 name,
@@ -114,8 +116,13 @@ fn handle_update_state(state: &Arc<AppState>, data: &Value) {
                 is_bot,
             });
         }
+    } else {
+        println!("UpdateState: No 'Players' field found in Data");
     }
+    
+    let count = new_players.len();
     state.players.store(Arc::new(new_players));
+    println!("State Updated: {} players in lobby", count);
 }
 
 fn parse_platform(id: &str) -> (String, bool) {
