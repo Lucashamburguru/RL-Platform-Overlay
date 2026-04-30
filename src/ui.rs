@@ -130,7 +130,7 @@ impl eframe::App for MainApp {
             }
             
             ui.add_space(10.0);
-            ui.label(egui::RichText::new("Note: If the overlay appears on the wrong monitor, use your OS shortcuts (e.g. Win+Shift+Arrow) to move the window. Persistent position saving coming soon.").small().weak());
+            ui.label(egui::RichText::new("Note: If the overlay appears on the wrong monitor, use your OS shortcuts (e.g. Win+Shift+Arrow) to move the window.").weak());
             
             ui.add_space(10.0);
 
