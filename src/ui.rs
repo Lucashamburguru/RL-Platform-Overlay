@@ -42,7 +42,9 @@ impl eframe::App for OverlayApp {
                         ui.add_space(5.0);
                         
                         let mut sorted_players: Vec<_> = players.values().collect();
-                        sorted_players.sort_by_key(|p| p.team);
+                        sorted_players.sort_by(|a, b| {
+                            a.team.cmp(&b.team).then_with(|| a.name.cmp(&b.name))
+                        });
 
                         for p in sorted_players {
                             ui.horizontal(|ui| {
