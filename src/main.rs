@@ -4,15 +4,10 @@ mod input;
 mod ui;
 
 use crate::state::AppState;
-use crate::ui::OverlayApp;
 use eframe::egui;
 
 #[tokio::main]
 async fn main() -> eframe::Result<()> {
-    // Wayland "Always on Top" is often restricted. 
-    // If you are on Wayland and it's not staying on top, try:
-    // WINIT_UNIX_BACKEND=x11 cargo run
-    
     let state = AppState::new();
     
     // Start background tasks
@@ -25,20 +20,15 @@ async fn main() -> eframe::Result<()> {
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_transparent(true)
-            .with_always_on_top()
-            .with_decorations(false)
-            .with_mouse_passthrough(true)
-            .with_inner_size([1920.0, 1080.0])
-            .with_taskbar(false)
-            .with_window_type(egui::X11WindowType::Utility)
-            .with_title("RL Platform Overlay"),
+            .with_inner_size([400.0, 300.0])
+            .with_decorations(true)
+            .with_title("RL Overlay Settings"),
         ..Default::default()
     };
 
     eframe::run_native(
-        "RL Platform Overlay",
+        "RL Overlay Settings",
         options,
-        Box::new(|_cc| Box::new(OverlayApp::new(state))),
+        Box::new(|_cc| Box::new(ui::MainApp::new(state))),
     )
 }
