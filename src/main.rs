@@ -9,6 +9,10 @@ use eframe::egui;
 
 #[tokio::main]
 async fn main() -> eframe::Result<()> {
+    // Wayland "Always on Top" is often restricted. 
+    // If you are on Wayland and it's not staying on top, try:
+    // WINIT_UNIX_BACKEND=x11 cargo run
+    
     let state = AppState::new();
     
     // Start background tasks
