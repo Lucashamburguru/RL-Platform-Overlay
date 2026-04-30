@@ -31,6 +31,7 @@ async fn main() -> eframe::Result<()> {
             .with_mouse_passthrough(true)
             .with_inner_size([1920.0, 1080.0])
             .with_taskbar(false)
+            .with_window_type(egui::X11WindowType::Utility)
             .with_title("RL Platform Overlay"),
         ..Default::default()
     };
