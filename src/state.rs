@@ -1,10 +1,10 @@
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
-use std::fs;
-use std::path::Path;
 use arc_swap::ArcSwap;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::fs;
+use std::path::Path;
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub enum AnchorPos {
@@ -62,6 +62,20 @@ impl Config {
         if let Ok(content) = toml::to_string_pretty(self) {
             let _ = fs::write("config.toml", content);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_config_default() {
+        let config = Config::default();
+        assert_eq!(config.transparency, 150);
+        assert_eq!(config.ui_scale, 1.0);
+        assert!(config.show_bots);
+        assert_eq!(config.anchor, AnchorPos::CenterRight);
     }
 }
 
