@@ -24,8 +24,9 @@ async fn main() -> eframe::Result<()> {
             .with_transparent(true)
             .with_always_on_top()
             .with_decorations(false)
-            .with_active(false) // Don't steal focus
-            .with_mouse_passthrough(true),
+            .with_active(false)
+            .with_mouse_passthrough(true)
+            .with_inner_size([1920.0, 1080.0]), // Assume 1080p for now
         ..Default::default()
     };
 

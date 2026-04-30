@@ -26,7 +26,9 @@ impl eframe::App for OverlayApp {
         }
 
         let players = self.state.players.load();
-        // println!("UI Update: visible={}, players={}", is_visible, players.len());
+        if !players.is_empty() {
+            println!("UI Rendering {} players", players.len());
+        }
         
         egui::Area::new("overlay".into())
             .anchor(egui::Align2::RIGHT_CENTER, egui::vec2(-20.0, 0.0))
@@ -49,11 +51,9 @@ impl eframe::App for OverlayApp {
                                 } else {
                                     egui::Color32::from_rgb(255, 140, 0)
                                 };
-                                ui.label(egui::RichText::new("■").color(color));
+                                ui.colored_label(color, "■");
                                 ui.label(&p.name);
-                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    ui.label(egui::RichText::new(&p.platform).strong());
-                                });
+                                ui.label(egui::RichText::new(&p.platform).strong());
                             });
                         }
                     });
