@@ -7,18 +7,28 @@ use serde_json::Value;
 
 pub async fn start_network_task(state: Arc<AppState>) {
     let url = "ws://127.0.0.1:49123";
+    println!("Connecting to {}...", url);
     loop {
-        if let Ok((mut ws_stream, _)) = connect_async(url).await {
-            while let Some(msg) = ws_stream.next().await {
-                if let Ok(msg) = msg {
-                    if let Ok(text) = msg.to_text() {
-                        if let Ok(json) = serde_json::from_str::<Value>(text) {
-                            if json["Event"] == "UpdateState" {
-                                handle_update_state(&state, &json["Data"]);
+        match connect_async(url).await {
+            Ok((mut ws_stream, _)) => {
+                println!("Connected to Rocket League Stats API!");
+                while let Some(msg) = ws_stream.next().await {
+                    if let Ok(msg) = msg {
+                        if let Ok(text) = msg.to_text() {
+                            if let Ok(json) = serde_json::from_str::<Value>(text) {
+                                if json["Event"] == "UpdateState" {
+                                    handle_update_state(&state, &json["Data"]);
+                                } else {
+                                    println!("Received event: {}", json["Event"]);
+                                }
                             }
                         }
                     }
                 }
+                println!("Disconnected from Stats API. Retrying...");
+            }
+            Err(e) => {
+                // Silently retry, but maybe log periodically if it stays disconnected
             }
         }
         tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
@@ -28,11 +38,14 @@ pub async fn start_network_task(state: Arc<AppState>) {
 fn handle_update_state(state: &Arc<AppState>, data: &Value) {
     let mut new_players = HashMap::new();
     if let Some(players) = data["Players"].as_array() {
+        println!("Received UpdateState with {} players", players.len());
         for p in players {
             let name = p["Name"].as_str().unwrap_or("Unknown").to_string();
             let primary_id = p["PrimaryId"].as_str().unwrap_or("");
             let (platform, is_bot) = parse_platform(primary_id);
             let team = p["TeamNum"].as_u64().unwrap_or(0) as u8;
+            
+            println!("Player: {} | Platform: {} | Bot: {}", name, platform, is_bot);
             
             new_players.insert(name.clone(), PlayerInfo {
                 name,

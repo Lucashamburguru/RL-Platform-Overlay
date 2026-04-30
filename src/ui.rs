@@ -19,12 +19,14 @@ impl eframe::App for OverlayApp {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        if !self.state.is_visible.load(Ordering::SeqCst) {
+        let is_visible = self.state.is_visible.load(Ordering::SeqCst);
+        if !is_visible {
             ctx.request_repaint();
             return;
         }
 
         let players = self.state.players.load();
+        // println!("UI Update: visible={}, players={}", is_visible, players.len());
         
         egui::Area::new("overlay".into())
             .anchor(egui::Align2::RIGHT_CENTER, egui::vec2(-20.0, 0.0))
