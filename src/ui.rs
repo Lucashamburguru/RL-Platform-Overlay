@@ -15,6 +15,9 @@ impl MainApp {
 
 impl eframe::App for MainApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Ensure the settings window scale is NOT affected by the overlay scale
+        ctx.set_pixels_per_point(1.0);
+
         // 1. Show Settings UI
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("RL Overlay Settings");
@@ -37,6 +40,23 @@ impl eframe::App for MainApp {
                 if ui.checkbox(&mut config.show_bots, "Show Bots").changed() {
                     changed = true;
                 }
+
+                ui.horizontal(|ui| {
+                    ui.label("Anchor Position:");
+                    let prev_anchor = config.anchor;
+                    egui::ComboBox::from_id_source("anchor_pos")
+                        .selected_text(format!("{:?}", config.anchor))
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut config.anchor, AnchorPos::TopLeft, "Top Left");
+                            ui.selectable_value(&mut config.anchor, AnchorPos::TopRight, "Top Right");
+                            ui.selectable_value(&mut config.anchor, AnchorPos::BottomLeft, "Bottom Left");
+                            ui.selectable_value(&mut config.anchor, AnchorPos::BottomRight, "Bottom Right");
+                            ui.selectable_value(&mut config.anchor, AnchorPos::CenterRight, "Center Right");
+                        });
+                    if config.anchor != prev_anchor {
+                        changed = true;
+                    }
+                });
 
                 ui.horizontal(|ui| {
                     ui.label("Monitor:");
