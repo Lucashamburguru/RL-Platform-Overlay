@@ -98,7 +98,7 @@ pub async fn start_network_task(state: Arc<AppState>) {
 fn handle_update_state(state: &Arc<AppState>, data: &Value) {
     // If the data is a string, it might be double-encoded JSON
     let real_data = if let Some(s) = data.as_str() {
-        println!("Detected double-encoded JSON string, parsing internal content...");
+        // println!("Detected double-encoded JSON string, parsing internal content...");
         serde_json::from_str::<Value>(s).unwrap_or(data.clone())
     } else {
         data.clone()
@@ -136,7 +136,7 @@ fn handle_update_state(state: &Arc<AppState>, data: &Value) {
     }
     
     if !new_players.is_empty() {
-        println!("State Updated: {} players in lobby", new_players.len());
+        // println!("State Updated: {} players in lobby", new_players.len());
     }
     state.players.store(Arc::new(new_players));
 }

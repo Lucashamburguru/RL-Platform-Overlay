@@ -39,18 +39,16 @@ impl eframe::App for MainApp {
                 }
 
                 ui.horizontal(|ui| {
-                    ui.label("Anchor Position:");
-                    let prev_anchor = config.anchor;
-                    egui::ComboBox::from_id_source("anchor_pos")
-                        .selected_text(format!("{:?}", config.anchor))
+                    ui.label("Monitor:");
+                    let prev_monitor = config.monitor_index;
+                    egui::ComboBox::from_id_source("monitor_idx")
+                        .selected_text(format!("Monitor {}", config.monitor_index + 1))
                         .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut config.anchor, AnchorPos::TopLeft, "Top Left");
-                            ui.selectable_value(&mut config.anchor, AnchorPos::TopRight, "Top Right");
-                            ui.selectable_value(&mut config.anchor, AnchorPos::BottomLeft, "Bottom Left");
-                            ui.selectable_value(&mut config.anchor, AnchorPos::BottomRight, "Bottom Right");
-                            ui.selectable_value(&mut config.anchor, AnchorPos::CenterRight, "Center Right");
+                            ui.selectable_value(&mut config.monitor_index, 0, "Monitor 1");
+                            ui.selectable_value(&mut config.monitor_index, 1, "Monitor 2");
+                            ui.selectable_value(&mut config.monitor_index, 2, "Monitor 3");
                         });
-                    if config.anchor != prev_anchor {
+                    if config.monitor_index != prev_monitor {
                         changed = true;
                     }
                 });
@@ -60,7 +58,10 @@ impl eframe::App for MainApp {
                 self.state.config.store(Arc::new(config));
             }
             
-            ui.add_space(20.0);
+            ui.add_space(10.0);
+            ui.label(egui::RichText::new("Note: If the overlay appears on the wrong monitor, use your OS shortcuts (e.g. Win+Shift+Arrow) to move the window. Persistent position saving coming soon.").small().weak());
+            
+            ui.add_space(10.0);
 
             // Launch / Stop Button
             let is_launched = self.state.is_launched.load(Ordering::SeqCst);
