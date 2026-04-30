@@ -96,26 +96,35 @@ pub async fn start_network_task(state: Arc<AppState>) {
 }
 
 fn handle_update_state(state: &Arc<AppState>, data: &Value) {
-    if let Some(obj) = data.as_object() {
+    // If the data is a string, it might be double-encoded JSON
+    let real_data = if let Some(s) = data.as_str() {
+        println!("Detected double-encoded JSON string, parsing internal content...");
+        serde_json::from_str::<Value>(s).unwrap_or(data.clone())
+    } else {
+        data.clone()
+    };
+
+    if let Some(obj) = real_data.as_object() {
         let keys: Vec<_> = obj.keys().collect();
-        println!("UpdateState Keys: {:?}", keys);
+        // println!("UpdateState Keys: {:?}", keys);
+    } else {
+        println!("UpdateState Data is NOT an object: {:?}", real_data);
     }
     
-    // Try both "Players" and "players" just in case
-    let players_val = data.get("Players").or_else(|| data.get("players"));
+    // Try "Players", "players", and even check if the data IS the player array
+    let players_val = real_data.get("Players")
+        .or_else(|| real_data.get("players"))
+        .unwrap_or(&real_data); // Fallback: maybe Data is the array itself
 
     let mut new_players = HashMap::new();
-    if let Some(players) = players_val.and_then(|p| p.as_array()) {
-        if players.is_empty() {
-            println!("UpdateState: Players array is EMPTY");
-        }
+    if let Some(players) = players_val.as_array() {
         for p in players {
             let name = p["Name"].as_str().unwrap_or("Unknown").to_string();
             let primary_id = p["PrimaryId"].as_str().unwrap_or("");
             let (platform, is_bot) = parse_platform(primary_id);
             let team = p["TeamNum"].as_u64().unwrap_or(0) as u8;
             
-            println!("Parsed Player: {} (Team {}, ID: {}) -> Platform: {}", name, team, primary_id, platform);
+            // println!("Parsed Player: {} -> {}", name, platform);
             
             new_players.insert(name.clone(), PlayerInfo {
                 name,
@@ -124,11 +133,11 @@ fn handle_update_state(state: &Arc<AppState>, data: &Value) {
                 is_bot,
             });
         }
-    } else {
-        println!("UpdateState: No 'Players' or 'players' field found in Data. Value was: {:?}", players_val);
     }
     
-    let count = new_players.len();
+    if !new_players.is_empty() {
+        println!("State Updated: {} players in lobby", new_players.len());
+    }
     state.players.store(Arc::new(new_players));
 }
 
