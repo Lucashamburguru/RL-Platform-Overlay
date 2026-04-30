@@ -77,6 +77,8 @@ pub struct AppState {
     pub is_visible: AtomicBool,
     pub is_connected: AtomicBool,
     pub is_launched: AtomicBool,
+    pub is_recording_kb: AtomicBool,
+    pub is_recording_ctrl: AtomicBool,
     pub players: ArcSwap<HashMap<String, PlayerInfo>>,
     pub config: ArcSwap<Config>,
 }
@@ -87,6 +89,8 @@ impl AppState {
             is_visible: AtomicBool::new(false),
             is_connected: AtomicBool::new(false),
             is_launched: AtomicBool::new(false),
+            is_recording_kb: AtomicBool::new(false),
+            is_recording_ctrl: AtomicBool::new(false),
             players: ArcSwap::from_pointee(HashMap::new()),
             config: ArcSwap::from_pointee(Config::load()),
         })
