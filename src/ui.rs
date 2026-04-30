@@ -90,7 +90,42 @@ impl eframe::App for MainApp {
                 });
             });
 
+            ui.add_space(10.0);
+
+            ui.group(|ui| {
+                ui.heading("Hotkeys");
+                
+                ui.horizontal(|ui| {
+                    ui.label("Keyboard:");
+                    let is_recording = self.state.is_recording_kb.load(Ordering::SeqCst);
+                    if is_recording {
+                        ui.colored_label(egui::Color32::YELLOW, "Listening... [Press any Key]");
+                    } else {
+                        ui.label(format!("[ {} ]", config.hotkey_kb));
+                        if ui.button("Record").clicked() {
+                            self.state.is_recording_kb.store(true, Ordering::SeqCst);
+                            self.state.is_recording_ctrl.store(false, Ordering::SeqCst);
+                        }
+                    }
+                });
+
+                ui.horizontal(|ui| {
+                    ui.label("Controller:");
+                    let is_recording = self.state.is_recording_ctrl.load(Ordering::SeqCst);
+                    if is_recording {
+                        ui.colored_label(egui::Color32::YELLOW, "Listening... [Press any Button]");
+                    } else {
+                        ui.label(format!("[ {} ]", config.hotkey_ctrl));
+                        if ui.button("Record").clicked() {
+                            self.state.is_recording_ctrl.store(true, Ordering::SeqCst);
+                            self.state.is_recording_kb.store(false, Ordering::SeqCst);
+                        }
+                    }
+                });
+            });
+
             if changed {
+                config.save();
                 self.state.config.store(Arc::new(config));
             }
             
