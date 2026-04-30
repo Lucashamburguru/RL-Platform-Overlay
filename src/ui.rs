@@ -1,4 +1,4 @@
-use crate::state::AppState;
+use crate::state::{AppState, AnchorPos};
 use eframe::egui;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -15,7 +15,7 @@ impl MainApp {
 
 impl eframe::App for MainApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Settings Window UI
+        // 1. Show Settings UI
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("RL Overlay Settings");
             ui.add_space(10.0);
@@ -37,6 +37,23 @@ impl eframe::App for MainApp {
                 if ui.checkbox(&mut config.show_bots, "Show Bots").changed() {
                     changed = true;
                 }
+
+                ui.horizontal(|ui| {
+                    ui.label("Anchor Position:");
+                    let prev_anchor = config.anchor;
+                    egui::ComboBox::from_id_source("anchor_pos")
+                        .selected_text(format!("{:?}", config.anchor))
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut config.anchor, AnchorPos::TopLeft, "Top Left");
+                            ui.selectable_value(&mut config.anchor, AnchorPos::TopRight, "Top Right");
+                            ui.selectable_value(&mut config.anchor, AnchorPos::BottomLeft, "Bottom Left");
+                            ui.selectable_value(&mut config.anchor, AnchorPos::BottomRight, "Bottom Right");
+                            ui.selectable_value(&mut config.anchor, AnchorPos::CenterRight, "Center Right");
+                        });
+                    if config.anchor != prev_anchor {
+                        changed = true;
+                    }
+                });
             });
 
             if changed {
@@ -44,9 +61,19 @@ impl eframe::App for MainApp {
             }
             
             ui.add_space(20.0);
+
+            // Launch / Stop Button
+            let is_launched = self.state.is_launched.load(Ordering::SeqCst);
+            let btn_text = if is_launched { "Stop Overlay" } else { "Launch Overlay" };
+            if ui.button(btn_text).clicked() {
+                self.state.is_launched.store(!is_launched, Ordering::SeqCst);
+            }
+
+            ui.add_space(10.0);
+            
             let is_visible = self.state.is_visible.load(Ordering::SeqCst);
             ui.horizontal(|ui| {
-                ui.label("Overlay Status:");
+                ui.label("Overlay Visibility:");
                 if is_visible {
                     ui.colored_label(egui::Color32::GREEN, "VISIBLE");
                 } else {
@@ -64,23 +91,40 @@ impl eframe::App for MainApp {
                     ui.colored_label(egui::Color32::RED, "DISCONNECTED");
                 }
             });
+
+            ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
+                if ui.button("Quit App").clicked() {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            });
         });
 
-        // Spawn/Render Overlay Window
-        if self.state.is_visible.load(Ordering::SeqCst) {
+        // 2. Show Overlay Viewport (The HUD)
+        let is_launched = self.state.is_launched.load(Ordering::SeqCst);
+        if is_launched {
             let state = self.state.clone();
-            let overlay_id = egui::ViewportId::from_hash_of("rl_overlay");
-            
             ctx.show_viewport_immediate(
-                overlay_id,
+                egui::ViewportId::from_hash_of("overlay"),
                 egui::ViewportBuilder::default()
+                    .with_title("RL Overlay HUD")
                     .with_transparent(true)
-                    .with_decorations(false)
                     .with_always_on_top()
+                    .with_decorations(false)
                     .with_mouse_passthrough(true)
-                    .with_title("RL Platform Overlay"),
-                move |ctx, _class| {
-                    render_overlay(ctx, &state);
+                    .with_inner_size(self.state.config.load().window_size),
+                move |ctx, class| {
+                    assert!(class == egui::ViewportClass::Immediate);
+                    
+                    // Clear color MUST be transparent for overlay
+                    let visuals = egui::Visuals::dark();
+                    ctx.set_visuals(visuals);
+                    
+                    // Scale ONLY the overlay
+                    ctx.set_pixels_per_point(state.config.load().ui_scale);
+
+                    if state.is_visible.load(Ordering::SeqCst) {
+                        render_overlay(ctx, &state);
+                    }
                 },
             );
         }
@@ -93,11 +137,17 @@ fn render_overlay(ctx: &egui::Context, state: &Arc<AppState>) {
     let config = state.config.load();
     let players = state.players.load();
     
-    // Apply UI scale
-    ctx.set_zoom_factor(config.ui_scale);
+    // Position based on AnchorPos
+    let (anchor, offset) = match config.anchor {
+        AnchorPos::TopLeft => (egui::Align2::LEFT_TOP, egui::vec2(20.0, 20.0)),
+        AnchorPos::TopRight => (egui::Align2::RIGHT_TOP, egui::vec2(-20.0, 20.0)),
+        AnchorPos::BottomLeft => (egui::Align2::LEFT_BOTTOM, egui::vec2(20.0, -20.0)),
+        AnchorPos::BottomRight => (egui::Align2::RIGHT_BOTTOM, egui::vec2(-20.0, -20.0)),
+        AnchorPos::CenterRight => (egui::Align2::RIGHT_CENTER, egui::vec2(-20.0, 0.0)),
+    };
 
     egui::Area::new("overlay_area".into())
-        .anchor(egui::Align2::RIGHT_CENTER, egui::vec2(-20.0, 0.0))
+        .anchor(anchor, offset)
         .show(ctx, |ui| {
             egui::Frame::none()
                 .fill(egui::Color32::from_black_alpha(config.transparency))
@@ -135,6 +185,5 @@ fn render_overlay(ctx: &egui::Context, state: &Arc<AppState>) {
                 });
         });
     
-    // We need to request repaint to keep the overlay updating
     ctx.request_repaint();
 }
