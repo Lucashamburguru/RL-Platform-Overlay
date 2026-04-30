@@ -1,34 +1,61 @@
 use crate::state::{AppState, PlayerInfo};
 use std::collections::HashMap;
 use std::sync::Arc;
+use tokio::io::AsyncReadExt;
+use tokio::net::TcpStream;
 use tokio_tungstenite::connect_async;
 use futures_util::StreamExt;
 use serde_json::Value;
 
 pub async fn start_network_task(state: Arc<AppState>) {
     let url = "ws://127.0.0.1:49123";
+    let addr = "127.0.0.1:49123";
     println!("Connecting to {}...", url);
     loop {
+        // Try WebSocket first
         match connect_async(url).await {
             Ok((mut ws_stream, _)) => {
-                println!("Connected to Rocket League Stats API!");
+                println!("Connected to Rocket League via WebSocket!");
                 while let Some(msg) = ws_stream.next().await {
                     if let Ok(msg) = msg {
                         if let Ok(text) = msg.to_text() {
                             if let Ok(json) = serde_json::from_str::<Value>(text) {
                                 if json["Event"] == "UpdateState" {
                                     handle_update_state(&state, &json["Data"]);
-                                } else {
-                                    println!("Received event: {}", json["Event"]);
                                 }
                             }
                         }
                     }
                 }
-                println!("Disconnected from Stats API. Retrying...");
             }
             Err(e) => {
-                // Silently retry, but maybe log periodically if it stays disconnected
+                if format!("{}", e).contains("invalid HTTP version") {
+                    println!("Detected raw TCP traffic. Switching to TCP mode...");
+                    if let Ok(mut stream) = TcpStream::connect(addr).await {
+                        println!("Connected to Rocket League via TCP!");
+                        let mut buffer = [0u8; 8192];
+                        loop {
+                            match stream.read(&mut buffer).await {
+                                Ok(0) => break, // EOF
+                                Ok(n) => {
+                                    let text = String::from_utf8_lossy(&buffer[..n]);
+                                    // Raw TCP might send multiple JSONs or partial JSONs. 
+                                    // For now, let's just try to parse it.
+                                    for line in text.lines() {
+                                        if let Ok(json) = serde_json::from_str::<Value>(line) {
+                                            if json["Event"] == "UpdateState" {
+                                                handle_update_state(&state, &json["Data"]);
+                                            }
+                                        }
+                                    }
+                                }
+                                Err(_) => break,
+                            }
+                        }
+                    }
+                } else {
+                    eprintln!("Connection failed: {}. Retrying in 5s...", e);
+                }
             }
         }
         tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
