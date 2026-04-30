@@ -14,6 +14,10 @@ impl OverlayApp {
 }
 
 impl eframe::App for OverlayApp {
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        [0.0; 4]
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         if !self.state.is_visible.load(Ordering::SeqCst) {
             ctx.request_repaint();
