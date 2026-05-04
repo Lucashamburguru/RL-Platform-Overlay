@@ -21,14 +21,22 @@ async fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([500.0, 500.0])
-            .with_decorations(true)
-            .with_title("RL Overlay Settings"),
+            .with_decorations(false)
+            .with_title("RL Overlay Settings")
+            .with_transparent(true),
+        depth_buffer: 0,
+        stencil_buffer: 0,
+        renderer: eframe::Renderer::Glow,
         ..Default::default()
     };
 
     eframe::run_native(
         "RL Overlay Settings",
         options,
-        Box::new(|_cc| Box::new(ui::MainApp::new(state))),
+        Box::new(|_cc| {
+            egui_extras::install_image_loaders(&_cc.egui_ctx);
+            _cc.egui_ctx.set_visuals(egui::Visuals::dark());
+            Ok(Box::new(ui::MainApp::new(state)))
+        }),
     )
 }

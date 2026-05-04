@@ -3,6 +3,7 @@ use futures_util::StreamExt;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use tokio::io::AsyncReadExt;
 use tokio::net::TcpStream;
 use tokio_tungstenite::connect_async;
@@ -16,6 +17,7 @@ pub async fn start_network_task(state: Arc<AppState>) {
         match connect_async(url).await {
             Ok((mut ws_stream, _)) => {
                 println!("Connected to Rocket League via WebSocket!");
+                state.is_connected.store(true, Ordering::SeqCst);
                 while let Some(msg) = ws_stream.next().await {
                     if let Ok(msg) = msg
                         && let Ok(text) = msg.to_text()
@@ -25,12 +27,15 @@ pub async fn start_network_task(state: Arc<AppState>) {
                         handle_update_state(&state, &json["Data"]);
                     }
                 }
+                state.is_connected.store(false, Ordering::SeqCst);
+                state.players.store(Arc::new(HashMap::new()));
             }
             Err(e) => {
                 if format!("{}", e).contains("invalid HTTP version") {
                     println!("Detected raw TCP traffic. Switching to TCP mode...");
                     if let Ok(mut stream) = TcpStream::connect(addr).await {
                         println!("Connected to Rocket League via TCP!");
+                        state.is_connected.store(true, Ordering::SeqCst);
                         let mut buffer = [0u8; 16384];
                         let mut leftover = String::new();
                         loop {
@@ -96,8 +101,13 @@ pub async fn start_network_task(state: Arc<AppState>) {
                                 Err(_) => break,
                             }
                         }
+                        state.is_connected.store(false, Ordering::SeqCst);
+                        state.players.store(Arc::new(HashMap::new()));
+                    } else {
+                        state.is_connected.store(false, Ordering::SeqCst);
                     }
                 } else {
+                    state.is_connected.store(false, Ordering::SeqCst);
                     eprintln!("Connection failed: {}. Retrying in 5s...", e);
                 }
             }
@@ -135,8 +145,10 @@ fn handle_update_state(state: &Arc<AppState>, data: &Value) {
             let primary_id = p["PrimaryId"].as_str().unwrap_or("");
             let (platform, is_bot) = parse_platform(primary_id);
             let team = p["TeamNum"].as_u64().unwrap_or(0) as u8;
-
-            // println!("Parsed Player: {} -> {}", name, platform);
+            let boost = p["Boost"].as_u64().unwrap_or(0) as u8;
+            let score = p["Score"].as_u64().unwrap_or(0) as u32;
+            let goals = p["Goals"].as_u64().unwrap_or(0) as u32;
+            let saves = p["Saves"].as_u64().unwrap_or(0) as u32;
 
             new_players.insert(
                 name.clone(),
@@ -145,6 +157,10 @@ fn handle_update_state(state: &Arc<AppState>, data: &Value) {
                     platform,
                     team,
                     is_bot,
+                    boost,
+                    score,
+                    goals,
+                    saves,
                 },
             );
         }
@@ -165,9 +181,9 @@ fn parse_platform(id: &str) -> (String, bool) {
     match platform {
         "Steam" => ("Steam".to_string(), false),
         "Epic" => ("Epic".to_string(), false),
-        "Ps4" | "Ps5" => ("PlayStation".to_string(), false),
-        "Xbox" | "XBoxOne" => ("Xbox".to_string(), false),
-        "Switch" => ("Switch".to_string(), false),
+        "Ps4" | "Ps5" | "PlayStation" | "PSN" => ("PlayStation".to_string(), false),
+        "Xbox" | "XBoxOne" | "XBL" => ("Xbox".to_string(), false),
+        "Switch" | "Nintendo" => ("Switch".to_string(), false),
         "Bot" => ("BOT".to_string(), true),
         _ => (platform.to_string(), false),
     }

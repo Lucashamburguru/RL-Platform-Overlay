@@ -26,6 +26,7 @@ pub struct Config {
     pub monitor_index: usize,
     pub hotkey_kb: String,
     pub hotkey_ctrl: String,
+    pub hotkey_toggle: bool,
 }
 
 impl Default for Config {
@@ -39,6 +40,7 @@ impl Default for Config {
             monitor_index: 0,
             hotkey_kb: "Backspace".to_string(),
             hotkey_ctrl: "Select".to_string(),
+            hotkey_toggle: false,
         }
     }
 }
@@ -84,6 +86,10 @@ pub struct PlayerInfo {
     pub platform: String,
     pub team: u8,
     pub is_bot: bool,
+    pub boost: u8,
+    pub score: u32,
+    pub goals: u32,
+    pub saves: u32,
 }
 
 pub struct AppState {

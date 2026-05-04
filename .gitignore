@@ -1,1 +1,15 @@
-.worktrees/
+/target/
+**/*.rs.bk
+Cargo.lock
+.env
+Docs/
+assets/steam_raw.png
+assets/epic_raw.png
+assets/xbox_raw.png
+assets/ps_raw.png
+assets/switch_raw.jpg
+assets/bot_raw.png
+process_icons.py
+docs/
+Docs/
+.codex
