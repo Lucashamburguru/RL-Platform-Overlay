@@ -9,6 +9,15 @@ A Rocket League overlay for identifying player platforms in real-time.
 - Live connection status indicator
 - Windows and Linux support
 
+## Initial Setup
+
+You must enable the Stats API in Rocket League before the overlay can receive data:
+
+1.  Navigate to your Rocket League installation folder.
+2.  Open `TAGame\Config\DefaultStatsAPI.ini`.
+3.  Set `PacketSendRate` to a value greater than `0` (e.g., `30.0` or `60.0`).
+4.  Restart Rocket League.
+
 ## Usage
 1. Download or build the executable.
 2. Open the settings menu and configure hotkeys.
