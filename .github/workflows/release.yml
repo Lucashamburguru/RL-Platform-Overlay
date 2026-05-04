@@ -40,6 +40,9 @@ jobs:
           libxinerama-dev \
           libxi-dev \
           libxrandr-dev \
+          libxtst-dev \
+          libxrender-dev \
+          libxss-dev \
           libxkbcommon-dev \
           libwayland-dev \
           libdbus-1-dev \
