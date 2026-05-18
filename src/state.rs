@@ -86,7 +86,7 @@ mod tests {
     fn test_config_default() {
         let config = Config::default();
         assert_eq!(config.transparency, 150);
-        assert_eq!(config.ui_scale, 1.0);
+        assert_eq!(config.ui_scale, 2.2);
         assert!(config.show_bots);
         assert_eq!(config.anchor, AnchorPos::CenterRight);
     }
@@ -98,6 +98,7 @@ pub struct PlayerInfo {
     pub platform: String,
     pub team: u8,
     pub is_bot: bool,
+    pub is_local: bool,
     pub boost: u8,
     pub score: u32,
     pub goals: u32,

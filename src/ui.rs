@@ -94,12 +94,7 @@ impl eframe::App for MainApp {
 
                     ctx.input(|i| {
                         for event in &i.events {
-                            if let egui::Event::Key {
-                                key,
-                                pressed,
-                                ..
-                            } = event
-                            {
+                            if let egui::Event::Key { key, pressed, .. } = event {
                                 if let Some(name) = egui_to_rdev_key(*key) {
                                     // Handle Settings Toggle
                                     if *pressed && name == settings_hotkey {
@@ -116,7 +111,9 @@ impl eframe::App for MainApp {
                                             if *pressed {
                                                 let curr =
                                                     self.state.is_visible.load(Ordering::SeqCst);
-                                                self.state.is_visible.store(!curr, Ordering::SeqCst);
+                                                self.state
+                                                    .is_visible
+                                                    .store(!curr, Ordering::SeqCst);
                                             }
                                         } else {
                                             self.state.is_visible.store(*pressed, Ordering::SeqCst);
@@ -133,29 +130,30 @@ impl eframe::App for MainApp {
                         .title_bar(false)
                         .default_size([450.0, 600.0])
                         .show(ctx, |ui| {
-                            let title_bar_response = ui.horizontal(|ui| {
-                                ui.label(egui::RichText::new("RL Overlay Settings").strong());
-                                ui.with_layout(
-                                    egui::Layout::right_to_left(egui::Align::Center),
-                                    |ui| {
-                                        let close_btn = ui.add(
-                                            egui::Button::new(
-                                                egui::RichText::new("  X  ")
-                                                    .strong()
-                                                    .color(egui::Color32::WHITE),
-                                            )
-                                            .fill(egui::Color32::from_rgb(180, 40, 40))
-                                            .min_size(egui::vec2(40.0, 24.0)),
-                                        );
-                                        if close_btn.clicked() {
-                                            self.state
-                                                .is_settings_visible
-                                                .store(false, Ordering::SeqCst);
-                                        }
-                                    },
-                                );
-                            })
-                            .response;
+                            let title_bar_response = ui
+                                .horizontal(|ui| {
+                                    ui.label(egui::RichText::new("RL Overlay Settings").strong());
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            let close_btn = ui.add(
+                                                egui::Button::new(
+                                                    egui::RichText::new("  X  ")
+                                                        .strong()
+                                                        .color(egui::Color32::WHITE),
+                                                )
+                                                .fill(egui::Color32::from_rgb(180, 40, 40))
+                                                .min_size(egui::vec2(40.0, 24.0)),
+                                            );
+                                            if close_btn.clicked() {
+                                                self.state
+                                                    .is_settings_visible
+                                                    .store(false, Ordering::SeqCst);
+                                            }
+                                        },
+                                    );
+                                })
+                                .response;
 
                             if title_bar_response
                                 .interact(egui::Sense::drag())
@@ -197,13 +195,28 @@ impl eframe::App for MainApp {
 
                                     ui.horizontal(|ui| {
                                         ui.label("Resolution:");
-                                        let current_res = format!("{}x{}", config_edit.window_size[0], config_edit.window_size[1]);
+                                        let current_res = format!(
+                                            "{}x{}",
+                                            config_edit.window_size[0], config_edit.window_size[1]
+                                        );
                                         egui::ComboBox::new("res_select", "")
                                             .selected_text(current_res)
                                             .show_ui(ui, |ui| {
-                                                ui.selectable_value(&mut config_edit.window_size, [1920.0, 1080.0], "1080p");
-                                                ui.selectable_value(&mut config_edit.window_size, [2560.0, 1440.0], "1440p");
-                                                ui.selectable_value(&mut config_edit.window_size, [3840.0, 2160.0], "4K");
+                                                ui.selectable_value(
+                                                    &mut config_edit.window_size,
+                                                    [1920.0, 1080.0],
+                                                    "1080p",
+                                                );
+                                                ui.selectable_value(
+                                                    &mut config_edit.window_size,
+                                                    [2560.0, 1440.0],
+                                                    "1440p",
+                                                );
+                                                ui.selectable_value(
+                                                    &mut config_edit.window_size,
+                                                    [3840.0, 2160.0],
+                                                    "4K",
+                                                );
                                             });
                                         if config_edit.window_size != config.window_size {
                                             changed = true;
@@ -213,11 +226,18 @@ impl eframe::App for MainApp {
                                     ui.horizontal(|ui| {
                                         ui.label("Monitor:");
                                         egui::ComboBox::new("monitor_select", "")
-                                            .selected_text(format!("Monitor {}", config_edit.monitor_index))
+                                            .selected_text(format!(
+                                                "Monitor {}",
+                                                config_edit.monitor_index
+                                            ))
                                             .show_ui(ui, |ui| {
                                                 // Support up to 4 monitors for now
                                                 for i in 0..4 {
-                                                    ui.selectable_value(&mut config_edit.monitor_index, i, format!("Monitor {}", i));
+                                                    ui.selectable_value(
+                                                        &mut config_edit.monitor_index,
+                                                        i,
+                                                        format!("Monitor {}", i),
+                                                    );
                                                 }
                                             });
                                         if config_edit.monitor_index != config.monitor_index {
@@ -307,7 +327,9 @@ impl eframe::App for MainApp {
                                         if self.state.is_recording_kb.load(Ordering::SeqCst) {
                                             ui.colored_label(egui::Color32::YELLOW, "Listening...");
                                             if ui.button("Cancel").clicked() {
-                                                self.state.is_recording_kb.store(false, Ordering::SeqCst);
+                                                self.state
+                                                    .is_recording_kb
+                                                    .store(false, Ordering::SeqCst);
                                             }
 
                                             // Fallback: Capture keys directly from egui if the window has focus
@@ -325,7 +347,12 @@ impl eframe::App for MainApp {
                                                 }
 
                                                 for event in &i.events {
-                                                    if let egui::Event::Key { key, pressed: true, .. } = event {
+                                                    if let egui::Event::Key {
+                                                        key,
+                                                        pressed: true,
+                                                        ..
+                                                    } = event
+                                                    {
                                                         if let Some(name) = egui_to_rdev_key(*key) {
                                                             captured_name = Some(name);
                                                         }
@@ -342,10 +369,16 @@ impl eframe::App for MainApp {
                                                 self.state
                                                     .is_recording_kb
                                                     .store(false, Ordering::SeqCst);
-                                                println!("Keyboard hotkey updated (via UI): {}", name);
+                                                println!(
+                                                    "Keyboard hotkey updated (via UI): {}",
+                                                    name
+                                                );
                                             }
                                         } else {
-                                            ui.label(format!("[ {} ]", format_key_name(&config_edit.hotkey_kb)));
+                                            ui.label(format!(
+                                                "[ {} ]",
+                                                format_key_name(&config_edit.hotkey_kb)
+                                            ));
                                             if ui.button("Record").clicked() {
                                                 self.state
                                                     .is_recording_kb
@@ -362,7 +395,9 @@ impl eframe::App for MainApp {
                                         if self.state.is_recording_ctrl.load(Ordering::SeqCst) {
                                             ui.colored_label(egui::Color32::YELLOW, "Listening...");
                                             if ui.button("Cancel").clicked() {
-                                                self.state.is_recording_ctrl.store(false, Ordering::SeqCst);
+                                                self.state
+                                                    .is_recording_ctrl
+                                                    .store(false, Ordering::SeqCst);
                                             }
                                         } else {
                                             ui.label(format!("[ {} ]", config_edit.hotkey_ctrl));
@@ -381,7 +416,9 @@ impl eframe::App for MainApp {
                                         if self.state.is_recording_settings.load(Ordering::SeqCst) {
                                             ui.colored_label(egui::Color32::YELLOW, "Listening...");
                                             if ui.button("Cancel").clicked() {
-                                                self.state.is_recording_settings.store(false, Ordering::SeqCst);
+                                                self.state
+                                                    .is_recording_settings
+                                                    .store(false, Ordering::SeqCst);
                                             }
 
                                             let mut captured_name = None;
@@ -398,7 +435,12 @@ impl eframe::App for MainApp {
                                                 }
 
                                                 for event in &i.events {
-                                                    if let egui::Event::Key { key, pressed: true, .. } = event {
+                                                    if let egui::Event::Key {
+                                                        key,
+                                                        pressed: true,
+                                                        ..
+                                                    } = event
+                                                    {
                                                         if let Some(name) = egui_to_rdev_key(*key) {
                                                             captured_name = Some(name);
                                                         }
@@ -447,14 +489,20 @@ impl eframe::App for MainApp {
                                     }
 
                                     if ui
-                                        .checkbox(&mut config_edit.show_stats, "Show Player Stats (Boost, Score)")
+                                        .checkbox(
+                                            &mut config_edit.show_stats,
+                                            "Show Player Stats (Boost, Score)",
+                                        )
                                         .changed()
                                     {
                                         changed = true;
                                     }
 
                                     if ui
-                                        .checkbox(&mut config_edit.show_teammate_boost, "Always-on Teammate Boost HUD")
+                                        .checkbox(
+                                            &mut config_edit.show_teammate_boost,
+                                            "Always-on Teammate Boost HUD",
+                                        )
                                         .changed()
                                     {
                                         changed = true;
@@ -481,7 +529,7 @@ impl eframe::App for MainApp {
                                         );
 
                                         ui.add_space(5.0);
-                                        
+
                                         ui.label("Teammate HUD Scale");
                                         if ui
                                             .add(egui::Slider::new(
@@ -531,7 +579,9 @@ impl eframe::App for MainApp {
                                     self.state.is_launched.store(new_val, Ordering::SeqCst);
                                     if new_val {
                                         // Auto-hide settings when launching
-                                        self.state.is_settings_visible.store(false, Ordering::SeqCst);
+                                        self.state
+                                            .is_settings_visible
+                                            .store(false, Ordering::SeqCst);
 
                                         // Fullscreen-like transparent window
                                         ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(
@@ -575,7 +625,11 @@ impl eframe::App for MainApp {
                                 }
 
                                 ui.add_space(5.0);
-                                ui.label(egui::RichText::new("v0.1.3").size(9.0).color(egui::Color32::from_gray(100)));
+                                ui.label(
+                                    egui::RichText::new("v0.1.4")
+                                        .size(9.0)
+                                        .color(egui::Color32::from_gray(100)),
+                                );
 
                                 ui.separator();
                                 if ui.button("Reset to Defaults").clicked() {
@@ -780,17 +834,26 @@ fn render_teammate_boost(ctx: &egui::Context, state: &Arc<AppState>) {
     let local_name = local_name_raw.trim().to_lowercase();
     let config = state.config.load();
 
-    // Find our team
-    let my_team = players
+    // Find our team. Do not guess, because a bad fallback shows the wrong team
+    // and can include the local player's own boost.
+    let Some(my_team) = players
         .values()
-        .find(|p| p.name.trim().to_lowercase() == local_name)
+        .find(|p| {
+            p.is_local || (!local_name.is_empty() && p.name.trim().to_lowercase() == local_name)
+        })
         .map(|p| p.team)
-        .unwrap_or(0); // Default to team 0 if not found for preview
+    else {
+        return;
+    };
 
     // Find all teammates (excluding ourselves)
     let mut teammates: Vec<crate::state::PlayerInfo> = players
         .values()
-        .filter(|p| p.team == my_team && p.name.trim().to_lowercase() != local_name)
+        .filter(|p| {
+            p.team == my_team
+                && !p.is_local
+                && (local_name.is_empty() || p.name.trim().to_lowercase() != local_name)
+        })
         .cloned()
         .collect();
 
@@ -802,8 +865,10 @@ fn render_teammate_boost(ctx: &egui::Context, state: &Arc<AppState>) {
 
     let screen_rect = ctx.input(|i| i.screen_rect());
     // Dynamic offsets from right and bottom based on config
-    let base_x = screen_rect.max.x - config.teammate_boost_horizontal_offset * config.teammate_hud_scale;
-    let mut current_y = screen_rect.max.y - config.teammate_boost_offset * config.teammate_hud_scale;
+    let base_x =
+        screen_rect.max.x - config.teammate_boost_horizontal_offset * config.teammate_hud_scale;
+    let mut current_y =
+        screen_rect.max.y - config.teammate_boost_offset * config.teammate_hud_scale;
 
     for p in teammates {
         egui::Area::new(format!("teammate_boost_{}", p.name).into())
@@ -853,7 +918,8 @@ fn render_teammate_boost(ctx: &egui::Context, state: &Arc<AppState>) {
                     let num_segments = 32;
                     let mut points = Vec::new();
                     for i in 0..=num_segments {
-                        let angle = start_angle + (end_angle - start_angle) * (i as f32 / num_segments as f32);
+                        let angle = start_angle
+                            + (end_angle - start_angle) * (i as f32 / num_segments as f32);
                         points.push(center + egui::vec2(angle.cos(), angle.sin()) * radius);
                     }
 
@@ -861,7 +927,8 @@ fn render_teammate_boost(ctx: &egui::Context, state: &Arc<AppState>) {
                         points,
                         closed: false,
                         fill: egui::Color32::TRANSPARENT,
-                        stroke: egui::Stroke::new(3.5 * config.teammate_hud_scale, boost_color).into(),
+                        stroke: egui::Stroke::new(3.5 * config.teammate_hud_scale, boost_color)
+                            .into(),
                     }));
 
                     // Dark outer ring for depth

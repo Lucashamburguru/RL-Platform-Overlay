@@ -22,13 +22,13 @@ pub async fn start_network_task(state: Arc<AppState>) {
                     if let Ok(msg) = msg
                         && let Ok(text) = msg.to_text()
                         && let Ok(json) = serde_json::from_str::<Value>(text)
-                        && json["Event"] == "UpdateState"
                     {
-                        handle_update_state(&state, &json["Data"]);
+                        handle_event(&state, &json);
                     }
                 }
                 state.is_connected.store(false, Ordering::SeqCst);
                 state.players.store(Arc::new(HashMap::new()));
+                state.local_player_name.store(Arc::new("".to_string()));
             }
             Err(e) => {
                 if format!("{}", e).contains("invalid HTTP version") {
@@ -76,21 +76,7 @@ pub async fn start_network_task(state: Arc<AppState>) {
                                                     if let Ok(json) =
                                                         serde_json::from_str::<Value>(json_str)
                                                     {
-                                                        let event = json["Event"]
-                                                            .as_str()
-                                                            .unwrap_or("Unknown");
-                                                        if event == "UpdateState" {
-                                                            handle_update_state(
-                                                                &state,
-                                                                &json["Data"],
-                                                            );
-                                                        } else if event == "MatchEnded" || event == "MatchDestroyed" || event == "LobbyEntered" {
-                                                            state.players.store(Arc::new(HashMap::new()));
-                                                            state.local_player_name.store(Arc::new("".to_string()));
-                                                            println!("Match ended, clearing player list.");
-                                                        } else {
-                                                            println!("Received event: {}", event);
-                                                        }
+                                                        handle_event(&state, &json);
                                                     }
                                                 }
                                             }
@@ -107,6 +93,7 @@ pub async fn start_network_task(state: Arc<AppState>) {
                         }
                         state.is_connected.store(false, Ordering::SeqCst);
                         state.players.store(Arc::new(HashMap::new()));
+                        state.local_player_name.store(Arc::new("".to_string()));
                     } else {
                         state.is_connected.store(false, Ordering::SeqCst);
                     }
@@ -117,6 +104,19 @@ pub async fn start_network_task(state: Arc<AppState>) {
             }
         }
         tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+    }
+}
+
+fn handle_event(state: &Arc<AppState>, json: &Value) {
+    let event = json["Event"].as_str().unwrap_or("Unknown");
+    match event {
+        "UpdateState" => handle_update_state(state, &json["Data"]),
+        "MatchEnded" | "MatchDestroyed" | "LobbyEntered" => {
+            state.players.store(Arc::new(HashMap::new()));
+            state.local_player_name.store(Arc::new("".to_string()));
+            println!("Match ended, clearing player list.");
+        }
+        _ => println!("Received event: {}", event),
     }
 }
 
@@ -132,9 +132,9 @@ fn handle_update_state(state: &Arc<AppState>, data: &Value) {
     if let Some(_obj) = real_data.as_object() {
         // Extract local player name
         if let Some(game) = real_data.get("game") {
-            if let Some(client) = game["client"].as_str() {
+            if let Some(client) = string_field(game, &["client", "Client"]) {
                 state.local_player_name.store(Arc::new(client.to_string()));
-            } else if let Some(me) = game["me"].as_str() {
+            } else if let Some(me) = string_field(game, &["me", "Me"]) {
                 state.local_player_name.store(Arc::new(me.to_string()));
             }
         }
@@ -147,28 +147,36 @@ fn handle_update_state(state: &Arc<AppState>, data: &Value) {
         .unwrap_or(&real_data); // Fallback: maybe Data is the array itself
 
     let mut new_players = HashMap::new();
+    let current_local_name = state.local_player_name.load().trim().to_string();
     if let Some(players) = players_val.as_array() {
         for p in players {
-            let name = p["Name"].as_str().unwrap_or("").trim().to_string();
+            let name = string_field(p, &["Name", "name"])
+                .unwrap_or("")
+                .trim()
+                .to_string();
             if name.is_empty() {
                 continue;
             }
-            
+
             // Check for isLocalPlayer flag
-            if p["IsLocalPlayer"].as_bool().unwrap_or(false) || p["isMe"].as_bool().unwrap_or(false) {
+            let is_local = p["IsLocalPlayer"].as_bool().unwrap_or(false)
+                || p["isLocalPlayer"].as_bool().unwrap_or(false)
+                || p["isMe"].as_bool().unwrap_or(false)
+                || (!current_local_name.is_empty()
+                    && name.eq_ignore_ascii_case(current_local_name.trim()));
+
+            if is_local {
                 state.local_player_name.store(Arc::new(name.clone()));
             }
 
-            let primary_id = p["PrimaryId"].as_str().unwrap_or("");
+            let primary_id =
+                string_field(p, &["PrimaryId", "primaryId", "primary_id"]).unwrap_or("");
             let (platform, is_bot) = parse_platform(primary_id);
-            let team = p["TeamNum"]
-                .as_u64()
-                .or_else(|| p["Team"].as_u64())
-                .unwrap_or(0) as u8;
-            let boost = p["Boost"].as_u64().unwrap_or(0) as u8;
-            let score = p["Score"].as_u64().unwrap_or(0) as u32;
-            let goals = p["Goals"].as_u64().unwrap_or(0) as u32;
-            let saves = p["Saves"].as_u64().unwrap_or(0) as u32;
+            let team = number_field(p, &["TeamNum", "teamNum", "Team", "team"]).unwrap_or(0) as u8;
+            let boost = number_field(p, &["Boost", "boost"]).unwrap_or(0) as u8;
+            let score = number_field(p, &["Score", "score"]).unwrap_or(0) as u32;
+            let goals = number_field(p, &["Goals", "goals"]).unwrap_or(0) as u32;
+            let saves = number_field(p, &["Saves", "saves"]).unwrap_or(0) as u32;
 
             new_players.insert(
                 name.clone(),
@@ -177,6 +185,7 @@ fn handle_update_state(state: &Arc<AppState>, data: &Value) {
                     platform,
                     team,
                     is_bot,
+                    is_local,
                     boost,
                     score,
                     goals,
@@ -190,6 +199,18 @@ fn handle_update_state(state: &Arc<AppState>, data: &Value) {
         // println!("State Updated: {} players in lobby", new_players.len());
     }
     state.players.store(Arc::new(new_players));
+}
+
+fn string_field<'a>(value: &'a Value, keys: &[&str]) -> Option<&'a str> {
+    keys.iter().find_map(|key| value[*key].as_str())
+}
+
+fn number_field(value: &Value, keys: &[&str]) -> Option<u64> {
+    keys.iter().find_map(|key| {
+        value[*key]
+            .as_u64()
+            .or_else(|| value[*key].as_str()?.parse().ok())
+    })
 }
 
 fn parse_platform(id: &str) -> (String, bool) {
@@ -212,6 +233,8 @@ fn parse_platform(id: &str) -> (String, bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+    use std::sync::atomic::Ordering;
 
     #[test]
     fn test_parse_platform() {
@@ -236,5 +259,66 @@ mod tests {
             ("Unknown".to_string(), false)
         );
         assert_eq!(parse_platform(""), ("Unknown".to_string(), false));
+    }
+
+    #[test]
+    fn test_update_state_marks_local_player_and_teammate_team() {
+        let state = AppState::new();
+        let data = json!({
+            "players": [
+                {
+                    "name": "Me",
+                    "primaryId": "Steam|1|0",
+                    "team": 1,
+                    "boost": 33,
+                    "isMe": true
+                },
+                {
+                    "name": "Mate",
+                    "primaryId": "Epic|2|0",
+                    "team": 1,
+                    "boost": 88
+                },
+                {
+                    "name": "Opponent",
+                    "primaryId": "Xbox|3|0",
+                    "team": 0,
+                    "boost": 44
+                }
+            ]
+        });
+
+        handle_update_state(&state, &data);
+
+        let players = state.players.load();
+        assert_eq!(&**state.local_player_name.load(), "Me");
+        assert!(players["Me"].is_local);
+        assert_eq!(players["Me"].team, 1);
+        assert_eq!(players["Mate"].boost, 88);
+        assert!(!players["Opponent"].is_local);
+    }
+
+    #[test]
+    fn test_lobby_event_clears_websocket_state() {
+        let state = AppState::new();
+        handle_update_state(
+            &state,
+            &json!({
+                "Players": [
+                    {
+                        "Name": "Me",
+                        "PrimaryId": "Steam|1|0",
+                        "TeamNum": 0,
+                        "IsLocalPlayer": true
+                    }
+                ]
+            }),
+        );
+        state.is_connected.store(true, Ordering::SeqCst);
+
+        handle_event(&state, &json!({ "Event": "LobbyEntered" }));
+
+        assert!(state.players.load().is_empty());
+        assert_eq!(&**state.local_player_name.load(), "");
     }
 }
