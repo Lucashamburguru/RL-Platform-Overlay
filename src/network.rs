@@ -141,7 +141,6 @@ fn handle_update_state(state: &Arc<AppState>, data: &Value) {
         }
     }
     
-    let local_name = state.local_player_name.load();
 
     // Try "Players", "players", and even check if the data IS the player array
     let players_val = real_data

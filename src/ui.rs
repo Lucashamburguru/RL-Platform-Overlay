@@ -836,7 +836,7 @@ fn render_teammate_boost(ctx: &egui::Context, state: &Arc<AppState>) {
 
     // Find our team (preferring the stabilized local_team from state)
     // Do not guess if not found, because a bad fallback shows the wrong team.
-    let Some(my_team) = {
+    let Some(my_team) = (|| {
         let stored_team = state.local_team.load(Ordering::SeqCst);
         if stored_team != 255 {
             Some(stored_team)
@@ -848,7 +848,7 @@ fn render_teammate_boost(ctx: &egui::Context, state: &Arc<AppState>) {
                 })
                 .map(|p| p.team)
         }
-    } else {
+    })() else {
         return;
     };
 
@@ -870,16 +870,11 @@ fn render_teammate_boost(ctx: &egui::Context, state: &Arc<AppState>) {
     teammates.sort_by(|a, b| a.name.cmp(&b.name));
 
     let screen_rect = ctx.input(|i| i.screen_rect());
-<<<<<<< HEAD
     // Dynamic offsets from right and bottom based on config
     let base_x =
         screen_rect.max.x - config.teammate_boost_horizontal_offset * config.teammate_hud_scale;
     let mut current_y =
         screen_rect.max.y - config.teammate_boost_offset * config.teammate_hud_scale;
-=======
-    let base_x = screen_rect.max.x - config.teammate_boost_horizontal_offset * config.teammate_hud_scale;
-    let mut current_y = screen_rect.max.y - config.teammate_boost_offset * config.teammate_hud_scale;
->>>>>>> local-updates
 
     for p in teammates {
         let team_color = if p.team == 0 {
@@ -998,68 +993,6 @@ fn render_teammate_boost(ctx: &egui::Context, state: &Arc<AppState>) {
                             text_color,
                         );
                     });
-<<<<<<< HEAD
-
-                    // Boost Circle
-                    let radius = 22.0 * config.teammate_hud_scale;
-                    let (rect, _response) = ui.allocate_at_least(
-                        egui::vec2(radius * 2.0, radius * 2.0),
-                        egui::Sense::hover(),
-                    );
-                    let center = rect.center();
-
-                    // Background fill
-                    ui.painter().circle_filled(
-                        center,
-                        radius,
-                        egui::Color32::from_black_alpha(150),
-                    );
-
-                    let boost_color = if p.boost > 50 {
-                        egui::Color32::from_rgb(255, 200, 0) // Gold
-                    } else {
-                        egui::Color32::from_rgb(255, 100, 0) // Orange
-                    };
-
-                    // Circular Progress Arc
-                    let start_angle = std::f32::consts::PI * 0.5; // Bottom
-                    let boost_fraction = p.boost as f32 / 100.0;
-                    let end_angle = start_angle + (std::f32::consts::PI * 2.0 * boost_fraction);
-
-                    // Draw the arc using segments
-                    let num_segments = 32;
-                    let mut points = Vec::new();
-                    for i in 0..=num_segments {
-                        let angle = start_angle
-                            + (end_angle - start_angle) * (i as f32 / num_segments as f32);
-                        points.push(center + egui::vec2(angle.cos(), angle.sin()) * radius);
-                    }
-
-                    ui.painter().add(egui::Shape::Path(egui::epaint::PathShape {
-                        points,
-                        closed: false,
-                        fill: egui::Color32::TRANSPARENT,
-                        stroke: egui::Stroke::new(3.5 * config.teammate_hud_scale, boost_color)
-                            .into(),
-                    }));
-
-                    // Dark outer ring for depth
-                    ui.painter().circle_stroke(
-                        center,
-                        radius + 1.0,
-                        egui::Stroke::new(1.0, egui::Color32::from_black_alpha(100)),
-                    );
-
-                    // Boost Value
-                    ui.painter().text(
-                        center,
-                        egui::Align2::CENTER_CENTER,
-                        p.boost.to_string(),
-                        egui::FontId::proportional(16.0 * config.teammate_hud_scale),
-                        egui::Color32::WHITE,
-                    );
-=======
->>>>>>> local-updates
                 });
             });
         current_y -= 50.0 * config.teammate_hud_scale;
