@@ -87,6 +87,7 @@ pub async fn start_network_task(state: Arc<AppState>) {
                                                         } else if event == "MatchEnded" || event == "MatchDestroyed" || event == "LobbyEntered" {
                                                             state.players.store(Arc::new(HashMap::new()));
                                                             state.local_player_name.store(Arc::new("".to_string()));
+                                                            state.local_team.store(255, Ordering::SeqCst);
                                                             println!("Match ended, clearing player list.");
                                                         } else {
                                                             println!("Received event: {}", event);
@@ -139,6 +140,8 @@ fn handle_update_state(state: &Arc<AppState>, data: &Value) {
             }
         }
     }
+    
+    let local_name = state.local_player_name.load();
 
     // Try "Players", "players", and even check if the data IS the player array
     let players_val = real_data
@@ -155,7 +158,8 @@ fn handle_update_state(state: &Arc<AppState>, data: &Value) {
             }
             
             // Check for isLocalPlayer flag
-            if p["IsLocalPlayer"].as_bool().unwrap_or(false) || p["isMe"].as_bool().unwrap_or(false) {
+            let is_local_flag = p["IsLocalPlayer"].as_bool().unwrap_or(false) || p["isMe"].as_bool().unwrap_or(false);
+            if is_local_flag {
                 state.local_player_name.store(Arc::new(name.clone()));
             }
 
@@ -165,10 +169,17 @@ fn handle_update_state(state: &Arc<AppState>, data: &Value) {
                 .as_u64()
                 .or_else(|| p["Team"].as_u64())
                 .unwrap_or(0) as u8;
+                
+            if is_local_flag {
+                state.local_team.store(team, Ordering::SeqCst);
+            }
             let boost = p["Boost"].as_u64().unwrap_or(0) as u8;
             let score = p["Score"].as_u64().unwrap_or(0) as u32;
             let goals = p["Goals"].as_u64().unwrap_or(0) as u32;
             let saves = p["Saves"].as_u64().unwrap_or(0) as u32;
+
+            let is_local = is_local_flag 
+                || (local_name.to_lowercase() == name.to_lowercase() && !local_name.is_empty());
 
             new_players.insert(
                 name.clone(),
@@ -177,6 +188,7 @@ fn handle_update_state(state: &Arc<AppState>, data: &Value) {
                     platform,
                     team,
                     is_bot,
+                    is_local,
                     boost,
                     score,
                     goals,

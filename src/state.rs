@@ -98,6 +98,7 @@ pub struct PlayerInfo {
     pub platform: String,
     pub team: u8,
     pub is_bot: bool,
+    pub is_local: bool,
     pub boost: u8,
     pub score: u32,
     pub goals: u32,
@@ -113,6 +114,7 @@ pub struct AppState {
     pub is_recording_ctrl: AtomicBool,
     pub is_recording_settings: AtomicBool,
     pub local_player_name: ArcSwap<String>,
+    pub local_team: std::sync::atomic::AtomicU8,
     pub players: ArcSwap<HashMap<String, PlayerInfo>>,
     pub config: ArcSwap<Config>,
 }
@@ -128,6 +130,7 @@ impl AppState {
             is_recording_ctrl: AtomicBool::new(false),
             is_recording_settings: AtomicBool::new(false),
             local_player_name: ArcSwap::from_pointee("".to_string()),
+            local_team: std::sync::atomic::AtomicU8::new(255),
             players: ArcSwap::from_pointee(HashMap::new()),
             config: ArcSwap::from_pointee(Config::load()),
         })
