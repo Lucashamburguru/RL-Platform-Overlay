@@ -1,0 +1,19 @@
+transparency = 150
+ui_scale = 2.2
+show_bots = true
+window_size = [
+    1920.0,
+    1080.0,
+]
+anchor = "CenterRight"
+monitor_index = 0
+hotkey_kb = "Backspace"
+hotkey_ctrl = "Select"
+hotkey_settings = "F1"
+hotkey_toggle = false
+show_stats = true
+show_teammate_boost = false
+teammate_boost_offset = 180.0
+teammate_boost_horizontal_offset = 110.0
+teammate_hud_scale = 2.2
+teammate_boost_display = "Bars"

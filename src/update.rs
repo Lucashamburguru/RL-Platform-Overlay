@@ -1,14 +1,16 @@
 use crate::state::{AppState, VersionCheck};
 use serde_json::Value;
 use std::sync::Arc;
+use std::time::Duration;
 
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
-const TAGS_URL: &str = "https://api.github.com/repos/Lucashamburguru/RL-Platform-Overlay/tags";
+const LATEST_RELEASE_URL: &str =
+    "https://api.github.com/repos/Lucashamburguru/RL-Platform-Overlay/releases/latest";
 
 pub fn start_version_check(state: Arc<AppState>) {
     tokio::spawn(async move {
         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-        let version_check = match check_latest_tag().await {
+        let version_check = match check_latest_release().await {
             Ok(check) => check,
             Err(error) => VersionCheck {
                 checked: true,
@@ -20,9 +22,12 @@ pub fn start_version_check(state: Arc<AppState>) {
     });
 }
 
-async fn check_latest_tag() -> Result<VersionCheck, wreq::Error> {
-    let response = wreq::Client::new()
-        .get(TAGS_URL)
+async fn check_latest_release() -> Result<VersionCheck, wreq::Error> {
+    let client = wreq::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()?;
+    let response = client
+        .get(LATEST_RELEASE_URL)
         .header("User-Agent", "RL-Platform-Overlay")
         .send()
         .await?;
@@ -36,18 +41,28 @@ async fn check_latest_tag() -> Result<VersionCheck, wreq::Error> {
     }
 
     let body = response.text().await?;
-    let Ok(tags) = serde_json::from_str::<Value>(&body) else {
+    let Ok(release) = serde_json::from_str::<Value>(&body) else {
         return Ok(VersionCheck {
             checked: true,
-            error: "Could not parse GitHub tags response.".to_string(),
+            error: "Could not parse GitHub release response.".to_string(),
             ..Default::default()
         });
     };
 
-    let Some(latest_tag) = latest_semver_tag(&tags) else {
+    if release["draft"].as_bool().unwrap_or(false)
+        || release["prerelease"].as_bool().unwrap_or(false)
+    {
         return Ok(VersionCheck {
             checked: true,
-            error: "No release tags found on GitHub.".to_string(),
+            error: "Latest GitHub release is not a public stable release.".to_string(),
+            ..Default::default()
+        });
+    }
+
+    let Some(latest_tag) = latest_release_tag(&release) else {
+        return Ok(VersionCheck {
+            checked: true,
+            error: "No release tag found on GitHub.".to_string(),
             ..Default::default()
         });
     };
@@ -59,20 +74,18 @@ async fn check_latest_tag() -> Result<VersionCheck, wreq::Error> {
         checked: true,
         update_available,
         latest_tag: latest_tag.clone(),
-        release_url: format!(
-            "https://github.com/Lucashamburguru/RL-Platform-Overlay/releases/tag/{latest_tag}"
-        ),
+        release_url: release["html_url"]
+            .as_str()
+            .unwrap_or("https://github.com/Lucashamburguru/RL-Platform-Overlay/releases/latest")
+            .to_string(),
         error: String::new(),
     })
 }
 
-fn latest_semver_tag(tags: &Value) -> Option<String> {
-    tags.as_array()?
-        .iter()
-        .filter_map(|tag| tag["name"].as_str())
-        .filter(|tag| parse_version(tag).is_some())
-        .max_by(|a, b| compare_versions(a, b).unwrap_or(std::cmp::Ordering::Equal))
-        .map(ToString::to_string)
+fn latest_release_tag(release: &Value) -> Option<String> {
+    let tag = release["tag_name"].as_str()?;
+    parse_version(tag)?;
+    Some(tag.to_string())
 }
 
 fn compare_versions(left: &str, right: &str) -> Option<std::cmp::Ordering> {
@@ -98,15 +111,20 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn test_latest_semver_tag_uses_highest_version() {
-        let tags = json!([
-            { "name": "v0.1.4" },
-            { "name": "v0.2.0" },
-            { "name": "not-a-version" },
-            { "name": "0.1.9" }
-        ]);
+    fn test_latest_release_tag_uses_release_tag_name() {
+        let release = json!({
+            "tag_name": "v0.2.0",
+            "html_url": "https://github.com/example/repo/releases/tag/v0.2.0"
+        });
 
-        assert_eq!(latest_semver_tag(&tags), Some("v0.2.0".to_string()));
+        assert_eq!(latest_release_tag(&release), Some("v0.2.0".to_string()));
+    }
+
+    #[test]
+    fn test_latest_release_tag_ignores_non_semver_tag_name() {
+        let release = json!({ "tag_name": "latest" });
+
+        assert_eq!(latest_release_tag(&release), None);
     }
 
     #[test]

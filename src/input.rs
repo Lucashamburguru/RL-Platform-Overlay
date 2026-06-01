@@ -33,8 +33,7 @@ pub fn start_input_tasks(state: Arc<AppState>) {
                                 );
                                 let mut new_config = (**state_ctrl.config.load()).clone();
                                 new_config.hotkey_ctrl = button_str.clone();
-                                new_config.save();
-                                state_ctrl.config.store(Arc::new(new_config));
+                                state_ctrl.save_config(new_config);
                                 state_ctrl.is_recording_ctrl.store(false, Ordering::SeqCst);
                                 println!("Controller hotkey updated: {}", button_str);
                             } else {
@@ -66,8 +65,7 @@ pub fn start_input_tasks(state: Arc<AppState>) {
                                 );
                                 let mut new_config = (**state_ctrl.config.load()).clone();
                                 new_config.hotkey_ctrl = button_str.clone();
-                                new_config.save();
-                                state_ctrl.config.store(Arc::new(new_config));
+                                state_ctrl.save_config(new_config);
                                 state_ctrl.is_recording_ctrl.store(false, Ordering::SeqCst);
                                 println!("Controller hotkey updated: {}", button_str);
                             } else {
@@ -102,15 +100,13 @@ pub fn start_input_tasks(state: Arc<AppState>) {
                 if state_kb.is_recording_kb.load(Ordering::SeqCst) {
                     let mut new_config = (**state_kb.config.load()).clone();
                     new_config.hotkey_kb = format!("{:?}", key);
-                    new_config.save();
-                    state_kb.config.store(Arc::new(new_config));
+                    state_kb.save_config(new_config);
                     state_kb.is_recording_kb.store(false, Ordering::SeqCst);
                     println!("Keyboard hotkey updated to: {:?}", key);
                 } else if state_kb.is_recording_settings.load(Ordering::SeqCst) {
                     let mut new_config = (**state_kb.config.load()).clone();
                     new_config.hotkey_settings = format!("{:?}", key);
-                    new_config.save();
-                    state_kb.config.store(Arc::new(new_config));
+                    state_kb.save_config(new_config);
                     state_kb
                         .is_recording_settings
                         .store(false, Ordering::SeqCst);
@@ -124,7 +120,7 @@ pub fn start_input_tasks(state: Arc<AppState>) {
                         // Alias Kp0..9 to Num0..9
                         key_str.len() == 3
                             && config.hotkey_kb.len() == 4
-                            && &key_str[2..] == &config.hotkey_kb[3..]
+                            && key_str[2..] == config.hotkey_kb[3..]
                     } else {
                         false
                     };
@@ -156,7 +152,7 @@ pub fn start_input_tasks(state: Arc<AppState>) {
                 } else if key_str.starts_with("Kp") && config.hotkey_kb.starts_with("Num") {
                     key_str.len() == 3
                         && config.hotkey_kb.len() == 4
-                        && &key_str[2..] == &config.hotkey_kb[3..]
+                        && key_str[2..] == config.hotkey_kb[3..]
                 } else {
                     false
                 };

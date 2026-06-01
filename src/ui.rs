@@ -58,7 +58,7 @@ impl eframe::App for MainApp {
 
                 // 2. Always-on Teammate Boost HUD
                 // Settings mode uses the Boost tab preview instead of the floating in-game HUD.
-                if is_launched && config.show_teammate_boost {
+                if is_launched && !show_settings && config.show_teammate_boost {
                     render_teammate_boost(ctx, &self.state);
                 }
                 if show_settings
@@ -112,30 +112,27 @@ impl eframe::App for MainApp {
 
                     ctx.input(|i| {
                         for event in &i.events {
-                            if let egui::Event::Key { key, pressed, .. } = event {
-                                if let Some(name) = egui_to_rdev_key(*key) {
-                                    // Handle Settings Toggle
-                                    if *pressed && name == settings_hotkey {
-                                        let curr =
-                                            self.state.is_settings_visible.load(Ordering::SeqCst);
-                                        self.state
-                                            .is_settings_visible
-                                            .store(!curr, Ordering::SeqCst);
-                                    }
+                            if let egui::Event::Key { key, pressed, .. } = event
+                                && let Some(name) = egui_to_rdev_key(*key)
+                            {
+                                // Handle Settings Toggle
+                                if *pressed && name == settings_hotkey {
+                                    let curr =
+                                        self.state.is_settings_visible.load(Ordering::SeqCst);
+                                    self.state
+                                        .is_settings_visible
+                                        .store(!curr, Ordering::SeqCst);
+                                }
 
-                                    // Handle HUD Hotkey fallback when focused
-                                    if name == hud_hotkey {
-                                        if hotkey_toggle {
-                                            if *pressed {
-                                                let curr =
-                                                    self.state.is_visible.load(Ordering::SeqCst);
-                                                self.state
-                                                    .is_visible
-                                                    .store(!curr, Ordering::SeqCst);
-                                            }
-                                        } else {
-                                            self.state.is_visible.store(*pressed, Ordering::SeqCst);
+                                // Handle HUD Hotkey fallback when focused
+                                if name == hud_hotkey {
+                                    if hotkey_toggle {
+                                        if *pressed {
+                                            let curr = self.state.is_visible.load(Ordering::SeqCst);
+                                            self.state.is_visible.store(!curr, Ordering::SeqCst);
                                         }
+                                    } else {
+                                        self.state.is_visible.store(*pressed, Ordering::SeqCst);
                                     }
                                 }
                             }
@@ -219,8 +216,7 @@ impl eframe::App for MainApp {
                             });
 
                             if changed {
-                                config_edit.save();
-                                self.state.config.store(Arc::new(config_edit));
+                                self.state.save_config(config_edit);
                             }
                         });
                 }
@@ -264,11 +260,7 @@ fn render_update_notice(ui: &mut egui::Ui, state: &Arc<AppState>) {
             .strong()
             .color(egui::Color32::from_rgb(255, 226, 150)),
         );
-        ui.label(
-            egui::RichText::new(&version_check.release_url)
-                .size(10.0)
-                .color(egui::Color32::from_gray(210)),
-        );
+        ui.hyperlink_to("Download release", &version_check.release_url);
     });
     ui.add_space(6.0);
 }
@@ -584,8 +576,7 @@ fn render_keyboard_hotkey_row(
             }
             if let Some(name) = capture_egui_key(ctx) {
                 config_edit.hotkey_kb = name;
-                config_edit.save();
-                state.config.store(Arc::new(config_edit.clone()));
+                state.save_config(config_edit.clone());
                 state.is_recording_kb.store(false, Ordering::SeqCst);
             }
         } else {
@@ -637,8 +628,7 @@ fn render_settings_hotkey_row(
             }
             if let Some(name) = capture_egui_key(ctx) {
                 config_edit.hotkey_settings = name;
-                config_edit.save();
-                state.config.store(Arc::new(config_edit.clone()));
+                state.save_config(config_edit.clone());
                 state.is_recording_settings.store(false, Ordering::SeqCst);
             }
         } else {
@@ -672,10 +662,9 @@ fn capture_egui_key(ctx: &egui::Context) -> Option<String> {
             if let egui::Event::Key {
                 key, pressed: true, ..
             } = event
+                && let Some(name) = egui_to_rdev_key(*key)
             {
-                if let Some(name) = egui_to_rdev_key(*key) {
-                    captured_name = Some(name);
-                }
+                captured_name = Some(name);
             }
         }
     });
@@ -725,6 +714,18 @@ fn render_debug_settings_tab(ui: &mut egui::Ui, state: &Arc<AppState>, is_launch
             format!("Up to date ({})", version_check.latest_tag)
         };
         debug_status_row(ui, "Version Check", &version_status);
+
+        let config_status = state.config_status.load();
+        debug_status_row(ui, "Config Path", &config_status.path);
+        debug_status_row(
+            ui,
+            "Config Status",
+            if config_status.last_error.is_empty() {
+                "OK"
+            } else {
+                config_status.last_error.as_str()
+            },
+        );
 
         ui.separator();
         for player in players.values() {
@@ -786,8 +787,7 @@ fn render_launch_controls(
     ui.separator();
     if ui.button("Reset to Defaults").clicked() {
         let default_config = crate::state::Config::default();
-        default_config.save();
-        state.config.store(Arc::new(default_config));
+        state.save_config(default_config);
     }
     if ui.button("Quit").clicked() {
         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -984,7 +984,7 @@ fn render_teammate_boost(ctx: &egui::Context, state: &Arc<AppState>) {
 
     // Find our team (preferring the stabilized local_team from state)
     // Do not guess if not found, because a bad fallback shows the wrong team.
-    let Some(my_team) = (|| {
+    let my_team = {
         let stored_team = state.local_team.load(Ordering::SeqCst);
         if stored_team != 255 {
             Some(stored_team)
@@ -997,7 +997,8 @@ fn render_teammate_boost(ctx: &egui::Context, state: &Arc<AppState>) {
                 })
                 .map(|p| p.team)
         }
-    })() else {
+    };
+    let Some(my_team) = my_team else {
         return;
     };
 

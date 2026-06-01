@@ -61,7 +61,7 @@ pub async fn start_network_task(state: Arc<AppState>) {
                                             continue;
                                         }
                                         match c {
-                                            '\\' => escaped = true,
+                                            '\\' if in_string => escaped = true,
                                             '"' => in_string = !in_string,
                                             '{' if !in_string => {
                                                 if depth == 0 {

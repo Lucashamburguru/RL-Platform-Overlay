@@ -1,7 +1,9 @@
 /target/
 **/*.rs.bk
-Cargo.lock
 .env
+config.toml
+rl_debug*.txt
+rl_game_output_debug_*.txt
 Docs/
 assets/steam_raw.png
 assets/epic_raw.png
