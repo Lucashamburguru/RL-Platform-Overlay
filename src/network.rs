@@ -114,6 +114,7 @@ fn handle_event(state: &Arc<AppState>, json: &Value) {
         "MatchEnded" | "MatchDestroyed" | "LobbyEntered" => {
             state.players.store(Arc::new(HashMap::new()));
             state.local_player_name.store(Arc::new("".to_string()));
+            state.local_team.store(255, Ordering::SeqCst);
             println!("Match ended, clearing player list.");
         }
         _ => println!("Received event: {}", event),
@@ -139,6 +140,8 @@ fn handle_update_state(state: &Arc<AppState>, data: &Value) {
             }
         }
     }
+    
+    let local_name = state.local_player_name.load();
 
     // Try "Players", "players", and even check if the data IS the player array
     let players_val = real_data
@@ -173,6 +176,11 @@ fn handle_update_state(state: &Arc<AppState>, data: &Value) {
                 string_field(p, &["PrimaryId", "primaryId", "primary_id"]).unwrap_or("");
             let (platform, is_bot) = parse_platform(primary_id);
             let team = number_field(p, &["TeamNum", "teamNum", "Team", "team"]).unwrap_or(0) as u8;
+            
+            if is_local {
+                state.local_team.store(team, Ordering::SeqCst);
+            }
+
             let boost = number_field(p, &["Boost", "boost"]).unwrap_or(0) as u8;
             let score = number_field(p, &["Score", "score"]).unwrap_or(0) as u32;
             let goals = number_field(p, &["Goals", "goals"]).unwrap_or(0) as u32;
