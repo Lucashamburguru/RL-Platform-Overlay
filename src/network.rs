@@ -131,16 +131,27 @@ fn handle_update_state(state: &Arc<AppState>, data: &Value) {
     };
 
     if let Some(_obj) = real_data.as_object() {
-        // Extract local player name
-        if let Some(game) = real_data.get("game") {
+        // Extract local player identity from the game block when available.
+        if let Some(game) = real_data.get("game").or_else(|| real_data.get("Game")) {
             if let Some(client) = string_field(game, &["client", "Client"]) {
                 state.local_player_name.store(Arc::new(client.to_string()));
             } else if let Some(me) = string_field(game, &["me", "Me"]) {
                 state.local_player_name.store(Arc::new(me.to_string()));
+            } else if let Some(target) = game.get("target").or_else(|| game.get("Target")) {
+                if let Some(target_name) = string_field(target, &["Name", "name"]) {
+                    state
+                        .local_player_name
+                        .store(Arc::new(target_name.to_string()));
+                }
+
+                if let Some(target_team) =
+                    number_field(target, &["TeamNum", "teamNum", "Team", "team"])
+                {
+                    state.local_team.store(target_team as u8, Ordering::SeqCst);
+                }
             }
         }
     }
-    
 
     // Try "Players", "players", and even check if the data IS the player array
     let players_val = real_data
@@ -175,7 +186,7 @@ fn handle_update_state(state: &Arc<AppState>, data: &Value) {
                 string_field(p, &["PrimaryId", "primaryId", "primary_id"]).unwrap_or("");
             let (platform, is_bot) = parse_platform(primary_id);
             let team = number_field(p, &["TeamNum", "teamNum", "Team", "team"]).unwrap_or(0) as u8;
-            
+
             if is_local {
                 state.local_team.store(team, Ordering::SeqCst);
             }
@@ -224,6 +235,9 @@ fn parse_platform(id: &str) -> (String, bool) {
     if id.is_empty() {
         return ("Unknown".to_string(), false);
     }
+    if id == "Unknown|0|0" {
+        return ("BOT".to_string(), true);
+    }
     let parts: Vec<&str> = id.split('|').collect();
     let platform = parts[0];
     match platform {
@@ -260,6 +274,7 @@ mod tests {
             parse_platform("Switch|678|0"),
             ("Switch".to_string(), false)
         );
+        assert_eq!(parse_platform("Unknown|0|0"), ("BOT".to_string(), true));
         assert_eq!(parse_platform("Bot|0|0"), ("BOT".to_string(), true));
         assert_eq!(
             parse_platform("Unknown|999|0"),
@@ -303,6 +318,49 @@ mod tests {
         assert_eq!(players["Me"].team, 1);
         assert_eq!(players["Mate"].boost, 88);
         assert!(!players["Opponent"].is_local);
+    }
+
+    #[test]
+    fn test_update_state_uses_game_target_for_local_player() {
+        let state = AppState::new();
+        let data = json!({
+            "Players": [
+                {
+                    "Name": "cyberPeng",
+                    "PrimaryId": "Steam|76561197981997358|0",
+                    "TeamNum": 0,
+                    "Boost": 33
+                },
+                {
+                    "Name": "C-Block",
+                    "PrimaryId": "Unknown|0|0",
+                    "TeamNum": 0,
+                    "Boost": 88
+                },
+                {
+                    "Name": "Rainmaker",
+                    "PrimaryId": "Unknown|0|0",
+                    "TeamNum": 1
+                }
+            ],
+            "Game": {
+                "bHasTarget": true,
+                "Target": {
+                    "Name": "cyberPeng",
+                    "Shortcut": 1,
+                    "TeamNum": 0
+                }
+            }
+        });
+
+        handle_update_state(&state, &data);
+
+        let players = state.players.load();
+        assert_eq!(&**state.local_player_name.load(), "cyberPeng");
+        assert_eq!(state.local_team.load(Ordering::SeqCst), 0);
+        assert!(players["cyberPeng"].is_local);
+        assert_eq!(players["C-Block"].team, 0);
+        assert_eq!(players["C-Block"].boost, 88);
     }
 
     #[test]

@@ -1,16 +1,28 @@
-use crate::state::{AnchorPos, AppState};
+use crate::state::{AnchorPos, AppState, TeammateBoostDisplay};
 use eframe::egui;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 pub struct MainApp {
     state: Arc<AppState>,
+    settings_tab: SettingsTab,
 }
 
 impl MainApp {
     pub fn new(state: Arc<AppState>) -> Self {
-        Self { state }
+        Self {
+            state,
+            settings_tab: SettingsTab::Overlay,
+        }
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SettingsTab {
+    Overlay,
+    Boost,
+    Hotkeys,
+    Debug,
 }
 
 impl eframe::App for MainApp {
@@ -45,9 +57,15 @@ impl eframe::App for MainApp {
                     || self.state.is_recording_settings.load(Ordering::SeqCst);
 
                 // 2. Always-on Teammate Boost HUD
-                // Show if launched OR if settings are visible (for preview)
-                if (is_launched || show_settings) && config.show_teammate_boost {
+                // Settings mode uses the Boost tab preview instead of the floating in-game HUD.
+                if is_launched && config.show_teammate_boost {
                     render_teammate_boost(ctx, &self.state);
+                }
+                if show_settings
+                    && self.settings_tab == SettingsTab::Boost
+                    && config.show_teammate_boost
+                {
+                    render_teammate_boost_position_preview(ctx, &self.state);
                 }
 
                 // 3. Settings UI (Floating Window)
@@ -169,473 +187,34 @@ impl eframe::App for MainApp {
                             let mut config_edit = (**self.state.config.load()).clone();
                             let mut changed = false;
 
-                            egui::ScrollArea::vertical().show(ui, |ui| {
-                                ui.group(|ui| {
-                                    ui.label("Transparency");
-                                    if ui
-                                        .add(egui::Slider::new(
-                                            &mut config_edit.transparency,
-                                            0..=255,
-                                        ))
-                                        .changed()
-                                    {
-                                        changed = true;
-                                    }
+                            render_update_notice(ui, &self.state);
+                            render_settings_tabs(ui, &mut self.settings_tab);
 
-                                    ui.label("HUD Scale");
-                                    if ui
-                                        .add(egui::Slider::new(
-                                            &mut config_edit.ui_scale,
-                                            0.5..=2.5,
-                                        ))
-                                        .changed()
-                                    {
-                                        changed = true;
-                                    }
-
-                                    ui.horizontal(|ui| {
-                                        ui.label("Resolution:");
-                                        let current_res = format!(
-                                            "{}x{}",
-                                            config_edit.window_size[0], config_edit.window_size[1]
-                                        );
-                                        egui::ComboBox::new("res_select", "")
-                                            .selected_text(current_res)
-                                            .show_ui(ui, |ui| {
-                                                ui.selectable_value(
-                                                    &mut config_edit.window_size,
-                                                    [1920.0, 1080.0],
-                                                    "1080p",
-                                                );
-                                                ui.selectable_value(
-                                                    &mut config_edit.window_size,
-                                                    [2560.0, 1440.0],
-                                                    "1440p",
-                                                );
-                                                ui.selectable_value(
-                                                    &mut config_edit.window_size,
-                                                    [3840.0, 2160.0],
-                                                    "4K",
-                                                );
-                                            });
-                                        if config_edit.window_size != config.window_size {
-                                            changed = true;
-                                        }
-                                    });
-
-                                    ui.horizontal(|ui| {
-                                        ui.label("Monitor:");
-                                        egui::ComboBox::new("monitor_select", "")
-                                            .selected_text(format!(
-                                                "Monitor {}",
-                                                config_edit.monitor_index
-                                            ))
-                                            .show_ui(ui, |ui| {
-                                                // Support up to 4 monitors for now
-                                                for i in 0..4 {
-                                                    ui.selectable_value(
-                                                        &mut config_edit.monitor_index,
-                                                        i,
-                                                        format!("Monitor {}", i),
-                                                    );
-                                                }
-                                            });
-                                        if config_edit.monitor_index != config.monitor_index {
-                                            changed = true;
-                                        }
-                                    });
-
-                                    if ui
-                                        .checkbox(&mut config_edit.show_bots, "Show Bots")
-                                        .changed()
-                                    {
-                                        changed = true;
-                                    }
-
-                                    ui.horizontal(|ui| {
-                                        ui.label("Anchor:");
-                                        egui::ComboBox::new("anchor_pos", "")
-                                            .selected_text(format!("{:?}", config_edit.anchor))
-                                            .show_ui(ui, |ui| {
-                                                ui.selectable_value(
-                                                    &mut config_edit.anchor,
-                                                    AnchorPos::TopLeft,
-                                                    "Top Left",
-                                                );
-                                                ui.selectable_value(
-                                                    &mut config_edit.anchor,
-                                                    AnchorPos::TopRight,
-                                                    "Top Right",
-                                                );
-                                                ui.selectable_value(
-                                                    &mut config_edit.anchor,
-                                                    AnchorPos::BottomLeft,
-                                                    "Bottom Left",
-                                                );
-                                                ui.selectable_value(
-                                                    &mut config_edit.anchor,
-                                                    AnchorPos::BottomRight,
-                                                    "Bottom Right",
-                                                );
-                                                ui.selectable_value(
-                                                    &mut config_edit.anchor,
-                                                    AnchorPos::CenterRight,
-                                                    "Center Right",
-                                                );
-                                            });
-                                        if config_edit.anchor != config.anchor {
-                                            changed = true;
-                                        }
-                                    });
-
-                                    ui.horizontal(|ui| {
-                                        ui.label("Resolution:");
-                                        let current_res = config_edit.window_size;
-                                        let res_text =
-                                            format!("{}x{}", current_res[0], current_res[1]);
-                                        egui::ComboBox::new("res_presets", "")
-                                            .selected_text(res_text)
-                                            .show_ui(ui, |ui| {
-                                                ui.selectable_value(
-                                                    &mut config_edit.window_size,
-                                                    [1920.0, 1080.0],
-                                                    "1080p",
-                                                );
-                                                ui.selectable_value(
-                                                    &mut config_edit.window_size,
-                                                    [2560.0, 1440.0],
-                                                    "1440p",
-                                                );
-                                                ui.selectable_value(
-                                                    &mut config_edit.window_size,
-                                                    [3840.0, 2160.0],
-                                                    "4K",
-                                                );
-                                            });
-                                        if config_edit.window_size != config.window_size {
-                                            changed = true;
-                                        }
-                                    });
-                                });
-
-                                ui.add_space(10.0);
-
-                                ui.group(|ui| {
-                                    ui.heading("Hotkeys");
-                                    ui.horizontal(|ui| {
-                                        ui.label("Keyboard:");
-                                        if self.state.is_recording_kb.load(Ordering::SeqCst) {
-                                            ui.colored_label(egui::Color32::YELLOW, "Listening...");
-                                            if ui.button("Cancel").clicked() {
-                                                self.state
-                                                    .is_recording_kb
-                                                    .store(false, Ordering::SeqCst);
-                                            }
-
-                                            // Fallback: Capture keys directly from egui if the window has focus
-                                            let mut captured_name = None;
-                                            ctx.input(|i| {
-                                                // Check modifiers first
-                                                if i.modifiers.ctrl {
-                                                    captured_name = Some("ControlLeft".to_string());
-                                                } else if i.modifiers.shift {
-                                                    captured_name = Some("ShiftLeft".to_string());
-                                                } else if i.modifiers.alt {
-                                                    captured_name = Some("Alt".to_string());
-                                                } else if i.modifiers.command {
-                                                    captured_name = Some("MetaLeft".to_string());
-                                                }
-
-                                                for event in &i.events {
-                                                    if let egui::Event::Key {
-                                                        key,
-                                                        pressed: true,
-                                                        ..
-                                                    } = event
-                                                    {
-                                                        if let Some(name) = egui_to_rdev_key(*key) {
-                                                            captured_name = Some(name);
-                                                        }
-                                                    }
-                                                }
-                                            });
-
-                                            if let Some(name) = captured_name {
-                                                let mut new_config =
-                                                    (**self.state.config.load()).clone();
-                                                new_config.hotkey_kb = name.clone();
-                                                new_config.save();
-                                                self.state.config.store(Arc::new(new_config));
-                                                self.state
-                                                    .is_recording_kb
-                                                    .store(false, Ordering::SeqCst);
-                                                println!(
-                                                    "Keyboard hotkey updated (via UI): {}",
-                                                    name
-                                                );
-                                            }
-                                        } else {
-                                            ui.label(format!(
-                                                "[ {} ]",
-                                                format_key_name(&config_edit.hotkey_kb)
-                                            ));
-                                            if ui.button("Record").clicked() {
-                                                self.state
-                                                    .is_recording_kb
-                                                    .store(true, Ordering::SeqCst);
-                                                self.state
-                                                    .is_recording_ctrl
-                                                    .store(false, Ordering::SeqCst);
-                                            }
-                                        }
-                                    });
-
-                                    ui.horizontal(|ui| {
-                                        ui.label("Controller:");
-                                        if self.state.is_recording_ctrl.load(Ordering::SeqCst) {
-                                            ui.colored_label(egui::Color32::YELLOW, "Listening...");
-                                            if ui.button("Cancel").clicked() {
-                                                self.state
-                                                    .is_recording_ctrl
-                                                    .store(false, Ordering::SeqCst);
-                                            }
-                                        } else {
-                                            ui.label(format!("[ {} ]", config_edit.hotkey_ctrl));
-                                            if ui.button("Record").clicked() {
-                                                self.state
-                                                    .is_recording_ctrl
-                                                    .store(true, Ordering::SeqCst);
-                                                self.state
-                                                    .is_recording_kb
-                                                    .store(false, Ordering::SeqCst);
-                                            }
-                                        }
-                                    });
-                                    ui.horizontal(|ui| {
-                                        ui.label("Settings Toggle:");
-                                        if self.state.is_recording_settings.load(Ordering::SeqCst) {
-                                            ui.colored_label(egui::Color32::YELLOW, "Listening...");
-                                            if ui.button("Cancel").clicked() {
-                                                self.state
-                                                    .is_recording_settings
-                                                    .store(false, Ordering::SeqCst);
-                                            }
-
-                                            let mut captured_name = None;
-                                            ctx.input(|i| {
-                                                // Check modifiers first
-                                                if i.modifiers.ctrl {
-                                                    captured_name = Some("ControlLeft".to_string());
-                                                } else if i.modifiers.shift {
-                                                    captured_name = Some("ShiftLeft".to_string());
-                                                } else if i.modifiers.alt {
-                                                    captured_name = Some("Alt".to_string());
-                                                } else if i.modifiers.command {
-                                                    captured_name = Some("MetaLeft".to_string());
-                                                }
-
-                                                for event in &i.events {
-                                                    if let egui::Event::Key {
-                                                        key,
-                                                        pressed: true,
-                                                        ..
-                                                    } = event
-                                                    {
-                                                        if let Some(name) = egui_to_rdev_key(*key) {
-                                                            captured_name = Some(name);
-                                                        }
-                                                    }
-                                                }
-                                            });
-
-                                            if let Some(name) = captured_name {
-                                                let mut new_config =
-                                                    (**self.state.config.load()).clone();
-                                                new_config.hotkey_settings = name.clone();
-                                                new_config.save();
-                                                self.state.config.store(Arc::new(new_config));
-                                                self.state
-                                                    .is_recording_settings
-                                                    .store(false, Ordering::SeqCst);
-                                                println!("Settings hotkey updated: {}", name);
-                                            }
-                                        } else {
-                                            ui.label(format!(
-                                                "[ {} ]",
-                                                format_key_name(&config_edit.hotkey_settings)
-                                            ));
-                                            if ui.button("Record").clicked() {
-                                                self.state
-                                                    .is_recording_settings
-                                                    .store(true, Ordering::SeqCst);
-                                                self.state
-                                                    .is_recording_kb
-                                                    .store(false, Ordering::SeqCst);
-                                                self.state
-                                                    .is_recording_ctrl
-                                                    .store(false, Ordering::SeqCst);
-                                            }
-                                        }
-                                    });
-
-                                    if ui
-                                        .checkbox(
-                                            &mut config_edit.hotkey_toggle,
-                                            "Toggle Hotkey (Instead of Hold)",
-                                        )
-                                        .changed()
-                                    {
-                                        changed = true;
-                                    }
-
-                                    if ui
-                                        .checkbox(
-                                            &mut config_edit.show_stats,
-                                            "Show Player Stats (Boost, Score)",
-                                        )
-                                        .changed()
-                                    {
-                                        changed = true;
-                                    }
-
-                                    if ui
-                                        .checkbox(
-                                            &mut config_edit.show_teammate_boost,
-                                            "Always-on Teammate Boost HUD",
-                                        )
-                                        .changed()
-                                    {
-                                        changed = true;
-                                    }
-
-                                    if config_edit.show_teammate_boost {
-                                        ui.add_space(5.0);
-                                        let players = self.state.players.load();
-                                        ui.label(
-                                            egui::RichText::new(format!(
-                                                "Detected Player: {}",
-                                                self.state.local_player_name.load()
-                                            ))
-                                            .size(10.0)
-                                            .color(egui::Color32::from_gray(140)),
-                                        );
-                                        ui.label(
-                                            egui::RichText::new(format!(
-                                                "Players in Session: {}",
-                                                players.len()
-                                            ))
-                                            .size(10.0)
-                                            .color(egui::Color32::from_gray(140)),
-                                        );
-
-                                        ui.add_space(5.0);
-
-                                        ui.label("Teammate HUD Scale");
-                                        if ui
-                                            .add(egui::Slider::new(
-                                                &mut config_edit.teammate_hud_scale,
-                                                0.5..=2.5,
-                                            ))
-                                            .changed()
-                                        {
-                                            changed = true;
-                                        }
-
-                                        ui.add_space(5.0);
-                                        ui.label("Teammate HUD Horizontal Offset");
-                                        if ui
-                                            .add(egui::Slider::new(
-                                                &mut config_edit.teammate_boost_horizontal_offset,
-                                                20.0..=600.0,
-                                            ))
-                                            .changed()
-                                        {
-                                            changed = true;
-                                        }
-
-                                        ui.add_space(5.0);
-                                        ui.label("Teammate HUD Vertical Offset");
-                                        if ui
-                                            .add(egui::Slider::new(
-                                                &mut config_edit.teammate_boost_offset,
-                                                50.0..=600.0,
-                                            ))
-                                            .changed()
-                                        {
-                                            changed = true;
-                                        }
-                                    }
-                                });
-
-                                ui.add_space(10.0);
-
-                                let btn_text = if is_launched {
-                                    "Stop Overlay (HUD Active)"
-                                } else {
-                                    "Launch Overlay"
-                                };
-                                if ui.button(egui::RichText::new(btn_text).heading()).clicked() {
-                                    let new_val = !is_launched;
-                                    self.state.is_launched.store(new_val, Ordering::SeqCst);
-                                    if new_val {
-                                        // Auto-hide settings when launching
-                                        self.state
-                                            .is_settings_visible
-                                            .store(false, Ordering::SeqCst);
-
-                                        // Fullscreen-like transparent window
-                                        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(
-                                            config_edit.window_size.into(),
-                                        ));
-                                        ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(
-                                            true,
-                                        ));
-                                        ctx.send_viewport_cmd(
-                                            egui::ViewportCommand::MousePassthrough(true),
-                                        );
-                                    } else {
-                                        ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(
-                                            false,
-                                        ));
-                                        ctx.send_viewport_cmd(
-                                            egui::ViewportCommand::MousePassthrough(false),
-                                        );
-                                        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(
-                                            [400.0, 600.0].into(),
-                                        ));
-                                    }
-                                }
-
-                                ui.add_space(10.0);
-                                let is_visible = self.state.is_visible.load(Ordering::SeqCst);
-                                ui.horizontal(|ui| {
-                                    ui.label("HUD Visibility:");
-                                    if is_visible || is_launched {
-                                        ui.colored_label(egui::Color32::GREEN, "ACTIVE");
-                                    } else {
-                                        ui.colored_label(
-                                            egui::Color32::RED,
-                                            "HIDDEN (Hold Hotkey)",
-                                        );
-                                    }
-                                });
-
-                                if ui.button("Quit").clicked() {
-                                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                                }
-
-                                ui.add_space(5.0);
-                                ui.label(
-                                    egui::RichText::new("v0.1.4")
-                                        .size(9.0)
-                                        .color(egui::Color32::from_gray(100)),
-                                );
-
-                                ui.separator();
-                                if ui.button("Reset to Defaults").clicked() {
-                                    let default_config = crate::state::Config::default();
-                                    default_config.save();
-                                    self.state.config.store(Arc::new(default_config));
+                            egui::ScrollArea::vertical().show(ui, |ui| match self.settings_tab {
+                                SettingsTab::Overlay => render_overlay_settings_tab(
+                                    ui,
+                                    ctx,
+                                    &self.state,
+                                    &config,
+                                    &mut config_edit,
+                                    &mut changed,
+                                    is_launched,
+                                ),
+                                SettingsTab::Boost => render_boost_settings_tab(
+                                    ui,
+                                    &self.state,
+                                    &mut config_edit,
+                                    &mut changed,
+                                ),
+                                SettingsTab::Hotkeys => render_hotkey_settings_tab(
+                                    ui,
+                                    ctx,
+                                    &self.state,
+                                    &mut config_edit,
+                                    &mut changed,
+                                ),
+                                SettingsTab::Debug => {
+                                    render_debug_settings_tab(ui, &self.state, is_launched)
                                 }
                             });
 
@@ -649,6 +228,575 @@ impl eframe::App for MainApp {
 
         ctx.request_repaint();
     }
+}
+
+fn render_settings_tabs(ui: &mut egui::Ui, selected: &mut SettingsTab) {
+    ui.horizontal_wrapped(|ui| {
+        ui.selectable_value(selected, SettingsTab::Overlay, "Overlay");
+        ui.selectable_value(selected, SettingsTab::Boost, "Boost");
+        ui.selectable_value(selected, SettingsTab::Hotkeys, "Hotkeys");
+        ui.selectable_value(selected, SettingsTab::Debug, "Debug");
+    });
+    ui.separator();
+}
+
+fn render_update_notice(ui: &mut egui::Ui, state: &Arc<AppState>) {
+    let version_check = state.version_check.load();
+    if !version_check.update_available {
+        return;
+    }
+
+    let frame = egui::Frame::default()
+        .fill(egui::Color32::from_rgb(55, 46, 18))
+        .stroke(egui::Stroke::new(
+            1.0,
+            egui::Color32::from_rgb(255, 188, 72),
+        ))
+        .corner_radius(5.0)
+        .inner_margin(8.0);
+
+    frame.show(ui, |ui| {
+        ui.label(
+            egui::RichText::new(format!(
+                "Update available: {}. Download the newest release from GitHub.",
+                version_check.latest_tag
+            ))
+            .strong()
+            .color(egui::Color32::from_rgb(255, 226, 150)),
+        );
+        ui.label(
+            egui::RichText::new(&version_check.release_url)
+                .size(10.0)
+                .color(egui::Color32::from_gray(210)),
+        );
+    });
+    ui.add_space(6.0);
+}
+
+fn render_overlay_settings_tab(
+    ui: &mut egui::Ui,
+    ctx: &egui::Context,
+    state: &Arc<AppState>,
+    config: &crate::state::Config,
+    config_edit: &mut crate::state::Config,
+    changed: &mut bool,
+    is_launched: bool,
+) {
+    ui.group(|ui| {
+        ui.label("Transparency");
+        if ui
+            .add(egui::Slider::new(&mut config_edit.transparency, 0..=255))
+            .changed()
+        {
+            *changed = true;
+        }
+
+        ui.label("HUD Scale");
+        if ui
+            .add(egui::Slider::new(&mut config_edit.ui_scale, 0.5..=2.5))
+            .changed()
+        {
+            *changed = true;
+        }
+
+        ui.horizontal(|ui| {
+            ui.label("Resolution:");
+            let res_text = format!(
+                "{}x{}",
+                config_edit.window_size[0], config_edit.window_size[1]
+            );
+            egui::ComboBox::new("res_presets", "")
+                .selected_text(res_text)
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut config_edit.window_size, [1920.0, 1080.0], "1080p");
+                    ui.selectable_value(&mut config_edit.window_size, [2560.0, 1440.0], "1440p");
+                    ui.selectable_value(&mut config_edit.window_size, [3840.0, 2160.0], "4K");
+                });
+            if config_edit.window_size != config.window_size {
+                *changed = true;
+            }
+        });
+
+        ui.horizontal(|ui| {
+            ui.label("Monitor:");
+            egui::ComboBox::new("monitor_select", "")
+                .selected_text(format!("Monitor {}", config_edit.monitor_index))
+                .show_ui(ui, |ui| {
+                    for i in 0..4 {
+                        ui.selectable_value(
+                            &mut config_edit.monitor_index,
+                            i,
+                            format!("Monitor {}", i),
+                        );
+                    }
+                });
+            if config_edit.monitor_index != config.monitor_index {
+                *changed = true;
+            }
+        });
+
+        if ui
+            .checkbox(&mut config_edit.show_bots, "Show Bots")
+            .changed()
+        {
+            *changed = true;
+        }
+
+        if ui
+            .checkbox(&mut config_edit.show_stats, "Show Player Stats")
+            .changed()
+        {
+            *changed = true;
+        }
+
+        ui.horizontal(|ui| {
+            ui.label("Anchor:");
+            egui::ComboBox::new("anchor_pos", "")
+                .selected_text(format!("{:?}", config_edit.anchor))
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut config_edit.anchor, AnchorPos::TopLeft, "Top Left");
+                    ui.selectable_value(&mut config_edit.anchor, AnchorPos::TopRight, "Top Right");
+                    ui.selectable_value(
+                        &mut config_edit.anchor,
+                        AnchorPos::BottomLeft,
+                        "Bottom Left",
+                    );
+                    ui.selectable_value(
+                        &mut config_edit.anchor,
+                        AnchorPos::BottomRight,
+                        "Bottom Right",
+                    );
+                    ui.selectable_value(
+                        &mut config_edit.anchor,
+                        AnchorPos::CenterRight,
+                        "Center Right",
+                    );
+                });
+            if config_edit.anchor != config.anchor {
+                *changed = true;
+            }
+        });
+    });
+
+    ui.add_space(10.0);
+    render_launch_controls(ui, ctx, state, config_edit, is_launched);
+}
+
+fn render_boost_settings_tab(
+    ui: &mut egui::Ui,
+    state: &Arc<AppState>,
+    config_edit: &mut crate::state::Config,
+    changed: &mut bool,
+) {
+    ui.group(|ui| {
+        if ui
+            .checkbox(
+                &mut config_edit.show_teammate_boost,
+                "Always-on Teammate Boost HUD",
+            )
+            .changed()
+        {
+            *changed = true;
+        }
+
+        ui.add_space(5.0);
+        ui.horizontal(|ui| {
+            ui.label("Display:");
+            egui::ComboBox::new("teammate_boost_display", "")
+                .selected_text(teammate_boost_display_label(
+                    config_edit.teammate_boost_display,
+                ))
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(
+                        &mut config_edit.teammate_boost_display,
+                        TeammateBoostDisplay::Bars,
+                        "Bars",
+                    );
+                    ui.selectable_value(
+                        &mut config_edit.teammate_boost_display,
+                        TeammateBoostDisplay::Circles,
+                        "Circles",
+                    );
+                    ui.selectable_value(
+                        &mut config_edit.teammate_boost_display,
+                        TeammateBoostDisplay::Compact,
+                        "Compact",
+                    );
+                    ui.selectable_value(
+                        &mut config_edit.teammate_boost_display,
+                        TeammateBoostDisplay::Numbers,
+                        "Numbers",
+                    );
+                });
+            if config_edit.teammate_boost_display != state.config.load().teammate_boost_display {
+                *changed = true;
+            }
+        });
+
+        ui.add_space(5.0);
+        ui.label("Teammate HUD Scale");
+        if ui
+            .add(egui::Slider::new(
+                &mut config_edit.teammate_hud_scale,
+                0.5..=2.5,
+            ))
+            .changed()
+        {
+            *changed = true;
+        }
+
+        ui.add_space(5.0);
+        ui.label("Horizontal Offset");
+        let max_horizontal_offset =
+            (config_edit.window_size[0] / config_edit.teammate_hud_scale.max(0.1)).max(600.0);
+        if ui
+            .add(egui::Slider::new(
+                &mut config_edit.teammate_boost_horizontal_offset,
+                0.0..=max_horizontal_offset,
+            ))
+            .changed()
+        {
+            *changed = true;
+        }
+
+        ui.add_space(5.0);
+        ui.label("Vertical Offset");
+        if ui
+            .add(egui::Slider::new(
+                &mut config_edit.teammate_boost_offset,
+                50.0..=600.0,
+            ))
+            .changed()
+        {
+            *changed = true;
+        }
+    });
+
+    ui.add_space(10.0);
+    ui.group(|ui| {
+        ui.label(egui::RichText::new("Live Preview").strong());
+        ui.add_space(4.0);
+        let preview = preview_teammates(state);
+        draw_teammate_boost_panel(
+            ui,
+            &preview,
+            0,
+            config_edit.teammate_hud_scale.min(1.4),
+            config_edit.teammate_boost_display,
+        );
+        ui.add_space(6.0);
+        ui.label(
+            egui::RichText::new(
+                "Placement preview is only accurate while the overlay is launched.",
+            )
+            .size(10.0)
+            .color(egui::Color32::from_gray(150)),
+        );
+    });
+}
+
+fn teammate_boost_display_label(display: TeammateBoostDisplay) -> &'static str {
+    match display {
+        TeammateBoostDisplay::Bars => "Bars",
+        TeammateBoostDisplay::Circles => "Circles",
+        TeammateBoostDisplay::Compact => "Compact",
+        TeammateBoostDisplay::Numbers => "Numbers",
+    }
+}
+
+fn preview_teammates(state: &Arc<AppState>) -> Vec<crate::state::PlayerInfo> {
+    let players = state.players.load();
+    let local_name = state.local_player_name.load().trim().to_lowercase();
+    let local_team = state.local_team.load(Ordering::SeqCst);
+    let mut teammates: Vec<_> = players
+        .values()
+        .filter(|p| {
+            local_team != 255
+                && p.team == local_team
+                && !p.is_local
+                && (local_name.is_empty() || p.name.trim().to_lowercase() != local_name)
+        })
+        .cloned()
+        .collect();
+
+    if teammates.is_empty() {
+        teammates = vec![
+            crate::state::PlayerInfo {
+                name: "C-Block".to_string(),
+                team: 0,
+                boost: 18,
+                is_bot: true,
+                platform: "BOT".to_string(),
+                ..Default::default()
+            },
+            crate::state::PlayerInfo {
+                name: "Caveman".to_string(),
+                team: 0,
+                boost: 72,
+                is_bot: true,
+                platform: "BOT".to_string(),
+                ..Default::default()
+            },
+        ];
+    }
+
+    teammates.sort_by(|a, b| a.boost.cmp(&b.boost).then_with(|| a.name.cmp(&b.name)));
+    teammates
+}
+
+fn render_hotkey_settings_tab(
+    ui: &mut egui::Ui,
+    ctx: &egui::Context,
+    state: &Arc<AppState>,
+    config_edit: &mut crate::state::Config,
+    changed: &mut bool,
+) {
+    ui.group(|ui| {
+        ui.heading("Hotkeys");
+        render_keyboard_hotkey_row(ui, ctx, state, config_edit);
+        render_controller_hotkey_row(ui, state, config_edit);
+        render_settings_hotkey_row(ui, ctx, state, config_edit);
+
+        if ui
+            .checkbox(
+                &mut config_edit.hotkey_toggle,
+                "Toggle Hotkey (Instead of Hold)",
+            )
+            .changed()
+        {
+            *changed = true;
+        }
+    });
+}
+
+fn render_keyboard_hotkey_row(
+    ui: &mut egui::Ui,
+    ctx: &egui::Context,
+    state: &Arc<AppState>,
+    config_edit: &mut crate::state::Config,
+) {
+    ui.horizontal(|ui| {
+        ui.label("Keyboard:");
+        if state.is_recording_kb.load(Ordering::SeqCst) {
+            ui.colored_label(egui::Color32::YELLOW, "Listening...");
+            if ui.button("Cancel").clicked() {
+                state.is_recording_kb.store(false, Ordering::SeqCst);
+            }
+            if let Some(name) = capture_egui_key(ctx) {
+                config_edit.hotkey_kb = name;
+                config_edit.save();
+                state.config.store(Arc::new(config_edit.clone()));
+                state.is_recording_kb.store(false, Ordering::SeqCst);
+            }
+        } else {
+            ui.label(format!("[ {} ]", format_key_name(&config_edit.hotkey_kb)));
+            if ui.button("Record").clicked() {
+                state.is_recording_kb.store(true, Ordering::SeqCst);
+                state.is_recording_ctrl.store(false, Ordering::SeqCst);
+                state.is_recording_settings.store(false, Ordering::SeqCst);
+            }
+        }
+    });
+}
+
+fn render_controller_hotkey_row(
+    ui: &mut egui::Ui,
+    state: &Arc<AppState>,
+    config_edit: &crate::state::Config,
+) {
+    ui.horizontal(|ui| {
+        ui.label("Controller:");
+        if state.is_recording_ctrl.load(Ordering::SeqCst) {
+            ui.colored_label(egui::Color32::YELLOW, "Listening...");
+            if ui.button("Cancel").clicked() {
+                state.is_recording_ctrl.store(false, Ordering::SeqCst);
+            }
+        } else {
+            ui.label(format!("[ {} ]", config_edit.hotkey_ctrl));
+            if ui.button("Record").clicked() {
+                state.is_recording_ctrl.store(true, Ordering::SeqCst);
+                state.is_recording_kb.store(false, Ordering::SeqCst);
+                state.is_recording_settings.store(false, Ordering::SeqCst);
+            }
+        }
+    });
+}
+
+fn render_settings_hotkey_row(
+    ui: &mut egui::Ui,
+    ctx: &egui::Context,
+    state: &Arc<AppState>,
+    config_edit: &mut crate::state::Config,
+) {
+    ui.horizontal(|ui| {
+        ui.label("Settings Toggle:");
+        if state.is_recording_settings.load(Ordering::SeqCst) {
+            ui.colored_label(egui::Color32::YELLOW, "Listening...");
+            if ui.button("Cancel").clicked() {
+                state.is_recording_settings.store(false, Ordering::SeqCst);
+            }
+            if let Some(name) = capture_egui_key(ctx) {
+                config_edit.hotkey_settings = name;
+                config_edit.save();
+                state.config.store(Arc::new(config_edit.clone()));
+                state.is_recording_settings.store(false, Ordering::SeqCst);
+            }
+        } else {
+            ui.label(format!(
+                "[ {} ]",
+                format_key_name(&config_edit.hotkey_settings)
+            ));
+            if ui.button("Record").clicked() {
+                state.is_recording_settings.store(true, Ordering::SeqCst);
+                state.is_recording_kb.store(false, Ordering::SeqCst);
+                state.is_recording_ctrl.store(false, Ordering::SeqCst);
+            }
+        }
+    });
+}
+
+fn capture_egui_key(ctx: &egui::Context) -> Option<String> {
+    let mut captured_name = None;
+    ctx.input(|i| {
+        if i.modifiers.ctrl {
+            captured_name = Some("ControlLeft".to_string());
+        } else if i.modifiers.shift {
+            captured_name = Some("ShiftLeft".to_string());
+        } else if i.modifiers.alt {
+            captured_name = Some("Alt".to_string());
+        } else if i.modifiers.command {
+            captured_name = Some("MetaLeft".to_string());
+        }
+
+        for event in &i.events {
+            if let egui::Event::Key {
+                key, pressed: true, ..
+            } = event
+            {
+                if let Some(name) = egui_to_rdev_key(*key) {
+                    captured_name = Some(name);
+                }
+            }
+        }
+    });
+    captured_name
+}
+
+fn render_debug_settings_tab(ui: &mut egui::Ui, state: &Arc<AppState>, is_launched: bool) {
+    ui.group(|ui| {
+        ui.heading("Parsed State");
+        debug_status_row(
+            ui,
+            "Overlay",
+            if is_launched { "Launched" } else { "Settings" },
+        );
+        debug_status_row(
+            ui,
+            "Connection",
+            if state.is_connected.load(Ordering::SeqCst) {
+                "Connected"
+            } else {
+                "Disconnected"
+            },
+        );
+        let local_name = state.local_player_name.load();
+        debug_status_row(ui, "Local Player", local_name.as_str());
+        let local_team = state.local_team.load(Ordering::SeqCst);
+        let team_text = if local_team == 255 {
+            "Unknown".to_string()
+        } else {
+            local_team.to_string()
+        };
+        debug_status_row(ui, "Local Team", &team_text);
+
+        let players = state.players.load();
+        debug_status_row(ui, "Players", &players.len().to_string());
+
+        ui.separator();
+        let version_check = state.version_check.load();
+        debug_status_row(ui, "Current Version", env!("CARGO_PKG_VERSION"));
+        let version_status = if !version_check.checked {
+            "Checking...".to_string()
+        } else if version_check.update_available {
+            format!("Update available ({})", version_check.latest_tag)
+        } else if !version_check.error.is_empty() {
+            version_check.error.clone()
+        } else {
+            format!("Up to date ({})", version_check.latest_tag)
+        };
+        debug_status_row(ui, "Version Check", &version_status);
+
+        ui.separator();
+        for player in players.values() {
+            ui.label(format!(
+                "{} | team {} | {} | boost {}",
+                player.name, player.team, player.platform, player.boost
+            ));
+        }
+    });
+}
+
+fn debug_status_row(ui: &mut egui::Ui, label: &str, value: &str) {
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new(label).color(egui::Color32::from_gray(150)));
+        ui.label(value);
+    });
+}
+
+fn render_launch_controls(
+    ui: &mut egui::Ui,
+    ctx: &egui::Context,
+    state: &Arc<AppState>,
+    config_edit: &crate::state::Config,
+    is_launched: bool,
+) {
+    let btn_text = if is_launched {
+        "Stop Overlay (HUD Active)"
+    } else {
+        "Launch Overlay"
+    };
+    if ui.button(egui::RichText::new(btn_text).heading()).clicked() {
+        let new_val = !is_launched;
+        state.is_launched.store(new_val, Ordering::SeqCst);
+        if new_val {
+            state.is_settings_visible.store(false, Ordering::SeqCst);
+            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(
+                config_edit.window_size.into(),
+            ));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
+            ctx.send_viewport_cmd(egui::ViewportCommand::MousePassthrough(true));
+        } else {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::MousePassthrough(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize([400.0, 600.0].into()));
+        }
+    }
+
+    ui.add_space(10.0);
+    let is_visible = state.is_visible.load(Ordering::SeqCst);
+    ui.horizontal(|ui| {
+        ui.label("HUD Visibility:");
+        if is_visible || is_launched {
+            ui.colored_label(egui::Color32::GREEN, "ACTIVE");
+        } else {
+            ui.colored_label(egui::Color32::RED, "HIDDEN (Hold Hotkey)");
+        }
+    });
+
+    ui.separator();
+    if ui.button("Reset to Defaults").clicked() {
+        let default_config = crate::state::Config::default();
+        default_config.save();
+        state.config.store(Arc::new(default_config));
+    }
+    if ui.button("Quit").clicked() {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+    }
+    ui.label(
+        egui::RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
+            .size(9.0)
+            .color(egui::Color32::from_gray(100)),
+    );
 }
 
 fn render_overlay(ctx: &egui::Context, state: &Arc<AppState>) {
@@ -844,7 +992,8 @@ fn render_teammate_boost(ctx: &egui::Context, state: &Arc<AppState>) {
             players
                 .values()
                 .find(|p| {
-                    p.is_local || (!local_name.is_empty() && p.name.trim().to_lowercase() == local_name)
+                    p.is_local
+                        || (!local_name.is_empty() && p.name.trim().to_lowercase() == local_name)
                 })
                 .map(|p| p.team)
         }
@@ -867,138 +1016,309 @@ fn render_teammate_boost(ctx: &egui::Context, state: &Arc<AppState>) {
         return;
     }
 
-    teammates.sort_by(|a, b| a.name.cmp(&b.name));
+    teammates.sort_by(|a, b| a.boost.cmp(&b.boost).then_with(|| a.name.cmp(&b.name)));
 
     let screen_rect = ctx.input(|i| i.screen_rect());
-    // Dynamic offsets from right and bottom based on config
-    let base_x =
-        screen_rect.max.x - config.teammate_boost_horizontal_offset * config.teammate_hud_scale;
-    let mut current_y =
-        screen_rect.max.y - config.teammate_boost_offset * config.teammate_hud_scale;
+    let width = teammate_boost_width(config.teammate_hud_scale, config.teammate_boost_display);
+    let height = teammate_boost_panel_height(
+        teammates.len(),
+        config.teammate_hud_scale,
+        config.teammate_boost_display,
+    );
+    let base_x = screen_rect.max.x
+        - config.teammate_boost_horizontal_offset * config.teammate_hud_scale
+        - width;
+    let base_y =
+        screen_rect.max.y - config.teammate_boost_offset * config.teammate_hud_scale - height;
 
-    for p in teammates {
-        let team_color = if p.team == 0 {
-            egui::Color32::from_rgb(0, 150, 255) // Brighter Blue
-        } else {
-            egui::Color32::from_rgb(255, 120, 0) // Brighter Orange
-        };
+    egui::Area::new("teammate_boost_panel".into())
+        .fixed_pos(egui::pos2(base_x.max(0.0), base_y.max(0.0)))
+        .order(egui::Order::Foreground)
+        .show(ctx, |ui| {
+            draw_teammate_boost_panel(
+                ui,
+                &teammates,
+                my_team,
+                config.teammate_hud_scale,
+                config.teammate_boost_display,
+            );
+        });
+}
 
-        egui::Area::new(format!("teammate_boost_{}", p.name).into())
-            .fixed_pos(egui::pos2(base_x, current_y))
-            .order(egui::Order::Foreground)
-            .show(ctx, |ui| {
-                // Main Container Frame (Glassmorphism)
-                let frame = egui::Frame::default()
-                    .fill(egui::Color32::from_black_alpha(100))
-                    .stroke(egui::Stroke::new(1.0, egui::Color32::from_white_alpha(20)))
-                    .corner_radius(12.0 * config.teammate_hud_scale)
-                    .inner_margin(6.0 * config.teammate_hud_scale);
+fn render_teammate_boost_position_preview(ctx: &egui::Context, state: &Arc<AppState>) {
+    let config = state.config.load();
+    let teammates = preview_teammates(state);
+    let screen_rect = ctx.input(|i| i.screen_rect());
+    let scale = config.teammate_hud_scale;
+    let width = teammate_boost_width(scale, config.teammate_boost_display);
+    let height = teammate_boost_panel_height(teammates.len(), scale, config.teammate_boost_display);
+    let base_x = screen_rect.max.x - config.teammate_boost_horizontal_offset * scale - width;
+    let base_y = screen_rect.max.y - config.teammate_boost_offset * scale - height;
 
-                frame.show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        // Team Accent Bar
-                        let (rect, _) = ui.allocate_at_least(
-                            egui::vec2(3.0 * config.teammate_hud_scale, 28.0 * config.teammate_hud_scale),
-                            egui::Sense::hover(),
-                        );
-                        ui.painter().rect_filled(rect, 1.5 * config.teammate_hud_scale, team_color);
-                        
-                        ui.add_space(8.0 * config.teammate_hud_scale);
+    egui::Area::new("teammate_boost_position_preview".into())
+        .fixed_pos(egui::pos2(base_x.max(0.0), base_y.max(0.0)))
+        .order(egui::Order::Background)
+        .show(ctx, |ui| {
+            ui.set_opacity(0.72);
+            draw_teammate_boost_panel(ui, &teammates, 0, scale, config.teammate_boost_display);
+        });
+}
 
-                        // Player Name
-                        ui.vertical(|ui| {
-                            ui.add_space(4.0 * config.teammate_hud_scale);
-                            ui.label(
-                                egui::RichText::new(&p.name)
-                                    .size(13.0 * config.teammate_hud_scale)
-                                    .color(egui::Color32::from_gray(230))
-                                    .strong(),
-                            );
-                        });
+fn draw_teammate_boost_panel(
+    ui: &mut egui::Ui,
+    teammates: &[crate::state::PlayerInfo],
+    my_team: u8,
+    scale: f32,
+    display: TeammateBoostDisplay,
+) {
+    let frame = egui::Frame::default()
+        .fill(egui::Color32::from_black_alpha(96))
+        .stroke(egui::Stroke::new(1.0, egui::Color32::from_white_alpha(18)))
+        .corner_radius(6.0 * scale)
+        .inner_margin(5.0 * scale);
 
-                        ui.add_space(12.0 * config.teammate_hud_scale);
+    frame.show(ui, |ui| {
+        ui.set_min_width(teammate_boost_width(scale, display) - 10.0 * scale);
+        for (index, player) in teammates.iter().enumerate() {
+            draw_teammate_boost_row(ui, player, my_team, scale, display);
+            if index + 1 < teammates.len() {
+                ui.add_space(3.0 * scale);
+            }
+        }
+    });
+}
 
-                        // Boost Gauge Section
-                        let radius = 18.0 * config.teammate_hud_scale;
-                        let (rect, _response) = ui.allocate_at_least(
-                            egui::vec2(radius * 2.0, radius * 2.0),
-                            egui::Sense::hover(),
-                        );
-                        let center = rect.center();
+fn draw_teammate_boost_row(
+    ui: &mut egui::Ui,
+    player: &crate::state::PlayerInfo,
+    my_team: u8,
+    scale: f32,
+    display: TeammateBoostDisplay,
+) {
+    let row_size = egui::vec2(
+        teammate_boost_width(scale, display) - 10.0 * scale,
+        teammate_boost_row_height(scale, display),
+    );
+    let (rect, _) = ui.allocate_exact_size(row_size, egui::Sense::hover());
+    let painter = ui.painter();
+    let rounding = 4.0 * scale;
+    let team_color = if my_team == 0 {
+        egui::Color32::from_rgb(0, 176, 255)
+    } else {
+        egui::Color32::from_rgb(255, 132, 36)
+    };
 
-                        // 1. Background Ghost Ring (Full 360)
-                        ui.painter().circle_stroke(
-                            center,
-                            radius,
-                            egui::Stroke::new(2.5 * config.teammate_hud_scale, egui::Color32::from_white_alpha(30)),
-                        );
+    let low_boost_alpha = if player.boost <= 20 {
+        let pulse = (ui.input(|i| i.time) * 5.0).sin() as f32;
+        (24.0 + 20.0 * ((pulse + 1.0) * 0.5)) as u8
+    } else {
+        0
+    };
 
-                        // 2. Inner Fill
-                        ui.painter().circle_filled(
-                            center,
-                            radius - 1.0,
-                            egui::Color32::from_black_alpha(180),
-                        );
+    painter.rect_filled(rect, rounding, egui::Color32::from_black_alpha(92));
+    if low_boost_alpha > 0 {
+        painter.rect_filled(
+            rect,
+            rounding,
+            egui::Color32::from_rgba_unmultiplied(255, 40, 24, low_boost_alpha),
+        );
+    }
 
-                        // 3. Dynamic Boost Arc with Glow
-                        let boost_color = if p.boost > 50 {
-                            egui::Color32::from_rgb(255, 215, 0) // Vivid Gold
-                        } else if p.boost > 20 {
-                            egui::Color32::from_rgb(255, 140, 0) // Deep Orange
-                        } else {
-                            egui::Color32::from_rgb(255, 60, 0)  // Danger Red
-                        };
+    let accent_rect = egui::Rect::from_min_max(
+        rect.left_top(),
+        egui::pos2(rect.left() + 3.0 * scale, rect.bottom()),
+    );
+    painter.rect_filled(accent_rect, rounding, team_color);
 
-                        let start_angle = -std::f32::consts::PI * 0.5; // Top
-                        let boost_fraction = p.boost as f32 / 100.0;
-                        let end_angle = start_angle + (std::f32::consts::PI * 2.0 * boost_fraction);
-
-                        if p.boost > 0 {
-                            let num_segments = 32;
-                            let mut points = Vec::new();
-                            for i in 0..=num_segments {
-                                let angle = start_angle + (end_angle - start_angle) * (i as f32 / num_segments as f32);
-                                points.push(center + egui::vec2(angle.cos(), angle.sin()) * radius);
-                            }
-
-                            // Glow layer (outer thicker, more transparent)
-                            ui.painter().add(egui::Shape::Path(egui::epaint::PathShape {
-                                points: points.clone(),
-                                closed: false,
-                                fill: egui::Color32::TRANSPARENT,
-                                stroke: egui::Stroke::new(6.0 * config.teammate_hud_scale, boost_color.gamma_multiply(0.3)).into(),
-                            }));
-
-                            // Main arc
-                            ui.painter().add(egui::Shape::Path(egui::epaint::PathShape {
-                                points,
-                                closed: false,
-                                fill: egui::Color32::TRANSPARENT,
-                                stroke: egui::Stroke::new(3.5 * config.teammate_hud_scale, boost_color).into(),
-                            }));
-                        }
-
-                        // 4. Boost Number
-                        let text_color = if p.boost == 100 {
-                            egui::Color32::WHITE
-                        } else {
-                            egui::Color32::from_gray(220)
-                        };
-                        
-                        ui.painter().text(
-                            center,
-                            egui::Align2::CENTER_CENTER,
-                            p.boost.to_string(),
-                            egui::FontId::proportional(14.0 * config.teammate_hud_scale),
-                            text_color,
-                        );
-                    });
-                });
-            });
-        current_y -= 50.0 * config.teammate_hud_scale;
+    match display {
+        TeammateBoostDisplay::Bars => draw_teammate_boost_bar_content(ui, rect, player, scale),
+        TeammateBoostDisplay::Circles => {
+            draw_teammate_boost_circle_content(ui, rect, player, scale)
+        }
+        TeammateBoostDisplay::Compact => {
+            draw_teammate_boost_compact_content(ui, rect, player, scale)
+        }
+        TeammateBoostDisplay::Numbers => {
+            draw_teammate_boost_number_content(ui, rect, player, scale)
+        }
     }
 }
 
+fn draw_teammate_boost_bar_content(
+    ui: &egui::Ui,
+    rect: egui::Rect,
+    player: &crate::state::PlayerInfo,
+    scale: f32,
+) {
+    let painter = ui.painter();
+    let boost_color = teammate_boost_color(player.boost);
+    let inner = rect.shrink2(egui::vec2(8.0 * scale, 4.0 * scale));
+    let value_width = 34.0 * scale;
+    let bar_height = 5.0 * scale;
+    let bar_rect = egui::Rect::from_min_max(
+        egui::pos2(inner.left(), inner.bottom() - bar_height),
+        egui::pos2(inner.right() - value_width - 8.0 * scale, inner.bottom()),
+    );
+    let fill_width = bar_rect.width() * (player.boost as f32 / 100.0).clamp(0.0, 1.0);
+    let fill_rect =
+        egui::Rect::from_min_size(bar_rect.left_top(), egui::vec2(fill_width, bar_height));
+
+    painter.text(
+        egui::pos2(inner.left(), inner.top() - 1.0 * scale),
+        egui::Align2::LEFT_TOP,
+        &player.name,
+        egui::FontId::proportional(10.5 * scale),
+        egui::Color32::from_gray(232),
+    );
+
+    painter.text(
+        egui::pos2(inner.right(), inner.center().y - 1.0 * scale),
+        egui::Align2::RIGHT_CENTER,
+        format!("{:>3}", player.boost),
+        egui::FontId::monospace(16.0 * scale),
+        boost_color,
+    );
+
+    painter.rect_filled(bar_rect, 2.0 * scale, egui::Color32::from_white_alpha(32));
+    painter.rect_filled(fill_rect, 2.0 * scale, boost_color);
+}
+
+fn draw_teammate_boost_circle_content(
+    ui: &egui::Ui,
+    rect: egui::Rect,
+    player: &crate::state::PlayerInfo,
+    scale: f32,
+) {
+    let painter = ui.painter();
+    let boost_color = teammate_boost_color(player.boost);
+    let inner = rect.shrink2(egui::vec2(8.0 * scale, 4.0 * scale));
+    let radius = 11.0 * scale;
+    let center = egui::pos2(inner.right() - radius, inner.center().y);
+
+    painter.text(
+        egui::pos2(inner.left(), inner.center().y),
+        egui::Align2::LEFT_CENTER,
+        &player.name,
+        egui::FontId::proportional(10.0 * scale),
+        egui::Color32::from_gray(232),
+    );
+
+    painter.circle_filled(center, radius, egui::Color32::from_black_alpha(130));
+    painter.circle_stroke(
+        center,
+        radius,
+        egui::Stroke::new(2.0 * scale, egui::Color32::from_white_alpha(34)),
+    );
+
+    let start_angle = -std::f32::consts::PI * 0.5;
+    let end_angle = start_angle + std::f32::consts::TAU * (player.boost as f32 / 100.0);
+    if player.boost > 0 {
+        let segments = 28;
+        let mut points = Vec::with_capacity(segments + 1);
+        for i in 0..=segments {
+            let t = i as f32 / segments as f32;
+            let angle = start_angle + (end_angle - start_angle) * t;
+            points.push(center + egui::vec2(angle.cos(), angle.sin()) * radius);
+        }
+        painter.add(egui::Shape::Path(egui::epaint::PathShape {
+            points,
+            closed: false,
+            fill: egui::Color32::TRANSPARENT,
+            stroke: egui::Stroke::new(3.0 * scale, boost_color).into(),
+        }));
+    }
+
+    painter.text(
+        center,
+        egui::Align2::CENTER_CENTER,
+        player.boost.to_string(),
+        egui::FontId::monospace(9.5 * scale),
+        egui::Color32::WHITE,
+    );
+}
+
+fn draw_teammate_boost_compact_content(
+    ui: &egui::Ui,
+    rect: egui::Rect,
+    player: &crate::state::PlayerInfo,
+    scale: f32,
+) {
+    let painter = ui.painter();
+    let boost_color = teammate_boost_color(player.boost);
+    let inner = rect.shrink2(egui::vec2(8.0 * scale, 3.0 * scale));
+    painter.text(
+        egui::pos2(inner.left(), inner.center().y),
+        egui::Align2::LEFT_CENTER,
+        &player.name,
+        egui::FontId::proportional(10.0 * scale),
+        egui::Color32::from_gray(232),
+    );
+    painter.text(
+        egui::pos2(inner.right(), inner.center().y),
+        egui::Align2::RIGHT_CENTER,
+        format!("{:>3}", player.boost),
+        egui::FontId::monospace(15.0 * scale),
+        boost_color,
+    );
+}
+
+fn draw_teammate_boost_number_content(
+    ui: &egui::Ui,
+    rect: egui::Rect,
+    player: &crate::state::PlayerInfo,
+    scale: f32,
+) {
+    let painter = ui.painter();
+    let boost_color = teammate_boost_color(player.boost);
+    let inner = rect.shrink2(egui::vec2(8.0 * scale, 2.0 * scale));
+    painter.text(
+        egui::pos2(inner.left(), inner.center().y),
+        egui::Align2::LEFT_CENTER,
+        player.name.chars().take(10).collect::<String>(),
+        egui::FontId::proportional(9.0 * scale),
+        egui::Color32::from_gray(210),
+    );
+    painter.text(
+        egui::pos2(inner.right(), inner.center().y),
+        egui::Align2::RIGHT_CENTER,
+        player.boost.to_string(),
+        egui::FontId::monospace(18.0 * scale),
+        boost_color,
+    );
+}
+
+fn teammate_boost_color(boost: u8) -> egui::Color32 {
+    match boost {
+        0..=20 => egui::Color32::from_rgb(255, 56, 48),
+        21..=50 => egui::Color32::from_rgb(255, 157, 28),
+        51..=80 => egui::Color32::from_rgb(255, 224, 74),
+        _ => egui::Color32::from_rgb(102, 232, 255),
+    }
+}
+
+fn teammate_boost_width(scale: f32, display: TeammateBoostDisplay) -> f32 {
+    match display {
+        TeammateBoostDisplay::Bars => 178.0 * scale,
+        TeammateBoostDisplay::Circles => 142.0 * scale,
+        TeammateBoostDisplay::Compact => 142.0 * scale,
+        TeammateBoostDisplay::Numbers => 96.0 * scale,
+    }
+}
+
+fn teammate_boost_panel_height(count: usize, scale: f32, display: TeammateBoostDisplay) -> f32 {
+    let rows = count as f32 * teammate_boost_row_height(scale, display);
+    let gaps = count.saturating_sub(1) as f32 * 3.0 * scale;
+    rows + gaps + 10.0 * scale
+}
+
+fn teammate_boost_row_height(scale: f32, display: TeammateBoostDisplay) -> f32 {
+    match display {
+        TeammateBoostDisplay::Bars => 27.0 * scale,
+        TeammateBoostDisplay::Circles => 30.0 * scale,
+        TeammateBoostDisplay::Compact => 21.0 * scale,
+        TeammateBoostDisplay::Numbers => 20.0 * scale,
+    }
+}
 
 fn format_key_name(key: &str) -> &str {
     match key {

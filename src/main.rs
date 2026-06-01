@@ -2,6 +2,7 @@ mod input;
 mod network;
 mod state;
 mod ui;
+mod update;
 
 use crate::state::AppState;
 use eframe::egui;
@@ -17,6 +18,7 @@ async fn main() -> eframe::Result<()> {
     });
 
     input::start_input_tasks(state.clone());
+    update::start_version_check(state.clone());
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()

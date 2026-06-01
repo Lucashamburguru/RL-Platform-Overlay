@@ -16,7 +16,17 @@ pub enum AnchorPos {
     CenterRight,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub enum TeammateBoostDisplay {
+    #[default]
+    Bars,
+    Circles,
+    Compact,
+    Numbers,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Config {
     pub transparency: u8,
     pub ui_scale: f32,
@@ -33,6 +43,7 @@ pub struct Config {
     pub teammate_boost_offset: f32,
     pub teammate_boost_horizontal_offset: f32,
     pub teammate_hud_scale: f32,
+    pub teammate_boost_display: TeammateBoostDisplay,
 }
 
 impl Default for Config {
@@ -53,6 +64,7 @@ impl Default for Config {
             teammate_boost_offset: 180.0,
             teammate_boost_horizontal_offset: 110.0,
             teammate_hud_scale: 2.2,
+            teammate_boost_display: TeammateBoostDisplay::Bars,
         }
     }
 }
@@ -93,6 +105,15 @@ mod tests {
 }
 
 #[derive(Clone, Debug, Default)]
+pub struct VersionCheck {
+    pub checked: bool,
+    pub update_available: bool,
+    pub latest_tag: String,
+    pub release_url: String,
+    pub error: String,
+}
+
+#[derive(Clone, Debug, Default)]
 pub struct PlayerInfo {
     pub name: String,
     pub platform: String,
@@ -117,6 +138,7 @@ pub struct AppState {
     pub local_team: std::sync::atomic::AtomicU8,
     pub players: ArcSwap<HashMap<String, PlayerInfo>>,
     pub config: ArcSwap<Config>,
+    pub version_check: ArcSwap<VersionCheck>,
 }
 
 impl AppState {
@@ -133,6 +155,7 @@ impl AppState {
             local_team: std::sync::atomic::AtomicU8::new(255),
             players: ArcSwap::from_pointee(HashMap::new()),
             config: ArcSwap::from_pointee(Config::load()),
+            version_check: ArcSwap::from_pointee(VersionCheck::default()),
         })
     }
 }
