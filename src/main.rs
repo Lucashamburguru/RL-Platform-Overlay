@@ -1,4 +1,5 @@
 mod input;
+mod mmr;
 mod network;
 mod state;
 mod ui;
@@ -17,6 +18,7 @@ async fn main() -> eframe::Result<()> {
         network::start_network_task(net_state).await;
     });
 
+    mmr::start_mmr_fetch_task(state.clone());
     input::start_input_tasks(state.clone());
     update::start_version_check(state.clone());
 

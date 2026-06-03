@@ -888,18 +888,44 @@ fn render_overlay(ctx: &egui::Context, state: &Arc<AppState>) {
 
                                 ui.add_space(4.0 * config.ui_scale);
 
-                                // Player Name
-                                let name_color = if p.is_bot {
-                                    egui::Color32::from_gray(140)
-                                } else {
-                                    egui::Color32::WHITE
-                                };
-                                ui.label(
-                                    egui::RichText::new(&p.name)
-                                        .color(name_color)
-                                        .size(12.0 * config.ui_scale)
-                                        .strong(),
-                                );
+                                // Player Name and MMR
+                                ui.vertical(|ui| {
+                                    let name_color = if p.is_bot {
+                                        egui::Color32::from_gray(140)
+                                    } else {
+                                        egui::Color32::WHITE
+                                    };
+                                    ui.label(
+                                        egui::RichText::new(&p.name)
+                                            .color(name_color)
+                                            .size(12.0 * config.ui_scale)
+                                            .strong(),
+                                    );
+
+                                    // Render MMR if available
+                                    if let Some(snapshot) = &p.mmr {
+                                        let mut display_rank = "Unranked".to_string();
+                                        let mut mmr_val = 0;
+                                        
+                                        // Find highest ranked playlist
+                                        if let Some(playlist) = snapshot.playlists.values().filter(|p| !p.tier_name.is_empty()).max_by_key(|p| p.rating) {
+                                            display_rank = playlist.tier_name.clone();
+                                            mmr_val = playlist.rating;
+                                        }
+
+                                        ui.label(
+                                            egui::RichText::new(format!("{} ({} MMR)", display_rank, mmr_val))
+                                                .color(egui::Color32::from_rgb(180, 200, 255))
+                                                .size(8.5 * config.ui_scale)
+                                        );
+                                    } else if !p.is_bot && (p.platform.eq_ignore_ascii_case("Steam") || p.platform.eq_ignore_ascii_case("Epic")) {
+                                        ui.label(
+                                            egui::RichText::new("Fetching rank...")
+                                                .color(egui::Color32::from_gray(120))
+                                                .size(8.5 * config.ui_scale)
+                                        );
+                                    }
+                                });
 
                                 ui.with_layout(
                                     egui::Layout::right_to_left(egui::Align::Center),

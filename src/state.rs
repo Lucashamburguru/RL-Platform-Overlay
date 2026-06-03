@@ -170,9 +170,12 @@ pub struct VersionCheck {
     pub error: String,
 }
 
+use crate::mmr::TrackerSnapshot;
+
 #[derive(Clone, Debug, Default)]
 pub struct PlayerInfo {
     pub name: String,
+    pub primary_id: String,
     pub platform: String,
     pub team: u8,
     pub is_bot: bool,
@@ -181,6 +184,7 @@ pub struct PlayerInfo {
     pub score: u32,
     pub goals: u32,
     pub saves: u32,
+    pub mmr: Option<TrackerSnapshot>,
 }
 
 pub struct AppState {
