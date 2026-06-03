@@ -1,3 +1,4 @@
+mod assets;
 mod input;
 mod mmr;
 mod network;

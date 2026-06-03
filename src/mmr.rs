@@ -1,10 +1,10 @@
+use crate::state::AppState;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
-use crate::state::AppState;
 
 const MMR_TRACKER_WARMUP_HOST: &str = "https://rocketleague.tracker.network";
 const MMR_TRACKER_API_HOST: &str = "https://api.tracker.gg";
@@ -39,7 +39,9 @@ fn is_ranked_playlist(playlist_id: i32) -> bool {
 fn tracker_api_url(player: &TrackerPlayer) -> String {
     if player.platform.eq_ignore_ascii_case("steam") {
         let encoded_id = urlencoding::encode(&player.player_id);
-        return format!("{MMR_TRACKER_API_HOST}/api/v2/rocket-league/standard/profile/steam/{encoded_id}");
+        return format!(
+            "{MMR_TRACKER_API_HOST}/api/v2/rocket-league/standard/profile/steam/{encoded_id}"
+        );
     }
     let encoded_name = urlencoding::encode(&player.player_name);
     format!("{MMR_TRACKER_API_HOST}/api/v2/rocket-league/standard/profile/epic/{encoded_name}")
@@ -48,7 +50,9 @@ fn tracker_api_url(player: &TrackerPlayer) -> String {
 fn tracker_warmup_url(player: &TrackerPlayer) -> String {
     if player.platform.eq_ignore_ascii_case("steam") {
         let encoded_id = urlencoding::encode(&player.player_id);
-        return format!("{MMR_TRACKER_WARMUP_HOST}/rocket-league/profile/steam/{encoded_id}/overview");
+        return format!(
+            "{MMR_TRACKER_WARMUP_HOST}/rocket-league/profile/steam/{encoded_id}/overview"
+        );
     }
     let encoded_name = urlencoding::encode(&player.player_name);
     format!("{MMR_TRACKER_WARMUP_HOST}/rocket-league/profile/epic/{encoded_name}/overview")
@@ -83,7 +87,10 @@ pub async fn fetch_tracker_snapshot(player: &TrackerPlayer) -> Result<TrackerSna
         return Err(format!("non-200 status: {}", status));
     }
 
-    let text = response.text().await.map_err(|e| format!("decode error: {}", e))?;
+    let text = response
+        .text()
+        .await
+        .map_err(|e| format!("decode error: {}", e))?;
     let payload: Value = serde_json::from_str(&text).map_err(|e| format!("json error: {}", e))?;
 
     extract_tracker_stats(&payload).ok_or_else(|| "Failed to extract stats".to_string())
@@ -94,16 +101,18 @@ fn extract_tracker_stats(payload: &Value) -> Option<TrackerSnapshot> {
     let metadata = data.get("metadata");
     let segments = data.get("segments")?.as_array()?;
 
-    let mut snapshot = TrackerSnapshot::default();
-    snapshot.last_updated = metadata
-        .and_then(|v| v.get("lastUpdated"))
-        .and_then(|v| v.get("value"))
-        .and_then(Value::as_str)
-        .map(ToString::to_string);
-    snapshot.current_season = metadata
-        .and_then(|v| v.get("currentSeason"))
-        .and_then(Value::as_i64)
-        .and_then(|v| i32::try_from(v).ok());
+    let mut snapshot = TrackerSnapshot {
+        last_updated: metadata
+            .and_then(|v| v.get("lastUpdated"))
+            .and_then(|v| v.get("value"))
+            .and_then(Value::as_str)
+            .map(ToString::to_string),
+        current_season: metadata
+            .and_then(|v| v.get("currentSeason"))
+            .and_then(Value::as_i64)
+            .and_then(|v| i32::try_from(v).ok()),
+        ..Default::default()
+    };
 
     for segment in segments {
         if segment.get("type").and_then(Value::as_str) != Some("playlist") {
@@ -182,7 +191,9 @@ pub fn start_mmr_fetch_task(state: Arc<AppState>) {
                         continue;
                     }
 
-                    if info.platform.eq_ignore_ascii_case("Steam") || info.platform.eq_ignore_ascii_case("Epic") {
+                    if info.platform.eq_ignore_ascii_case("Steam")
+                        || info.platform.eq_ignore_ascii_case("Epic")
+                    {
                         // Extract the actual ID from the PrimaryId string (e.g. "Steam|76561197981997358|0")
                         let id_parts: Vec<&str> = info.primary_id.split('|').collect();
                         let actual_id = if id_parts.len() > 1 {
@@ -223,7 +234,6 @@ pub fn start_mmr_fetch_task(state: Arc<AppState>) {
         }
     });
 }
-
 
 #[cfg(test)]
 mod tests {

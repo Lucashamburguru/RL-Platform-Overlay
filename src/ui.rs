@@ -6,6 +6,8 @@ use std::sync::atomic::Ordering;
 pub struct MainApp {
     state: Arc<AppState>,
     settings_tab: SettingsTab,
+    is_rl_running: bool,
+    last_rl_check: std::time::Instant,
 }
 
 impl MainApp {
@@ -13,6 +15,10 @@ impl MainApp {
         Self {
             state,
             settings_tab: SettingsTab::Overlay,
+            is_rl_running: false,
+            last_rl_check: std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_secs(5))
+                .unwrap_or_else(std::time::Instant::now),
         }
     }
 }
@@ -197,12 +203,21 @@ impl eframe::App for MainApp {
                                     &mut changed,
                                     is_launched,
                                 ),
-                                SettingsTab::Boost => render_boost_settings_tab(
-                                    ui,
-                                    &self.state,
-                                    &mut config_edit,
-                                    &mut changed,
-                                ),
+                                SettingsTab::Boost => {
+                                    let now = std::time::Instant::now();
+                                    if now.duration_since(self.last_rl_check).as_secs() >= 2 {
+                                        self.is_rl_running =
+                                            crate::assets::is_rocket_league_running();
+                                        self.last_rl_check = now;
+                                    }
+                                    render_boost_settings_tab(
+                                        ui,
+                                        &self.state,
+                                        &mut config_edit,
+                                        &mut changed,
+                                        self.is_rl_running,
+                                    )
+                                }
                                 SettingsTab::Hotkeys => render_hotkey_settings_tab(
                                     ui,
                                     ctx,
@@ -379,6 +394,7 @@ fn render_boost_settings_tab(
     state: &Arc<AppState>,
     config_edit: &mut crate::state::Config,
     changed: &mut bool,
+    is_rl_running: bool,
 ) {
     ui.group(|ui| {
         if ui
@@ -484,6 +500,107 @@ fn render_boost_settings_tab(
             .size(10.0)
             .color(egui::Color32::from_gray(150)),
         );
+    });
+
+    ui.add_space(12.0);
+    ui.group(|ui| {
+        ui.heading("Alpha Boost (Gold Rush) Swap");
+        ui.add_space(6.0);
+
+        // 1. Rocket League Folder Path Input
+        ui.horizontal(|ui| {
+            ui.label("Rocket League Folder:");
+            let path_edit = ui.text_edit_singleline(&mut config_edit.rocket_league_path);
+            if path_edit.changed() {
+                *changed = true;
+            }
+            if ui.button("Auto-detect").clicked()
+                && let Some(detected) = crate::state::detect_rocket_league_path()
+            {
+                config_edit.rocket_league_path = detected;
+                *changed = true;
+                let mut status = state.boost_swap_status.lock().unwrap();
+                *status = "Idle".to_string();
+            }
+        });
+
+        // Path validation feedback
+        let path_valid = if config_edit.rocket_league_path.trim().is_empty() {
+            None
+        } else {
+            let path = std::path::Path::new(&config_edit.rocket_league_path);
+            Some(path.exists() && path.join("TAGame").join("CookedPCConsole").exists())
+        };
+
+        match path_valid {
+            Some(true) => {
+                ui.colored_label(egui::Color32::from_rgb(100, 220, 100), "✔ Valid Rocket League installation found.");
+            }
+            Some(false) => {
+                ui.colored_label(egui::Color32::from_rgb(230, 80, 80), "❌ Invalid folder (TAGame/CookedPCConsole not found).");
+            }
+            None => {
+                ui.colored_label(egui::Color32::from_rgb(220, 200, 100), "⚠ Path unconfigured. Paste path or click Auto-detect.");
+            }
+        }
+
+        ui.add_space(8.0);
+
+        // Warning message required by user
+        ui.group(|ui| {
+            ui.horizontal(|ui| {
+                ui.colored_label(
+                    egui::Color32::from_rgb(255, 140, 0), // Dark Orange
+                    "⚠ Warning: Editing game files can technically be bannable (violates ToS). Use at your own risk.",
+                );
+            });
+        });
+
+        ui.add_space(8.0);
+
+        // Swapping Checkbox
+        let mut enabled = config_edit.alpha_boost_enabled;
+        let checkbox_resp = ui.checkbox(&mut enabled, "Replace Standard Boost with Alpha Boost (Gold Rush)");
+        if checkbox_resp.changed() {
+            if config_edit.rocket_league_path.trim().is_empty() {
+                let mut status = state.boost_swap_status.lock().unwrap();
+                *status = "Error: Configure your Rocket League path first.".to_string();
+            } else if path_valid != Some(true) {
+                let mut status = state.boost_swap_status.lock().unwrap();
+                *status = "Error: Invalid Rocket League directory. Check the path and try again.".to_string();
+            } else {
+                if enabled {
+                    crate::assets::start_apply_alpha_boost(state.clone(), config_edit.rocket_league_path.clone());
+                } else {
+                    crate::assets::start_restore_standard_boost(state.clone(), config_edit.rocket_league_path.clone());
+                }
+            }
+        }
+
+        // Render swap operation feedback
+        let status = state.boost_swap_status.lock().unwrap().clone();
+        if status != "Idle" {
+            ui.add_space(6.0);
+            if status.starts_with("Error") || status.starts_with("Download failed") || status.starts_with("Backup failed") || status.starts_with("Swap failed") || status.starts_with("Restore failed") {
+                ui.colored_label(egui::Color32::from_rgb(230, 80, 80), format!("❌ {}", status));
+            } else if status.starts_with("Success") {
+                ui.colored_label(egui::Color32::from_rgb(100, 225, 100), format!("✔ {}", status));
+            } else {
+                ui.horizontal(|ui| {
+                    ui.add(egui::Spinner::new());
+                    ui.label(&status);
+                });
+            }
+        }
+
+        // Game running warning
+        if is_rl_running {
+            ui.add_space(6.0);
+            ui.colored_label(
+                egui::Color32::from_rgb(220, 200, 100),
+                "ℹ Rocket League is currently running. You must restart the game once to see boost changes.",
+            );
+        }
     });
 }
 
@@ -906,23 +1023,34 @@ fn render_overlay(ctx: &egui::Context, state: &Arc<AppState>) {
                                     if let Some(snapshot) = &p.mmr {
                                         let mut display_rank = "Unranked".to_string();
                                         let mut mmr_val = 0;
-                                        
+
                                         // Find highest ranked playlist
-                                        if let Some(playlist) = snapshot.playlists.values().filter(|p| !p.tier_name.is_empty()).max_by_key(|p| p.rating) {
+                                        if let Some(playlist) = snapshot
+                                            .playlists
+                                            .values()
+                                            .filter(|p| !p.tier_name.is_empty())
+                                            .max_by_key(|p| p.rating)
+                                        {
                                             display_rank = playlist.tier_name.clone();
                                             mmr_val = playlist.rating;
                                         }
 
                                         ui.label(
-                                            egui::RichText::new(format!("{} ({} MMR)", display_rank, mmr_val))
-                                                .color(egui::Color32::from_rgb(180, 200, 255))
-                                                .size(8.5 * config.ui_scale)
+                                            egui::RichText::new(format!(
+                                                "{} ({} MMR)",
+                                                display_rank, mmr_val
+                                            ))
+                                            .color(egui::Color32::from_rgb(180, 200, 255))
+                                            .size(8.5 * config.ui_scale),
                                         );
-                                    } else if !p.is_bot && (p.platform.eq_ignore_ascii_case("Steam") || p.platform.eq_ignore_ascii_case("Epic")) {
+                                    } else if !p.is_bot
+                                        && (p.platform.eq_ignore_ascii_case("Steam")
+                                            || p.platform.eq_ignore_ascii_case("Epic"))
+                                    {
                                         ui.label(
                                             egui::RichText::new("Fetching rank...")
                                                 .color(egui::Color32::from_gray(120))
-                                                .size(8.5 * config.ui_scale)
+                                                .size(8.5 * config.ui_scale),
                                         );
                                     }
                                 });

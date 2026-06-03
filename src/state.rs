@@ -45,10 +45,47 @@ pub struct Config {
     pub teammate_boost_horizontal_offset: f32,
     pub teammate_hud_scale: f32,
     pub teammate_boost_display: TeammateBoostDisplay,
+    pub rocket_league_path: String,
+    pub alpha_boost_enabled: bool,
+}
+
+pub fn detect_rocket_league_path() -> Option<String> {
+    #[cfg(target_os = "windows")]
+    {
+        let candidates = [
+            "C:\\Program Files\\Epic Games\\rocketleague",
+            "C:\\Program Files (x86)\\Steam\\steamapps\\common\\rocketleague",
+        ];
+        for candidate in candidates {
+            let path = std::path::Path::new(candidate);
+            if path.join("TAGame").join("CookedPCConsole").exists() {
+                return Some(candidate.to_string());
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        if let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) {
+            let candidates = [
+                home.join(".local/share/Steam/steamapps/common/rocketleague"),
+                home.join(".steam/steam/steamapps/common/rocketleague"),
+                home.join(".steam/root/steamapps/common/rocketleague"),
+            ];
+            for candidate in candidates {
+                if candidate.join("TAGame").join("CookedPCConsole").exists() {
+                    return Some(candidate.to_string_lossy().into_owned());
+                }
+            }
+        }
+    }
+
+    None
 }
 
 impl Default for Config {
     fn default() -> Self {
+        let rocket_league_path = detect_rocket_league_path().unwrap_or_default();
         Self {
             transparency: 150,
             ui_scale: 2.2,
@@ -66,6 +103,8 @@ impl Default for Config {
             teammate_boost_horizontal_offset: 110.0,
             teammate_hud_scale: 2.2,
             teammate_boost_display: TeammateBoostDisplay::Bars,
+            rocket_league_path,
+            alpha_boost_enabled: false,
         }
     }
 }
@@ -113,7 +152,7 @@ fn config_path() -> PathBuf {
     )
 }
 
-fn config_dir() -> Option<PathBuf> {
+pub fn config_dir() -> Option<PathBuf> {
     #[cfg(target_os = "windows")]
     {
         env::var_os("APPDATA")
@@ -201,6 +240,7 @@ pub struct AppState {
     pub config: ArcSwap<Config>,
     pub config_status: ArcSwap<ConfigStatus>,
     pub version_check: ArcSwap<VersionCheck>,
+    pub boost_swap_status: Arc<std::sync::Mutex<String>>,
 }
 
 impl AppState {
@@ -220,6 +260,7 @@ impl AppState {
             config: ArcSwap::from_pointee(config),
             config_status: ArcSwap::from_pointee(config_status),
             version_check: ArcSwap::from_pointee(VersionCheck::default()),
+            boost_swap_status: Arc::new(std::sync::Mutex::new("Idle".to_string())),
         })
     }
 

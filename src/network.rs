@@ -195,10 +195,12 @@ fn handle_update_state(state: &Arc<AppState>, data: &Value) {
             let score = number_field(p, &["Score", "score"]).unwrap_or(0) as u32;
             let goals = number_field(p, &["Goals", "goals"]).unwrap_or(0) as u32;
             let saves = number_field(p, &["Saves", "saves"]).unwrap_or(0) as u32;
-            
+
             // Preserve MMR if we already have it
             let previous_players = state.players.load();
-            let mmr = previous_players.get(&name).and_then(|prev| prev.mmr.clone());
+            let mmr = previous_players
+                .get(&name)
+                .and_then(|prev| prev.mmr.clone());
 
             new_players.insert(
                 name.clone(),
