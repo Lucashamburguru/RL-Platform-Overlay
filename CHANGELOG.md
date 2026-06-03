@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.9] - 2026-06-03
+
+### Added
+- **Multi-Platform MMR & Rank Tracking**: Added support for fetching and displaying MMR and ranks for console players (`PS4`, `PS5`, `Xbox`, `Switch`) by mapping their platforms to the corresponding tracker.gg endpoints (`psn`, `xbl`, `switch`).
+
+---
+
 ## [0.1.8] - 2026-06-03
 
 ### Added

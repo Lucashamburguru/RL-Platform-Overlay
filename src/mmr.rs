@@ -37,33 +37,47 @@ fn is_ranked_playlist(playlist_id: i32) -> bool {
 }
 
 fn tracker_api_url(player: &TrackerPlayer) -> String {
-    if player.platform.eq_ignore_ascii_case("steam") {
-        let encoded_id = urlencoding::encode(&player.player_id);
-        return format!(
-            "{MMR_TRACKER_API_HOST}/api/v2/rocket-league/standard/profile/steam/{encoded_id}"
-        );
-    }
-    let encoded_name = urlencoding::encode(&player.player_name);
-    format!("{MMR_TRACKER_API_HOST}/api/v2/rocket-league/standard/profile/epic/{encoded_name}")
+    let (tracker_platform, use_id) = match player.platform.to_lowercase().as_str() {
+        "steam" => ("steam", true),
+        "ps4" | "ps5" | "psn" => ("psn", false),
+        "xbox" | "xbl" => ("xbl", false),
+        "switch" => ("switch", false),
+        _ => ("epic", false),
+    };
+
+    let search_term = if use_id {
+        &player.player_id
+    } else {
+        &player.player_name
+    };
+    let encoded = urlencoding::encode(search_term);
+    format!(
+        "{MMR_TRACKER_API_HOST}/api/v2/rocket-league/standard/profile/{tracker_platform}/{encoded}"
+    )
 }
 
 fn tracker_warmup_url(player: &TrackerPlayer) -> String {
-    if player.platform.eq_ignore_ascii_case("steam") {
-        let encoded_id = urlencoding::encode(&player.player_id);
-        return format!(
-            "{MMR_TRACKER_WARMUP_HOST}/rocket-league/profile/steam/{encoded_id}/overview"
-        );
-    }
-    let encoded_name = urlencoding::encode(&player.player_name);
-    format!("{MMR_TRACKER_WARMUP_HOST}/rocket-league/profile/epic/{encoded_name}/overview")
+    let (tracker_platform, use_id) = match player.platform.to_lowercase().as_str() {
+        "steam" => ("steam", true),
+        "ps4" | "ps5" | "psn" => ("psn", false),
+        "xbox" | "xbl" => ("xbl", false),
+        "switch" => ("switch", false),
+        _ => ("epic", false),
+    };
+
+    let search_term = if use_id {
+        &player.player_id
+    } else {
+        &player.player_name
+    };
+    let encoded = urlencoding::encode(search_term);
+    format!("{MMR_TRACKER_WARMUP_HOST}/rocket-league/profile/{tracker_platform}/{encoded}/overview")
 }
 
-pub async fn fetch_tracker_snapshot(player: &TrackerPlayer) -> Result<TrackerSnapshot, String> {
-    let client = wreq::Client::builder()
-        .timeout(Duration::from_secs(10))
-        .build()
-        .map_err(|e| format!("wreq build error: {}", e))?;
-
+pub async fn fetch_tracker_snapshot(
+    client: &wreq::Client,
+    player: &TrackerPlayer,
+) -> Result<TrackerSnapshot, String> {
     let warmup_url = tracker_warmup_url(player);
     // Warmup request to bypass some basic checks or establish cookies
     let _ = client.get(&warmup_url)
@@ -177,9 +191,21 @@ fn extract_tracker_stats(payload: &Value) -> Option<TrackerSnapshot> {
 
 pub fn start_mmr_fetch_task(state: Arc<AppState>) {
     tokio::spawn(async move {
+        let client = match wreq::Client::builder()
+            .timeout(Duration::from_secs(10))
+            .build()
+        {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("Failed to build wreq client: {}", e);
+                return;
+            }
+        };
+
         let mut fetching_players = std::collections::HashSet::new();
         loop {
-            sleep(Duration::from_secs(2)).await;
+            // Sleep 5 seconds between fetches to be gentler on tracker.gg rate limits
+            sleep(Duration::from_secs(5)).await;
 
             // Find a player that needs their MMR fetched
             let mut target_player = None;
@@ -191,9 +217,13 @@ pub fn start_mmr_fetch_task(state: Arc<AppState>) {
                         continue;
                     }
 
-                    if info.platform.eq_ignore_ascii_case("Steam")
-                        || info.platform.eq_ignore_ascii_case("Epic")
-                    {
+                    let platform_lower = info.platform.to_lowercase();
+                    let is_supported = matches!(
+                        platform_lower.as_str(),
+                        "steam" | "epic" | "ps4" | "ps5" | "psn" | "xbox" | "xbl" | "switch"
+                    );
+
+                    if is_supported {
                         // Extract the actual ID from the PrimaryId string (e.g. "Steam|76561197981997358|0")
                         let id_parts: Vec<&str> = info.primary_id.split('|').collect();
                         let actual_id = if id_parts.len() > 1 {
@@ -215,19 +245,27 @@ pub fn start_mmr_fetch_task(state: Arc<AppState>) {
                     player_id: actual_id,
                 };
 
-                // println!("Fetching MMR for {}", name);
-                match fetch_tracker_snapshot(&tracker_player).await {
+                match fetch_tracker_snapshot(&client, &tracker_player).await {
                     Ok(snapshot) => {
-                        // println!("Successfully fetched MMR for {}", name);
                         let mut players_map = (**state.players.load()).clone();
                         if let Some(player_info) = players_map.get_mut(&name) {
                             player_info.mmr = Some(snapshot);
                             state.players.store(Arc::new(players_map));
                         }
                     }
-                    Err(_e) => {
-                        // println!("Failed to fetch MMR for {}: {}", name, _e);
-                        // Optional: mark as failed to avoid infinite retries
+                    Err(e) => {
+                        if e.contains("404") {
+                            // Profile not found or private on tracker.gg.
+                            // Cache an empty MMR snapshot so we don't query this player again.
+                            let mut players_map = (**state.players.load()).clone();
+                            if let Some(player_info) = players_map.get_mut(&name) {
+                                player_info.mmr = Some(TrackerSnapshot::default());
+                                state.players.store(Arc::new(players_map));
+                            }
+                        } else {
+                            // Temporary error (rate limit, timeout). Remove from fetching set to retry later.
+                            fetching_players.remove(&name);
+                        }
                     }
                 }
             }
@@ -247,7 +285,8 @@ mod tests {
             player_id: "PengiWin".to_string(),
         };
         println!("Fetching MMR for Steam/PengiWin...");
-        match fetch_tracker_snapshot(&player).await {
+        let client = wreq::Client::builder().build().unwrap();
+        match fetch_tracker_snapshot(&client, &player).await {
             Ok(snapshot) => {
                 println!("Got snapshot with {} playlists", snapshot.playlists.len());
                 for (id, pl) in snapshot.playlists {
@@ -257,6 +296,55 @@ mod tests {
             Err(e) => {
                 println!("Error: {}", e);
             }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_alfa_psn() {
+        let players = vec![
+            TrackerPlayer {
+                platform: "Steam".to_string(),
+                player_name: "PengiWin".to_string(),
+                player_id: "76561198034789585".to_string(), // Example SteamID64
+            },
+            TrackerPlayer {
+                platform: "Ps4".to_string(),
+                player_name: "alfa_699".to_string(),
+                player_id: "2695557321719975533".to_string(),
+            },
+            TrackerPlayer {
+                platform: "Ps4".to_string(),
+                player_name: "Cleanmolles".to_string(),
+                player_id: "8318453829852839315".to_string(),
+            },
+            TrackerPlayer {
+                platform: "Epic".to_string(),
+                player_name: "pengiwin".to_string(),
+                player_id: "pengiwin".to_string(),
+            },
+        ];
+        let client = wreq::Client::builder().build().unwrap();
+        for player in players {
+            println!(
+                "Fetching MMR for {}/{}...",
+                player.platform, player.player_name
+            );
+            match fetch_tracker_snapshot(&client, &player).await {
+                Ok(snapshot) => {
+                    println!(
+                        "Got snapshot with {} playlists for {}",
+                        snapshot.playlists.len(),
+                        player.player_name
+                    );
+                    for (id, pl) in snapshot.playlists {
+                        println!("  Playlist {}: {} MMR ({})", id, pl.rating, pl.tier_name);
+                    }
+                }
+                Err(e) => {
+                    println!("Error for {}: {}", player.player_name, e);
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         }
     }
 }
