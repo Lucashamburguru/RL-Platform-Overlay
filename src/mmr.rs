@@ -39,9 +39,9 @@ fn is_ranked_playlist(playlist_id: i32) -> bool {
 fn tracker_api_url(player: &TrackerPlayer) -> String {
     let (tracker_platform, use_id) = match player.platform.to_lowercase().as_str() {
         "steam" => ("steam", true),
-        "ps4" | "ps5" | "psn" => ("psn", false),
-        "xbox" | "xbl" => ("xbl", false),
-        "switch" => ("switch", false),
+        "ps4" | "ps5" | "psn" | "playstation" => ("psn", false),
+        "xbox" | "xbl" | "xboxone" | "xboxseries" => ("xbl", false),
+        "switch" | "nintendo" => ("switch", false),
         _ => ("epic", false),
     };
 
@@ -59,9 +59,9 @@ fn tracker_api_url(player: &TrackerPlayer) -> String {
 fn tracker_warmup_url(player: &TrackerPlayer) -> String {
     let (tracker_platform, use_id) = match player.platform.to_lowercase().as_str() {
         "steam" => ("steam", true),
-        "ps4" | "ps5" | "psn" => ("psn", false),
-        "xbox" | "xbl" => ("xbl", false),
-        "switch" => ("switch", false),
+        "ps4" | "ps5" | "psn" | "playstation" => ("psn", false),
+        "xbox" | "xbl" | "xboxone" | "xboxseries" => ("xbl", false),
+        "switch" | "nintendo" => ("switch", false),
         _ => ("epic", false),
     };
 
@@ -218,10 +218,8 @@ pub fn start_mmr_fetch_task(state: Arc<AppState>) {
                     }
 
                     let platform_lower = info.platform.to_lowercase();
-                    let is_supported = matches!(
-                        platform_lower.as_str(),
-                        "steam" | "epic" | "ps4" | "ps5" | "psn" | "xbox" | "xbl" | "switch"
-                    );
+                    let is_supported =
+                        !info.is_bot && platform_lower != "bot" && platform_lower != "unknown";
 
                     if is_supported {
                         // Extract the actual ID from the PrimaryId string (e.g. "Steam|76561197981997358|0")

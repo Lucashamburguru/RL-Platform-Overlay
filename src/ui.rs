@@ -1044,10 +1044,8 @@ fn render_overlay(ctx: &egui::Context, state: &Arc<AppState>) {
                                             .size(8.5 * config.ui_scale),
                                         );
                                     } else if !p.is_bot
-                                        && matches!(
-                                            p.platform.to_lowercase().as_str(),
-                                            "steam" | "epic" | "ps4" | "ps5" | "xbox" | "switch"
-                                        )
+                                        && p.platform.to_lowercase() != "bot"
+                                        && p.platform.to_lowercase() != "unknown"
                                     {
                                         ui.label(
                                             egui::RichText::new("Fetching rank...")

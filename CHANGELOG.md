@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.10] - 2026-06-03
+
+### Added
+- **Flexible Platform Matching**: Broadened MMR tracking support to any human non-bot player regardless of specific platform casing or name differences returned by the client. This ensures players from both teams are processed, preventing any team from being missed.
+
+---
+
 ## [0.1.9] - 2026-06-03
 
 ### Added
