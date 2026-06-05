@@ -7,7 +7,6 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 const SETTINGS_TOGGLE_DEBOUNCE_MS: u128 = 200;
 
@@ -23,21 +22,14 @@ pub fn append_hotkey_debug_log(message: impl AsRef<str>) {
         let _ = std::fs::create_dir_all(parent);
     }
 
-    let now_ms = now_ms();
+    let now_ms = crate::stats_api::now_ms();
     if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
         let _ = writeln!(file, "{now_ms} {}", message.as_ref());
     }
 }
 
-fn now_ms() -> u128 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-}
-
 pub fn toggle_settings_hotkey(state: &Arc<AppState>, source: &str) {
-    let event_ms = now_ms();
+    let event_ms = crate::stats_api::now_ms();
     let last = state.last_settings_hotkey_unix_ms.load(Ordering::SeqCst) as u128;
     let elapsed = event_ms.saturating_sub(last);
     if elapsed < SETTINGS_TOGGLE_DEBOUNCE_MS {
@@ -141,8 +133,8 @@ pub fn start_input_tasks(state: Arc<AppState>) {
                 std::thread::sleep(std::time::Duration::from_millis(5));
             }
         }
-        _ => {
-            eprintln!("Failed to initialize Gamepad listener.");
+        Err(error) => {
+            eprintln!("Failed to initialize Gamepad listener: {error}");
         }
     });
 

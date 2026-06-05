@@ -1,3 +1,4 @@
+use crate::json_utils::{decode_json_string_value, number_field, string_field};
 use crate::state::{AppState, LocalPlayerIdentity, PlayerInfo};
 use crate::stats_api::{StatsApiTransport, TcpJsonSplitter};
 use futures_util::StreamExt;
@@ -57,7 +58,12 @@ pub async fn start_network_task(state: Arc<AppState>) {
                                         }
                                     }
                                 }
-                                Err(_) => break,
+                                Err(error) => {
+                                    let message = format!("TCP read error: {error}");
+                                    eprintln!("{message}");
+                                    update_connection_error(&state, message);
+                                    break;
+                                }
                             }
                         }
                         state.is_connected.store(false, Ordering::SeqCst);
@@ -97,13 +103,7 @@ fn handle_event(state: &Arc<AppState>, json: &Value) {
 }
 
 fn handle_update_state(state: &Arc<AppState>, data: &Value) {
-    // If the data is a string, it might be double-encoded JSON
-    let real_data = if let Some(s) = data.as_str() {
-        // println!("Detected double-encoded JSON string, parsing internal content...");
-        serde_json::from_str::<Value>(s).unwrap_or(data.clone())
-    } else {
-        data.clone()
-    };
+    let real_data = decode_json_string_value(data);
 
     if let Some(_obj) = real_data.as_object() {
         // Extract local player identity from the game block when available.
@@ -135,7 +135,8 @@ fn handle_update_state(state: &Arc<AppState>, data: &Value) {
         .unwrap_or(&real_data); // Fallback: maybe Data is the array itself
 
     let mut new_players = HashMap::new();
-    let current_local_name = state.local_player_name.load().trim().to_string();
+    let current_local_name = state.local_player_name.load();
+    let current_local_name = current_local_name.trim();
     if let Some(players) = players_val.as_array() {
         for p in players {
             let name = string_field(p, &["Name", "name"])
@@ -151,7 +152,7 @@ fn handle_update_state(state: &Arc<AppState>, data: &Value) {
                 || p["isLocalPlayer"].as_bool().unwrap_or(false)
                 || p["isMe"].as_bool().unwrap_or(false)
                 || (!current_local_name.is_empty()
-                    && name.eq_ignore_ascii_case(current_local_name.trim()));
+                    && name.eq_ignore_ascii_case(current_local_name));
 
             if is_local {
                 state.local_player_name.store(Arc::new(name.clone()));
@@ -164,11 +165,15 @@ fn handle_update_state(state: &Arc<AppState>, data: &Value) {
 
             if is_local {
                 state.local_team.store(team, Ordering::SeqCst);
-                state.update_local_player_identity(LocalPlayerIdentity {
-                    name: name.clone(),
-                    primary_id: primary_id.to_string(),
-                    platform: platform.clone(),
-                });
+                let first_known_identity =
+                    state.update_local_player_identity(LocalPlayerIdentity {
+                        name: name.clone(),
+                        primary_id: primary_id.to_string(),
+                        platform: platform.clone(),
+                    });
+                if first_known_identity {
+                    crate::mmr::start_local_mmr_refresh(state.clone());
+                }
             }
 
             let boost = number_field(p, &["Boost", "boost"]).unwrap_or(0) as u8;
@@ -238,18 +243,6 @@ fn update_connection_error(state: &Arc<AppState>, error: String) {
     let mut diagnostics = (**state.network_diagnostics.load()).clone();
     diagnostics.last_connection_error = error;
     state.network_diagnostics.store(Arc::new(diagnostics));
-}
-
-fn string_field<'a>(value: &'a Value, keys: &[&str]) -> Option<&'a str> {
-    keys.iter().find_map(|key| value[*key].as_str())
-}
-
-fn number_field(value: &Value, keys: &[&str]) -> Option<u64> {
-    keys.iter().find_map(|key| {
-        value[*key]
-            .as_u64()
-            .or_else(|| value[*key].as_str()?.parse().ok())
-    })
 }
 
 fn parse_platform(id: &str) -> (String, bool) {
@@ -382,6 +375,35 @@ mod tests {
         assert!(players["cyberPeng"].is_local);
         assert_eq!(players["C-Block"].team, 0);
         assert_eq!(players["C-Block"].boost, 88);
+    }
+
+    #[test]
+    fn test_update_state_uses_cached_local_player_name_without_local_flag() {
+        let state = AppState::new();
+        state
+            .local_player_name
+            .store(Arc::new("CachedName".to_string()));
+        let data = json!({
+            "Players": [
+                {
+                    "Name": "CachedName",
+                    "PrimaryId": "Steam|1|0",
+                    "TeamNum": 1
+                },
+                {
+                    "Name": "Opponent",
+                    "PrimaryId": "Epic|2|0",
+                    "TeamNum": 0
+                }
+            ]
+        });
+
+        handle_update_state(&state, &data);
+
+        let players = state.players.load();
+        assert!(players["CachedName"].is_local);
+        assert_eq!(state.local_team.load(Ordering::SeqCst), 1);
+        assert!(!players["Opponent"].is_local);
     }
 
     #[test]

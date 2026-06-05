@@ -228,6 +228,28 @@ mod tests {
 
         assert!(a.same_account(&b));
     }
+
+    #[test]
+    fn update_local_player_identity_reports_first_known_identity() {
+        let state = AppState::new();
+        state
+            .local_player_identity
+            .store(Arc::new(LocalPlayerIdentity::default()));
+        let first = LocalPlayerIdentity {
+            name: "Me".to_string(),
+            primary_id: "Steam|1|0".to_string(),
+            platform: "Steam".to_string(),
+        };
+        let renamed = LocalPlayerIdentity {
+            name: "MeAgain".to_string(),
+            primary_id: "Steam|1|0".to_string(),
+            platform: "Steam".to_string(),
+        };
+
+        assert!(state.update_local_player_identity(first.clone()));
+        assert!(!state.update_local_player_identity(first));
+        assert!(!state.update_local_player_identity(renamed));
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -384,13 +406,13 @@ impl AppState {
         if let Err(error) = config.save() {
             status.last_error = error;
         }
-        self.config_status.store(Arc::new(status));
         self.config.store(Arc::new(config));
+        self.config_status.store(Arc::new(status));
     }
 
-    pub fn update_local_player_identity(&self, identity: LocalPlayerIdentity) {
+    pub fn update_local_player_identity(&self, identity: LocalPlayerIdentity) -> bool {
         if !identity.is_known() {
-            return;
+            return false;
         }
 
         let current_identity = self.local_player_identity.load();
@@ -398,8 +420,9 @@ impl AppState {
             && current_identity.same_account(&identity)
             && current_identity.name == identity.name
         {
-            return;
+            return false;
         }
+        let first_known_identity = !current_identity.is_known();
 
         self.local_player_identity.store(Arc::new(identity.clone()));
 
@@ -411,5 +434,7 @@ impl AppState {
             config.cached_local_player_identity = identity;
             self.save_config(config);
         }
+
+        first_known_identity
     }
 }

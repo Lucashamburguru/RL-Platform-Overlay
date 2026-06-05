@@ -5,7 +5,6 @@ use std::ffi::OsStr;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 use sysinfo::{ProcessesToUpdate, System};
 
 const BOOST_RELEASE_TAG: &str = "alpha-boost-assets-v1";
@@ -85,31 +84,97 @@ impl BoostGameFileState {
     }
 }
 
+pub struct RocketLeagueProcessWatcher {
+    system: System,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ProcessDetection {
+    pub running: bool,
+    pub detail: String,
+}
+
+impl RocketLeagueProcessWatcher {
+    pub fn new() -> Self {
+        Self {
+            system: System::new(),
+        }
+    }
+
+    pub fn is_running(&mut self) -> bool {
+        self.detect().running
+    }
+
+    pub fn detect(&mut self) -> ProcessDetection {
+        self.system.refresh_processes(ProcessesToUpdate::All, true);
+
+        for process in self.system.processes().values() {
+            if is_rocket_league_name(process.name()) {
+                return ProcessDetection {
+                    running: true,
+                    detail: format!("process name: {}", process.name().to_string_lossy()),
+                };
+            }
+
+            if let Some(executable_path) = process.exe()
+                && let Some(file_name) = executable_path.file_name()
+                && is_rocket_league_name(file_name)
+            {
+                return ProcessDetection {
+                    running: true,
+                    detail: format!("executable: {}", executable_path.display()),
+                };
+            }
+
+            if let Some(detail) = process
+                .cmd()
+                .iter()
+                .find_map(|argument| rocket_league_argument_match(argument))
+            {
+                return ProcessDetection {
+                    running: true,
+                    detail,
+                };
+            }
+        }
+
+        ProcessDetection {
+            running: false,
+            detail: "not found".to_string(),
+        }
+    }
+}
+
+impl Default for RocketLeagueProcessWatcher {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+fn is_rocket_league_name(name: &OsStr) -> bool {
+    let normalized = name.to_string_lossy().to_lowercase();
+    normalized == "rocketleague.exe"
+        || normalized == "rocketleague.ex"
+        || normalized == "rocketleague"
+        || normalized == "rocketleague-linux-shipping"
+}
+
+fn rocket_league_argument_match(argument: &OsStr) -> Option<String> {
+    let normalized = argument.to_string_lossy().to_lowercase().replace('\\', "/");
+    if normalized.contains("rocketleague.exe")
+        || normalized.contains("rocketleague_eac.exe")
+        || normalized.contains("rocketleague-linux-shipping")
+        || normalized.contains("rocketleague/binaries")
+    {
+        Some(format!("command: {}", argument.to_string_lossy()))
+    } else {
+        None
+    }
+}
+
+#[allow(dead_code)]
 pub fn is_rocket_league_running() -> bool {
-    fn is_rocket_league_name(name: &OsStr) -> bool {
-        let normalized = name.to_string_lossy().to_lowercase();
-        normalized == "rocketleague.exe"
-            || normalized == "rocketleague"
-            || normalized == "rocketleague-linux-shipping"
-    }
-
-    let mut system = System::new_all();
-    system.refresh_processes(ProcessesToUpdate::All, true);
-
-    for process in system.processes().values() {
-        if is_rocket_league_name(process.name()) {
-            return true;
-        }
-
-        if let Some(executable_path) = process.exe()
-            && let Some(file_name) = executable_path.file_name()
-            && is_rocket_league_name(file_name)
-        {
-            return true;
-        }
-    }
-
-    false
+    RocketLeagueProcessWatcher::new().is_running()
 }
 
 pub fn inspect_boost_swap(rocket_league_path: &str) -> BoostSwapInspection {
@@ -207,10 +272,7 @@ fn inspect_game_file_state_for_targets(
         .all(|state| *state == BoostGameFileState::Unbacked)
     {
         Ok(BoostGameFileState::Unbacked)
-    } else if states
-        .iter()
-        .any(|state| *state == BoostGameFileState::Unknown)
-    {
+    } else if states.contains(&BoostGameFileState::Unknown) {
         Ok(BoostGameFileState::Unknown)
     } else {
         Ok(BoostGameFileState::Mixed)
@@ -508,7 +570,7 @@ fn ensure_backup_metadata(
 
     let metadata = BoostBackupMetadata {
         version: METADATA_VERSION,
-        created_unix_ms: now_ms(),
+        created_unix_ms: crate::stats_api::now_ms(),
         release_tag: BOOST_RELEASE_TAG.to_string(),
         files,
     };
@@ -552,7 +614,7 @@ fn verify_targets_known(
             .find(|spec| spec.file_name == *file_name)
             .map(|spec| spec.expected_sha256)
             .unwrap_or("");
-        let is_original = actual_hash.eq_ignore_ascii_case(&original_hash);
+        let is_original = actual_hash.eq_ignore_ascii_case(original_hash);
         let is_alpha =
             expected_hash_configured(alpha_hash) && actual_hash.eq_ignore_ascii_case(alpha_hash);
         if !is_original && !is_alpha {
@@ -609,19 +671,15 @@ fn hex_lower(bytes: &[u8]) -> String {
     output
 }
 
-fn now_ms() -> u128 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn temp_dir(name: &str) -> PathBuf {
-        let root = std::env::temp_dir().join(format!("rl_overlay_assets_{name}_{}", now_ms()));
+        let root = std::env::temp_dir().join(format!(
+            "rl_overlay_assets_{name}_{}",
+            crate::stats_api::now_ms()
+        ));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         root
@@ -633,6 +691,46 @@ mod tests {
             url: "https://example.invalid/file",
             expected_sha256: hash,
         }
+    }
+
+    #[test]
+    fn rocket_league_process_name_matches_known_executables() {
+        assert!(is_rocket_league_name(OsStr::new("RocketLeague.exe")));
+        assert!(is_rocket_league_name(OsStr::new("RocketLeague.ex")));
+        assert!(is_rocket_league_name(OsStr::new("rocketleague")));
+        assert!(is_rocket_league_name(OsStr::new(
+            "RocketLeague-Linux-Shipping"
+        )));
+        assert!(!is_rocket_league_name(OsStr::new("rocketleague-helper")));
+    }
+
+    #[test]
+    fn rocket_league_process_command_matches_proton_paths() {
+        assert!(
+            rocket_league_argument_match(OsStr::new(
+                "/home/user/.steam/steamapps/common/rocketleague/Binaries/Win64/RocketLeague.exe"
+            ))
+            .is_some()
+        );
+        assert!(
+            rocket_league_argument_match(OsStr::new(
+                "Z:\\home\\user\\.steam\\steamapps\\common\\rocketleague\\Binaries\\Win64\\RocketLeague.exe"
+            ))
+            .is_some()
+        );
+        assert!(
+            rocket_league_argument_match(OsStr::new(
+                "/home/user/.steam/steamapps/common/rocketleague/Binaries/Win64/RocketLeague_EAC.exe"
+            ))
+            .is_some()
+        );
+        assert!(
+            rocket_league_argument_match(OsStr::new(
+                "S:\\common\\rocketleague\\Binaries\\Win64\\RocketLeague.exe"
+            ))
+            .is_some()
+        );
+        assert!(rocket_league_argument_match(OsStr::new("steamwebhelper")).is_none());
     }
 
     #[test]
@@ -773,7 +871,7 @@ mod tests {
         fs::write(&backup_path, b"original").unwrap();
         let metadata = BoostBackupMetadata {
             version: METADATA_VERSION,
-            created_unix_ms: now_ms(),
+            created_unix_ms: crate::stats_api::now_ms(),
             release_tag: BOOST_RELEASE_TAG.to_string(),
             files: vec![BoostBackupFileMetadata {
                 file_name: "Boost_Standard_SF.upk".to_string(),

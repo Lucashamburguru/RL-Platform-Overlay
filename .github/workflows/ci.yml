@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [ "main" ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    name: Rust checks
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          libx11-dev \
+          libxext-dev \
+          libxcursor-dev \
+          libxinerama-dev \
+          libxi-dev \
+          libxrandr-dev \
+          libxtst-dev \
+          libxrender-dev \
+          libxss-dev \
+          libxkbcommon-dev \
+          libwayland-dev \
+          libdbus-1-dev \
+          libasound2-dev \
+          libudev-dev \
+          libxcb-shape0-dev \
+          libxcb-xfixes0-dev \
+          libxcb-render0-dev \
+          libfontconfig1-dev \
+          libfreetype6-dev
+
+    - name: Set up Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Check formatting
+      run: cargo fmt --all -- --check
+
+    - name: Clippy
+      run: cargo clippy --all-targets -- -D warnings
+
+    - name: Test
+      run: cargo test --all-targets

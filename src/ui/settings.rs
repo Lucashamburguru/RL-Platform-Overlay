@@ -1,0 +1,801 @@
+use crate::session::SessionOverlayDisplay;
+use crate::state::{AnchorPos, AppState, TeammateBoostDisplay};
+use eframe::egui;
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
+
+use super::app::SettingsTab;
+use super::boost_hud::{
+    draw_teammate_boost_panel, preview_teammates, teammate_boost_display_label,
+};
+use super::common::debug_status_row;
+use super::hotkeys::render_hotkey_settings_section;
+use super::mmr_panel::render_local_mmr_panel;
+use super::session_hud::{draw_session_panel, session_display_label};
+
+pub(super) fn render_settings_tabs(
+    ui: &mut egui::Ui,
+    selected: &mut SettingsTab,
+    debug_enabled: bool,
+) {
+    ui.horizontal_wrapped(|ui| {
+        ui.selectable_value(selected, SettingsTab::Setup, "Setup");
+        ui.selectable_value(selected, SettingsTab::Overlay, "Overlay");
+        ui.selectable_value(selected, SettingsTab::Session, "Session");
+        ui.selectable_value(selected, SettingsTab::Boost, "Boost");
+        if debug_enabled {
+            ui.selectable_value(selected, SettingsTab::Debug, "Debug");
+        }
+    });
+    ui.separator();
+}
+
+pub(super) fn render_update_notice(ui: &mut egui::Ui, state: &Arc<AppState>) {
+    let version_check = state.version_check.load();
+    if !version_check.update_available {
+        return;
+    }
+
+    let frame = egui::Frame::default()
+        .fill(egui::Color32::from_rgb(55, 46, 18))
+        .stroke(egui::Stroke::new(
+            1.0,
+            egui::Color32::from_rgb(255, 188, 72),
+        ))
+        .corner_radius(5.0)
+        .inner_margin(8.0);
+
+    frame.show(ui, |ui| {
+        ui.label(
+            egui::RichText::new(format!(
+                "Update available: {}. Download the newest release from GitHub.",
+                version_check.latest_tag
+            ))
+            .strong()
+            .color(egui::Color32::from_rgb(255, 226, 150)),
+        );
+        ui.hyperlink_to("Download release", &version_check.release_url);
+    });
+    ui.add_space(6.0);
+}
+
+pub(super) fn render_setup_settings_tab(
+    ui: &mut egui::Ui,
+    state: &Arc<AppState>,
+    config_edit: &mut crate::state::Config,
+    changed: &mut bool,
+    is_rl_running: bool,
+) {
+    ui.group(|ui| {
+        ui.heading("Stats API Setup");
+        ui.add_space(6.0);
+
+        ui.horizontal(|ui| {
+            ui.label("Rocket League Folder:");
+            if ui
+                .text_edit_singleline(&mut config_edit.rocket_league_path)
+                .changed()
+            {
+                *changed = true;
+            }
+            if ui.button("Auto-detect").clicked()
+                && let Some(path) = crate::state::detect_rocket_league_path()
+            {
+                config_edit.rocket_league_path = path;
+                *changed = true;
+            }
+        });
+
+        let status = crate::setup::inspect_stats_api_setup(&config_edit.rocket_league_path);
+        ui.add_space(6.0);
+        debug_status_row(ui, "Config File", &status.ini_path);
+        debug_status_row(
+            ui,
+            "PacketSendRate",
+            &status
+                .packet_send_rate
+                .map(|rate| rate.to_string())
+                .unwrap_or_else(|| "missing".to_string()),
+        );
+        debug_status_row(
+            ui,
+            "Port",
+            &status
+                .port
+                .map(|port| port.to_string())
+                .unwrap_or_else(|| "49123 default".to_string()),
+        );
+
+        if status.configured {
+            ui.colored_label(egui::Color32::from_rgb(100, 220, 100), status.message);
+        } else if status.exists {
+            ui.colored_label(egui::Color32::from_rgb(220, 190, 90), status.message);
+        } else {
+            ui.colored_label(egui::Color32::from_rgb(230, 120, 80), status.message);
+        }
+
+        if is_rl_running {
+            ui.colored_label(
+                egui::Color32::from_rgb(220, 200, 100),
+                "Rocket League is running. Restart the game after changing this config.",
+            );
+        }
+
+        ui.add_space(8.0);
+        if ui.button("Enable Stats API").clicked() {
+            match crate::setup::ensure_stats_api_setup(&config_edit.rocket_league_path) {
+                Ok(result) => state.stats_api_setup_result.store(Arc::new(result)),
+                Err(error) => state.stats_api_setup_result.store(Arc::new(
+                    crate::setup::StatsApiSetupResult {
+                        message: error,
+                        ..Default::default()
+                    },
+                )),
+            }
+        }
+
+        let result = state.stats_api_setup_result.load();
+        if !result.message.is_empty() {
+            ui.add_space(6.0);
+            let color = if result.changed {
+                egui::Color32::from_rgb(100, 220, 100)
+            } else {
+                egui::Color32::from_gray(180)
+            };
+            ui.colored_label(color, &result.message);
+            if let Some(path) = &result.backup_path {
+                debug_status_row(ui, "Backup", path);
+            }
+            if result.restart_required {
+                ui.colored_label(
+                    egui::Color32::from_rgb(220, 200, 100),
+                    "Restart Rocket League once before expecting the overlay to connect.",
+                );
+            }
+        }
+    });
+}
+
+pub(super) fn render_overlay_settings_tab(
+    ui: &mut egui::Ui,
+    ctx: &egui::Context,
+    state: &Arc<AppState>,
+    config: &crate::state::Config,
+    config_edit: &mut crate::state::Config,
+    changed: &mut bool,
+    is_launched: bool,
+) {
+    ui.group(|ui| {
+        ui.label("Transparency");
+        if ui
+            .add(egui::Slider::new(&mut config_edit.transparency, 0..=255))
+            .changed()
+        {
+            *changed = true;
+        }
+
+        ui.label("HUD Scale");
+        if ui
+            .add(egui::Slider::new(&mut config_edit.ui_scale, 0.5..=2.5))
+            .changed()
+        {
+            *changed = true;
+        }
+
+        ui.horizontal(|ui| {
+            ui.label("Resolution:");
+            let res_text = format!(
+                "{}x{}",
+                config_edit.window_size[0], config_edit.window_size[1]
+            );
+            egui::ComboBox::new("res_presets", "")
+                .selected_text(res_text)
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut config_edit.window_size, [1920.0, 1080.0], "1080p");
+                    ui.selectable_value(&mut config_edit.window_size, [2560.0, 1440.0], "1440p");
+                    ui.selectable_value(&mut config_edit.window_size, [3840.0, 2160.0], "4K");
+                });
+            if config_edit.window_size != config.window_size {
+                *changed = true;
+            }
+        });
+
+        ui.horizontal(|ui| {
+            ui.label("Monitor:");
+            egui::ComboBox::new("monitor_select", "")
+                .selected_text(format!("Monitor {}", config_edit.monitor_index))
+                .show_ui(ui, |ui| {
+                    for i in 0..4 {
+                        ui.selectable_value(
+                            &mut config_edit.monitor_index,
+                            i,
+                            format!("Monitor {}", i),
+                        );
+                    }
+                });
+            if config_edit.monitor_index != config.monitor_index {
+                *changed = true;
+            }
+        });
+
+        if ui
+            .checkbox(&mut config_edit.show_bots, "Show Bots")
+            .changed()
+        {
+            *changed = true;
+        }
+
+        if ui
+            .checkbox(&mut config_edit.show_stats, "Show Player Stats")
+            .changed()
+        {
+            *changed = true;
+        }
+
+        ui.horizontal(|ui| {
+            ui.label("Anchor:");
+            egui::ComboBox::new("anchor_pos", "")
+                .selected_text(format!("{:?}", config_edit.anchor))
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut config_edit.anchor, AnchorPos::TopLeft, "Top Left");
+                    ui.selectable_value(&mut config_edit.anchor, AnchorPos::TopRight, "Top Right");
+                    ui.selectable_value(
+                        &mut config_edit.anchor,
+                        AnchorPos::BottomLeft,
+                        "Bottom Left",
+                    );
+                    ui.selectable_value(
+                        &mut config_edit.anchor,
+                        AnchorPos::BottomRight,
+                        "Bottom Right",
+                    );
+                    ui.selectable_value(
+                        &mut config_edit.anchor,
+                        AnchorPos::CenterRight,
+                        "Center Right",
+                    );
+                });
+            if config_edit.anchor != config.anchor {
+                *changed = true;
+            }
+        });
+    });
+
+    ui.add_space(10.0);
+    render_hotkey_settings_section(ui, ctx, state, config_edit, changed);
+
+    ui.add_space(10.0);
+    render_positioning_settings_section(ui, config_edit, changed);
+
+    ui.add_space(10.0);
+    render_launch_controls(ui, ctx, state, config_edit, is_launched);
+}
+
+pub(super) fn render_session_settings_tab(
+    ui: &mut egui::Ui,
+    state: &Arc<AppState>,
+    config_edit: &mut crate::state::Config,
+    changed: &mut bool,
+) {
+    ui.columns(2, |columns| {
+        columns[0].group(|ui| {
+            ui.heading("Session Overlay");
+            if ui
+                .checkbox(
+                    &mut config_edit.session_overlay_enabled,
+                    "Enable Session Overlay",
+                )
+                .changed()
+            {
+                *changed = true;
+            }
+
+            ui.horizontal(|ui| {
+                ui.label("Display:");
+                egui::ComboBox::new("session_display", "")
+                    .selected_text(session_display_label(config_edit.session_overlay_display))
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut config_edit.session_overlay_display,
+                            SessionOverlayDisplay::Compact,
+                            "Compact",
+                        );
+                        ui.selectable_value(
+                            &mut config_edit.session_overlay_display,
+                            SessionOverlayDisplay::Expanded,
+                            "Expanded",
+                        );
+                    });
+                if config_edit.session_overlay_display
+                    != state.config.load().session_overlay_display
+                {
+                    *changed = true;
+                }
+            });
+
+            ui.label("Scale");
+            if ui
+                .add(egui::Slider::new(
+                    &mut config_edit.session_overlay_scale,
+                    0.6..=2.5,
+                ))
+                .changed()
+            {
+                *changed = true;
+            }
+
+            ui.label("Opacity");
+            if ui
+                .add(egui::Slider::new(
+                    &mut config_edit.session_overlay_opacity,
+                    40..=255,
+                ))
+                .changed()
+            {
+                *changed = true;
+            }
+
+            ui.horizontal(|ui| {
+                ui.label("Anchor:");
+                egui::ComboBox::new("session_anchor", "")
+                    .selected_text(format!("{:?}", config_edit.session_overlay_anchor))
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut config_edit.session_overlay_anchor,
+                            AnchorPos::TopLeft,
+                            "Top Left",
+                        );
+                        ui.selectable_value(
+                            &mut config_edit.session_overlay_anchor,
+                            AnchorPos::TopRight,
+                            "Top Right",
+                        );
+                        ui.selectable_value(
+                            &mut config_edit.session_overlay_anchor,
+                            AnchorPos::BottomLeft,
+                            "Bottom Left",
+                        );
+                        ui.selectable_value(
+                            &mut config_edit.session_overlay_anchor,
+                            AnchorPos::BottomRight,
+                            "Bottom Right",
+                        );
+                        ui.selectable_value(
+                            &mut config_edit.session_overlay_anchor,
+                            AnchorPos::CenterRight,
+                            "Center Right",
+                        );
+                    });
+                if config_edit.session_overlay_anchor != state.config.load().session_overlay_anchor
+                {
+                    *changed = true;
+                }
+            });
+
+            ui.label("X Offset");
+            if ui
+                .add(egui::Slider::new(
+                    &mut config_edit.session_overlay_offset[0],
+                    -800.0..=800.0,
+                ))
+                .changed()
+            {
+                *changed = true;
+            }
+            ui.label("Y Offset");
+            if ui
+                .add(egui::Slider::new(
+                    &mut config_edit.session_overlay_offset[1],
+                    -800.0..=800.0,
+                ))
+                .changed()
+            {
+                *changed = true;
+            }
+        });
+
+        columns[1].group(|ui| {
+            render_local_mmr_panel(ui, state);
+        });
+    });
+
+    ui.add_space(10.0);
+    ui.group(|ui| {
+        ui.label(egui::RichText::new("Preview").strong());
+        draw_session_panel(
+            ui,
+            &state.session.load(),
+            config_edit.session_overlay_scale.min(1.4),
+            config_edit.session_overlay_display,
+            config_edit.session_overlay_opacity,
+        );
+    });
+}
+
+pub(super) fn render_boost_settings_tab(
+    ui: &mut egui::Ui,
+    state: &Arc<AppState>,
+    config_edit: &mut crate::state::Config,
+    changed: &mut bool,
+    is_rl_running: bool,
+) {
+    ui.group(|ui| {
+        if ui
+            .checkbox(
+                &mut config_edit.show_teammate_boost,
+                "Always-on Teammate Boost HUD",
+            )
+            .changed()
+        {
+            *changed = true;
+        }
+
+        ui.add_space(5.0);
+        ui.horizontal(|ui| {
+            ui.label("Display:");
+            egui::ComboBox::new("teammate_boost_display", "")
+                .selected_text(teammate_boost_display_label(
+                    config_edit.teammate_boost_display,
+                ))
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(
+                        &mut config_edit.teammate_boost_display,
+                        TeammateBoostDisplay::Bars,
+                        "Bars",
+                    );
+                    ui.selectable_value(
+                        &mut config_edit.teammate_boost_display,
+                        TeammateBoostDisplay::Circles,
+                        "Circles",
+                    );
+                    ui.selectable_value(
+                        &mut config_edit.teammate_boost_display,
+                        TeammateBoostDisplay::Compact,
+                        "Compact",
+                    );
+                    ui.selectable_value(
+                        &mut config_edit.teammate_boost_display,
+                        TeammateBoostDisplay::Numbers,
+                        "Numbers",
+                    );
+                });
+            if config_edit.teammate_boost_display != state.config.load().teammate_boost_display {
+                *changed = true;
+            }
+        });
+
+        ui.add_space(5.0);
+        ui.label("Teammate HUD Scale");
+        if ui
+            .add(egui::Slider::new(
+                &mut config_edit.teammate_hud_scale,
+                0.5..=2.5,
+            ))
+            .changed()
+        {
+            *changed = true;
+        }
+
+        ui.add_space(5.0);
+        ui.label("Horizontal Offset");
+        let max_horizontal_offset =
+            (config_edit.window_size[0] / config_edit.teammate_hud_scale.max(0.1)).max(600.0);
+        if ui
+            .add(egui::Slider::new(
+                &mut config_edit.teammate_boost_horizontal_offset,
+                0.0..=max_horizontal_offset,
+            ))
+            .changed()
+        {
+            *changed = true;
+        }
+
+        ui.add_space(5.0);
+        ui.label("Vertical Offset");
+        if ui
+            .add(egui::Slider::new(
+                &mut config_edit.teammate_boost_offset,
+                50.0..=600.0,
+            ))
+            .changed()
+        {
+            *changed = true;
+        }
+    });
+
+    ui.add_space(10.0);
+    ui.group(|ui| {
+        ui.label(egui::RichText::new("Live Preview").strong());
+        ui.add_space(4.0);
+        let preview = preview_teammates(state);
+        draw_teammate_boost_panel(
+            ui,
+            &preview,
+            0,
+            config_edit.teammate_hud_scale.min(1.4),
+            config_edit.teammate_boost_display,
+        );
+        ui.add_space(6.0);
+        ui.label(
+            egui::RichText::new(
+                "Placement preview is only accurate while the overlay is launched.",
+            )
+            .size(10.0)
+            .color(egui::Color32::from_gray(150)),
+        );
+    });
+
+    ui.add_space(12.0);
+    ui.group(|ui| {
+        ui.heading("Alpha Boost (Gold Rush) Swap");
+        ui.add_space(6.0);
+
+        // 1. Rocket League Folder Path Input
+        ui.horizontal(|ui| {
+            ui.label("Rocket League Folder:");
+            let path_edit = ui.text_edit_singleline(&mut config_edit.rocket_league_path);
+            if path_edit.changed() {
+                *changed = true;
+            }
+            if ui.button("Auto-detect").clicked()
+                && let Some(detected) = crate::state::detect_rocket_league_path()
+            {
+                config_edit.rocket_league_path = detected;
+                *changed = true;
+                let mut status = state.boost_swap_status.lock().unwrap();
+                *status = "Idle".to_string();
+            }
+        });
+
+        // Path validation feedback
+        let path_valid = if config_edit.rocket_league_path.trim().is_empty() {
+            None
+        } else {
+            let path = std::path::Path::new(&config_edit.rocket_league_path);
+            Some(path.exists() && path.join("TAGame").join("CookedPCConsole").exists())
+        };
+
+        match path_valid {
+            Some(true) => {
+                ui.colored_label(egui::Color32::from_rgb(100, 220, 100), "✔ Valid Rocket League installation found.");
+            }
+            Some(false) => {
+                ui.colored_label(egui::Color32::from_rgb(230, 80, 80), "❌ Invalid folder (TAGame/CookedPCConsole not found).");
+            }
+            None => {
+                ui.colored_label(egui::Color32::from_rgb(220, 200, 100), "⚠ Path unconfigured. Paste path or click Auto-detect.");
+            }
+        }
+
+        ui.add_space(8.0);
+
+        let inspection = crate::assets::inspect_boost_swap(&config_edit.rocket_league_path);
+        debug_status_row(
+            ui,
+            "Backup Metadata",
+            if inspection.metadata_exists { "yes" } else { "no" },
+        );
+        debug_status_row(
+            ui,
+            "Cached Assets",
+            if inspection.cache_verified {
+                "verified"
+            } else {
+                "not verified"
+            },
+        );
+        debug_status_row(ui, "Game Files", inspection.game_file_state.label());
+        ui.label(
+            egui::RichText::new(&inspection.message)
+                .size(10.0)
+                .color(egui::Color32::from_gray(160)),
+        );
+        ui.add_space(8.0);
+
+        // Warning message required by user
+        ui.group(|ui| {
+            ui.horizontal(|ui| {
+                ui.colored_label(
+                    egui::Color32::from_rgb(255, 140, 0), // Dark Orange
+                    "⚠ Warning: Editing game files can technically be bannable (violates ToS). Use at your own risk.",
+                );
+            });
+        });
+
+        ui.add_space(8.0);
+
+        let mut enabled =
+            inspection.game_file_state == crate::assets::BoostGameFileState::Alpha;
+        let can_toggle = matches!(
+            inspection.game_file_state,
+            crate::assets::BoostGameFileState::Original
+                | crate::assets::BoostGameFileState::Alpha
+                | crate::assets::BoostGameFileState::Unbacked
+        );
+        let checkbox_resp = ui.add_enabled(
+            can_toggle,
+            egui::Checkbox::new(
+                &mut enabled,
+                "Replace Standard Boost with Alpha Boost (Gold Rush)",
+            ),
+        );
+        if checkbox_resp.changed() {
+            if config_edit.rocket_league_path.trim().is_empty() {
+                let mut status = state.boost_swap_status.lock().unwrap();
+                *status = "Error: Configure your Rocket League path first.".to_string();
+            } else if path_valid != Some(true) {
+                let mut status = state.boost_swap_status.lock().unwrap();
+                *status = "Error: Invalid Rocket League directory. Check the path and try again.".to_string();
+            } else {
+                if enabled {
+                    crate::assets::start_apply_alpha_boost(
+                        state.clone(),
+                        config_edit.rocket_league_path.clone(),
+                    );
+                } else {
+                    crate::assets::start_restore_standard_boost(
+                        state.clone(),
+                        config_edit.rocket_league_path.clone(),
+                    );
+                }
+            }
+        }
+
+        if inspection.game_file_state == crate::assets::BoostGameFileState::Unbacked {
+            ui.colored_label(
+                egui::Color32::from_rgb(220, 200, 100),
+                "No backup metadata yet. First apply will back up the current game files as originals.",
+            );
+        } else if !can_toggle && path_valid == Some(true) {
+            ui.colored_label(
+                egui::Color32::from_rgb(220, 200, 100),
+                "Current boost files are not a clean original/Alpha pair. Restore originals before applying.",
+            );
+        }
+
+        if inspection.metadata_exists && ui.button("Restore Original Boost").clicked() {
+            if config_edit.rocket_league_path.trim().is_empty() {
+                let mut status = state.boost_swap_status.lock().unwrap();
+                *status = "Error: Configure your Rocket League path first.".to_string();
+            } else if path_valid != Some(true) {
+                let mut status = state.boost_swap_status.lock().unwrap();
+                *status =
+                    "Error: Invalid Rocket League directory. Check the path and try again."
+                        .to_string();
+            } else {
+                crate::assets::start_restore_standard_boost(
+                    state.clone(),
+                    config_edit.rocket_league_path.clone(),
+                );
+            }
+        }
+
+        // Render swap operation feedback
+        let status = state.boost_swap_status.lock().unwrap().clone();
+        if status != "Idle" {
+            ui.add_space(6.0);
+            if status.starts_with("Error")
+                || status.starts_with("Download failed")
+                || status.starts_with("Backup failed")
+                || status.starts_with("Swap failed")
+                || status.starts_with("Restore failed")
+                || status.starts_with("Failed")
+                || status.starts_with("Blocked")
+            {
+                ui.colored_label(egui::Color32::from_rgb(230, 80, 80), format!("❌ {status}"));
+            } else if status.starts_with("Success") {
+                ui.colored_label(
+                    egui::Color32::from_rgb(100, 225, 100),
+                    format!("✔ {status}"),
+                );
+            } else {
+                ui.horizontal(|ui| {
+                    ui.add(egui::Spinner::new());
+                    ui.label(&status);
+                });
+            }
+        }
+
+        // Game running warning
+        if is_rl_running {
+            ui.add_space(6.0);
+            ui.colored_label(
+                egui::Color32::from_rgb(220, 200, 100),
+                "ℹ Rocket League is currently running. You must restart the game once to see boost changes.",
+            );
+        }
+    });
+}
+
+fn render_positioning_settings_section(
+    ui: &mut egui::Ui,
+    config_edit: &mut crate::state::Config,
+    changed: &mut bool,
+) {
+    ui.group(|ui| {
+        ui.heading("Overlay Positioning");
+        if ui
+            .checkbox(&mut config_edit.layout_mode, "Enable Drag Positioning")
+            .changed()
+        {
+            *changed = true;
+        }
+
+        if config_edit.layout_mode {
+            ui.colored_label(
+                egui::Color32::from_rgb(220, 200, 100),
+                "Launch the overlay, open settings, then drag visible overlay panels into place.",
+            );
+        }
+
+        ui.horizontal_wrapped(|ui| {
+            if ui.button("Reset Lobby").clicked() {
+                config_edit.lobby_manual_position = None;
+                *changed = true;
+            }
+            if ui.button("Reset Boost").clicked() {
+                config_edit.teammate_boost_manual_position = None;
+                *changed = true;
+            }
+            if ui.button("Reset Session").clicked() {
+                config_edit.session_manual_position = None;
+                *changed = true;
+            }
+        });
+    });
+}
+
+fn render_launch_controls(
+    ui: &mut egui::Ui,
+    ctx: &egui::Context,
+    state: &Arc<AppState>,
+    config_edit: &crate::state::Config,
+    is_launched: bool,
+) {
+    let btn_text = if is_launched {
+        "Stop Overlay (HUD Active)"
+    } else {
+        "Launch Overlay"
+    };
+    if ui.button(egui::RichText::new(btn_text).heading()).clicked() {
+        let new_val = !is_launched;
+        state.is_launched.store(new_val, Ordering::SeqCst);
+        if new_val {
+            state.is_settings_visible.store(false, Ordering::SeqCst);
+            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(
+                config_edit.window_size.into(),
+            ));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
+            ctx.send_viewport_cmd(egui::ViewportCommand::MousePassthrough(true));
+        } else {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::MousePassthrough(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize([720.0, 820.0].into()));
+        }
+    }
+
+    ui.add_space(10.0);
+    let is_visible = state.is_visible.load(Ordering::SeqCst);
+    ui.horizontal(|ui| {
+        ui.label("HUD Visibility:");
+        if is_visible || is_launched {
+            ui.colored_label(egui::Color32::GREEN, "ACTIVE");
+        } else {
+            ui.colored_label(egui::Color32::RED, "HIDDEN (Hold Hotkey)");
+        }
+    });
+
+    ui.separator();
+    if ui.button("Reset to Defaults").clicked() {
+        let default_config = crate::state::Config::default();
+        state.save_config(default_config);
+    }
+    if ui.button("Quit").clicked() {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+    }
+    ui.label(
+        egui::RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
+            .size(9.0)
+            .color(egui::Color32::from_gray(100)),
+    );
+}

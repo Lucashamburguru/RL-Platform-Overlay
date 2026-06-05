@@ -204,7 +204,12 @@ pub fn start_mmr_fetch_task(state: Arc<AppState>) {
         {
             Ok(c) => c,
             Err(e) => {
-                eprintln!("Failed to build wreq client: {}", e);
+                let message = format!("Failed to build HTTP client for background MMR: {e}");
+                eprintln!("{message}");
+                let mut local_mmr = (**state.local_mmr.load()).clone();
+                local_mmr.fetching = false;
+                local_mmr.error = message;
+                state.local_mmr.store(Arc::new(local_mmr));
                 return;
             }
         };
@@ -412,6 +417,7 @@ mod tests {
     use crate::state::PlayerInfo;
 
     #[tokio::test]
+    #[ignore = "hits live tracker.gg endpoints"]
     async fn test_pengiwin_steam() {
         let player = TrackerPlayer {
             platform: "Steam".to_string(),
@@ -434,6 +440,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "hits live tracker.gg endpoints"]
     async fn test_alfa_psn() {
         let players = vec![
             TrackerPlayer {

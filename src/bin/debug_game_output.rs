@@ -1,16 +1,15 @@
 use futures_util::StreamExt;
+use rl_platform_overlay::json_utils::{decode_json_string_value, number_field, string_field};
+use rl_platform_overlay::stats_api::{TCP_ADDR, TcpJsonSplitter, WS_URL, now_ms};
 use serde_json::Value;
 use std::env;
 use std::fs::File;
 use std::io::{self, Write};
 use std::path::PathBuf;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 use tokio::io::AsyncReadExt;
 use tokio::net::TcpStream;
 use tokio_tungstenite::connect_async;
-
-const WS_URL: &str = "ws://127.0.0.1:49123";
-const TCP_ADDR: &str = "127.0.0.1:49123";
 
 #[derive(Debug)]
 struct Args {
@@ -157,7 +156,7 @@ async fn capture_tcp(
 ) -> io::Result<()> {
     let mut stream = TcpStream::connect(TCP_ADDR).await?;
     let mut buffer = [0u8; 16384];
-    let mut leftover = String::new();
+    let mut splitter = TcpJsonSplitter::default();
 
     loop {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
@@ -189,40 +188,8 @@ async fn capture_tcp(
             writeln!(file, "{chunk}")?;
         }
 
-        let text = format!("{leftover}{chunk}");
-        leftover.clear();
-
-        let mut start = 0;
-        let mut depth = 0;
-        let mut in_string = false;
-        let mut escaped = false;
-
-        for (i, c) in text.char_indices() {
-            if escaped {
-                escaped = false;
-                continue;
-            }
-            match c {
-                '\\' if in_string => escaped = true,
-                '"' => in_string = !in_string,
-                '{' if !in_string => {
-                    if depth == 0 {
-                        start = i;
-                    }
-                    depth += 1;
-                }
-                '}' if !in_string && depth > 0 => {
-                    depth -= 1;
-                    if depth == 0 {
-                        write_payload(file, "tcp-json-object", &text[start..=i])?;
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        if depth > 0 {
-            leftover = text[start..].to_string();
+        for payload in splitter.push(&chunk) {
+            write_payload(file, "tcp-json-object", &payload)?;
         }
     }
 }
@@ -263,15 +230,10 @@ fn write_summary(file: &mut File, json: &Value) -> io::Result<()> {
     }
 
     let data = json.get("Data").unwrap_or(json);
-    let real_data = if let Some(encoded) = data.as_str() {
+    if data.as_str().is_some() {
         writeln!(file, "data_is_json_string=true")?;
-        serde_json::from_str::<Value>(encoded).unwrap_or_else(|error| {
-            let _ = writeln!(file, "inner_json_parse_error={error}");
-            data.clone()
-        })
-    } else {
-        data.clone()
-    };
+    }
+    let real_data = decode_json_string_value(data);
 
     if let Some(game) = real_data.get("game").or_else(|| real_data.get("Game")) {
         write_optional_str(file, "game.client", game, &["client", "Client"])?;
@@ -334,23 +296,4 @@ fn write_optional_str(
         writeln!(file, "{label}={field}")?;
     }
     Ok(())
-}
-
-fn string_field<'a>(value: &'a Value, keys: &[&str]) -> Option<&'a str> {
-    keys.iter().find_map(|key| value[*key].as_str())
-}
-
-fn number_field(value: &Value, keys: &[&str]) -> Option<u64> {
-    keys.iter().find_map(|key| {
-        value[*key]
-            .as_u64()
-            .or_else(|| value[*key].as_str()?.parse().ok())
-    })
-}
-
-fn now_ms() -> u128 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
 }

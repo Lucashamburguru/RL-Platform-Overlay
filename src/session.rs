@@ -1,3 +1,4 @@
+use crate::json_utils::{bool_field, decode_json_string_value, number_field, string_field};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -42,18 +43,14 @@ pub struct SessionState {
 
 impl SessionState {
     pub fn handle_update_state(&mut self, data: &Value, local_team_hint: Option<u8>) {
-        let real_data = if let Some(s) = data.as_str() {
-            serde_json::from_str::<Value>(s).unwrap_or(data.clone())
-        } else {
-            data.clone()
-        };
+        let real_data = decode_json_string_value(data);
 
-        if let Some(match_guid) = string_field(&real_data, &["MatchGuid", "matchGuid"]) {
-            if self.active_match_id != match_guid {
-                self.active_match_id = match_guid.to_string();
-                self.result_recorded_for_match = false;
-                self.last_result = MatchResult::Unknown;
-            }
+        if let Some(match_guid) = string_field(&real_data, &["MatchGuid", "matchGuid"])
+            && self.active_match_id != match_guid
+        {
+            self.active_match_id = match_guid.to_string();
+            self.result_recorded_for_match = false;
+            self.last_result = MatchResult::Unknown;
         }
 
         if let Some(team) = local_team_hint {
@@ -159,22 +156,6 @@ fn result_from_score(blue: u32, orange: u32, local_team: u8) -> Option<MatchResu
     } else {
         MatchResult::Loss
     })
-}
-
-fn string_field<'a>(value: &'a Value, keys: &[&str]) -> Option<&'a str> {
-    keys.iter().find_map(|key| value[*key].as_str())
-}
-
-fn number_field(value: &Value, keys: &[&str]) -> Option<u64> {
-    keys.iter().find_map(|key| {
-        value[*key]
-            .as_u64()
-            .or_else(|| value[*key].as_str()?.parse().ok())
-    })
-}
-
-fn bool_field(value: &Value, keys: &[&str]) -> Option<bool> {
-    keys.iter().find_map(|key| value[*key].as_bool())
 }
 
 #[cfg(test)]
