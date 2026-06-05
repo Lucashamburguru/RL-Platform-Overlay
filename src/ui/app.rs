@@ -23,6 +23,7 @@ pub struct MainApp {
     last_logged_show_settings: Option<bool>,
     #[allow(clippy::type_complexity)]
     last_viewport_state: Option<(bool, bool, bool, bool, Option<egui::Pos2>, [f32; 2])>,
+    #[allow(dead_code)]
     hwnd: Option<isize>,
     rocket_league_process_watcher: crate::assets::RocketLeagueProcessWatcher,
 }
@@ -94,12 +95,14 @@ impl eframe::App for MainApp {
         let show_boost_hud =
             is_launched && config.show_teammate_boost && !show_settings && !config.layout_mode;
         let mouse_passthrough = is_launched && !show_settings && !config.layout_mode;
+        #[allow(unused_mut)]
         let mut target_size = if is_launched {
             config.window_size
         } else {
             [720.0, 820.0]
         };
 
+        #[allow(unused_mut)]
         let mut target_pos = None;
         #[allow(unused_mut)]
         let mut fullscreen = false;

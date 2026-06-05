@@ -51,6 +51,7 @@ pub async fn run(debug_enabled: bool) -> eframe::Result<()> {
         "RL Overlay Settings",
         options,
         Box::new(|cc| {
+            #[allow(unused_mut)]
             let mut hwnd = None;
             #[cfg(target_os = "windows")]
             {
