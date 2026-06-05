@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.17] - 2026-06-05
+
+### Fixed
+- **Active Windows Style Enforcement**: Implemented frame-by-frame Win32 style verification to actively strip `WS_CAPTION`, `WS_SYSMENU`, and `WS_THICKFRAME` on Windows. This prevents `winit` or the OS from re-applying native window borders or caption buttons during runtime window management cycles.
+
+---
+
 ## [0.1.16] - 2026-06-05
 
 ### Fixed

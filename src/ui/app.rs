@@ -145,6 +145,7 @@ impl eframe::App for MainApp {
                 if is_launched != is_layered {
                     set_window_transparency(hwnd, is_launched);
                 }
+                enforce_borderless_style(hwnd);
             }
         }
 
@@ -476,6 +477,35 @@ fn set_window_transparency(hwnd: isize, transparent: bool) {
                 cyBottomHeight: 0,
             };
             let _ = DwmExtendFrameIntoClientArea(hwnd, &margins);
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn enforce_borderless_style(hwnd: isize) {
+    use winapi::shared::windef::HWND;
+    use winapi::um::winuser::{
+        GWL_STYLE, GetWindowLongW, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+        SWP_NOZORDER, SetWindowLongW, SetWindowPos, WS_CAPTION, WS_MAXIMIZEBOX, WS_MINIMIZEBOX,
+        WS_SYSMENU, WS_THICKFRAME,
+    };
+
+    let hwnd = hwnd as HWND;
+    unsafe {
+        let style = GetWindowLongW(hwnd, GWL_STYLE);
+        let target_style = style
+            & !(WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX) as i32;
+        if style != target_style {
+            SetWindowLongW(hwnd, GWL_STYLE, target_style);
+            SetWindowPos(
+                hwnd,
+                std::ptr::null_mut(),
+                0,
+                0,
+                0,
+                0,
+                SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+            );
         }
     }
 }
