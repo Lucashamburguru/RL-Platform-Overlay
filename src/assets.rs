@@ -12,8 +12,6 @@ const BOOST_RELEASE_TAG: &str = "alpha-boost-assets-v1";
 const BACKUP_METADATA_FILE: &str = "backup_metadata.json";
 const METADATA_VERSION: u32 = 1;
 
-// Fill these with the SHA-256 values of the final GitHub Release assets.
-// Until then, Alpha Boost apply fails closed before any download or file write.
 const ALPHA_VISUAL_SHA256: &str =
     "b4bee6087142a1f7fcbc61a1cca1a7a093e282d2aba2559da783b643abb5449d";
 const ALPHA_AUDIO_SHA256: &str = "cca81ccfdd4bfb63464211cbd8354f86ec884a43afbe890c2998593242231211";
@@ -57,7 +55,34 @@ struct BoostBackupFileMetadata {
 pub struct BoostSwapInspection {
     pub metadata_exists: bool,
     pub cache_verified: bool,
+    pub game_file_state: BoostGameFileState,
     pub message: String,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum BoostGameFileState {
+    #[default]
+    Unavailable,
+    Original,
+    Alpha,
+    Unbacked,
+    Mixed,
+    Unknown,
+    Missing,
+}
+
+impl BoostGameFileState {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Unavailable => "unavailable",
+            Self::Original => "original",
+            Self::Alpha => "alpha",
+            Self::Unbacked => "unbacked",
+            Self::Mixed => "mixed",
+            Self::Unknown => "unknown",
+            Self::Missing => "missing",
+        }
+    }
 }
 
 pub fn is_rocket_league_running() -> bool {
@@ -87,7 +112,7 @@ pub fn is_rocket_league_running() -> bool {
     false
 }
 
-pub fn inspect_boost_swap() -> BoostSwapInspection {
+pub fn inspect_boost_swap(rocket_league_path: &str) -> BoostSwapInspection {
     let Ok(conf_dir) =
         config_dir().ok_or_else(|| "Could not resolve config directory.".to_string())
     else {
@@ -98,6 +123,8 @@ pub fn inspect_boost_swap() -> BoostSwapInspection {
     };
 
     let metadata_exists = backup_metadata_path(&conf_dir).exists();
+    let game_file_state = inspect_game_file_state(rocket_league_path, &conf_dir)
+        .unwrap_or(BoostGameFileState::Unavailable);
     let cache_verified = asset_hashes_configured()
         && cached_asset_verified(&conf_dir, ALPHA_VISUAL_SPEC)
         && cached_asset_verified(&conf_dir, ALPHA_AUDIO_SPEC);
@@ -113,7 +140,80 @@ pub fn inspect_boost_swap() -> BoostSwapInspection {
     BoostSwapInspection {
         metadata_exists,
         cache_verified,
+        game_file_state,
         message,
+    }
+}
+
+fn inspect_game_file_state(
+    rocket_league_path: &str,
+    conf_dir: &Path,
+) -> Result<BoostGameFileState, String> {
+    if rocket_league_path.trim().is_empty() {
+        return Ok(BoostGameFileState::Unavailable);
+    }
+
+    let game_dir = cooked_pc_console_path(rocket_league_path)?;
+    let targets = boost_targets(&game_dir);
+    inspect_game_file_state_for_targets(&targets, conf_dir)
+}
+
+fn inspect_game_file_state_for_targets(
+    targets: &[(&str, PathBuf)],
+    conf_dir: &Path,
+) -> Result<BoostGameFileState, String> {
+    if targets
+        .iter()
+        .any(|(_, path)| !path.exists() || !path.is_file())
+    {
+        return Ok(BoostGameFileState::Missing);
+    }
+
+    let metadata = load_backup_metadata(conf_dir)?;
+    let mut states = Vec::with_capacity(targets.len());
+    for (file_name, target) in targets.iter() {
+        let actual_hash = file_sha256(target)?;
+        let alpha_hash = alpha_hash_for_file(file_name).unwrap_or("");
+        let is_alpha =
+            expected_hash_configured(alpha_hash) && actual_hash.eq_ignore_ascii_case(alpha_hash);
+        let is_original = metadata
+            .as_ref()
+            .and_then(|metadata| metadata_file(metadata, file_name).ok())
+            .is_some_and(|file| actual_hash.eq_ignore_ascii_case(&file.original_sha256));
+
+        states.push(if is_alpha {
+            BoostGameFileState::Alpha
+        } else if is_original {
+            BoostGameFileState::Original
+        } else if metadata.is_none() {
+            BoostGameFileState::Unbacked
+        } else {
+            BoostGameFileState::Unknown
+        });
+    }
+
+    if states
+        .iter()
+        .all(|state| *state == BoostGameFileState::Alpha)
+    {
+        Ok(BoostGameFileState::Alpha)
+    } else if states
+        .iter()
+        .all(|state| *state == BoostGameFileState::Original)
+    {
+        Ok(BoostGameFileState::Original)
+    } else if states
+        .iter()
+        .all(|state| *state == BoostGameFileState::Unbacked)
+    {
+        Ok(BoostGameFileState::Unbacked)
+    } else if states
+        .iter()
+        .any(|state| *state == BoostGameFileState::Unknown)
+    {
+        Ok(BoostGameFileState::Unknown)
+    } else {
+        Ok(BoostGameFileState::Mixed)
     }
 }
 
@@ -220,6 +320,7 @@ async fn ensure_verified_cached_asset(
 async fn download_file(url: &str, dest_path: &Path) -> Result<(), String> {
     let client = wreq::Client::builder()
         .timeout(std::time::Duration::from_secs(60))
+        .redirect(wreq::redirect::Policy::limited(10))
         .build()
         .map_err(|e| format!("HTTP client init failed: {e}"))?;
 
@@ -232,7 +333,17 @@ async fn download_file(url: &str, dest_path: &Path) -> Result<(), String> {
 
     let status = response.status();
     if !status.is_success() {
-        return Err(format!("Server returned HTTP status {status}"));
+        let location = response
+            .headers()
+            .get(wreq::header::LOCATION)
+            .and_then(|header| header.to_str().ok())
+            .unwrap_or("");
+        if location.is_empty() {
+            return Err(format!("Server returned HTTP status {status} for {url}"));
+        }
+        return Err(format!(
+            "Server returned HTTP status {status} for {url}; redirect location: {location}"
+        ));
     }
 
     let bytes = response
@@ -453,6 +564,13 @@ fn verify_targets_known(
     Ok(())
 }
 
+fn alpha_hash_for_file(file_name: &str) -> Option<&'static str> {
+    [ALPHA_VISUAL_SPEC, ALPHA_AUDIO_SPEC]
+        .iter()
+        .find(|spec| spec.file_name == file_name)
+        .map(|spec| spec.expected_sha256)
+}
+
 fn metadata_file<'a>(
     metadata: &'a BoostBackupMetadata,
     file_name: &str,
@@ -589,6 +707,60 @@ mod tests {
         ];
         let error = verify_targets_known(&targets, &metadata, &specs).unwrap_err();
         assert!(error.starts_with("Blocked:"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn inspect_game_file_state_detects_original_from_metadata() {
+        let root = temp_dir("state_original");
+        let game_dir = root.join("game");
+        let conf_dir = root.join("config");
+        fs::create_dir_all(&game_dir).unwrap();
+        fs::write(game_dir.join("Boost_Standard_SF.upk"), b"visual-original").unwrap();
+        fs::write(game_dir.join("SFX_Boost_Standard.bnk"), b"audio-original").unwrap();
+        let targets = boost_targets(&game_dir);
+        ensure_backup_metadata(&conf_dir, &targets).unwrap();
+
+        assert_eq!(
+            inspect_game_file_state_for_targets(&targets, &conf_dir).unwrap(),
+            BoostGameFileState::Original
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn inspect_game_file_state_for_targets_blocks_unknown() {
+        let root = temp_dir("state_unknown");
+        let game_dir = root.join("game");
+        let conf_dir = root.join("config");
+        fs::create_dir_all(&game_dir).unwrap();
+        fs::write(game_dir.join("Boost_Standard_SF.upk"), b"visual-original").unwrap();
+        fs::write(game_dir.join("SFX_Boost_Standard.bnk"), b"audio-original").unwrap();
+        let targets = boost_targets(&game_dir);
+        ensure_backup_metadata(&conf_dir, &targets).unwrap();
+
+        fs::write(game_dir.join("Boost_Standard_SF.upk"), b"unknown").unwrap();
+        assert_eq!(
+            inspect_game_file_state_for_targets(&targets, &conf_dir).unwrap(),
+            BoostGameFileState::Unknown
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn inspect_game_file_state_detects_unbacked_first_run() {
+        let root = temp_dir("state_unbacked");
+        let game_dir = root.join("game");
+        let conf_dir = root.join("config");
+        fs::create_dir_all(&game_dir).unwrap();
+        fs::write(game_dir.join("Boost_Standard_SF.upk"), b"visual-current").unwrap();
+        fs::write(game_dir.join("SFX_Boost_Standard.bnk"), b"audio-current").unwrap();
+        let targets = boost_targets(&game_dir);
+
+        assert_eq!(
+            inspect_game_file_state_for_targets(&targets, &conf_dir).unwrap(),
+            BoostGameFileState::Unbacked
+        );
         let _ = fs::remove_dir_all(root);
     }
 

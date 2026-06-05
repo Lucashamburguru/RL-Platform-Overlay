@@ -32,7 +32,6 @@ enum SettingsTab {
     Overlay,
     Session,
     Boost,
-    Hotkeys,
     Debug,
 }
 
@@ -49,7 +48,12 @@ impl eframe::App for MainApp {
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(egui::Color32::from_rgba_unmultiplied(0, 0, 0, 0)))
             .show(ctx, |_ui| {
-                let show_hud = is_launched && self.state.is_visible.load(Ordering::SeqCst);
+                let show_settings = self.state.is_settings_visible.load(Ordering::SeqCst)
+                    || self.state.is_recording_kb.load(Ordering::SeqCst)
+                    || self.state.is_recording_ctrl.load(Ordering::SeqCst)
+                    || self.state.is_recording_settings.load(Ordering::SeqCst);
+                let show_hud = is_launched
+                    && (self.state.is_visible.load(Ordering::SeqCst) || config.layout_mode);
 
                 if show_hud {
                     render_overlay(ctx, &self.state);
@@ -58,10 +62,6 @@ impl eframe::App for MainApp {
                     render_session_overlay(ctx, &self.state);
                 }
 
-                let show_settings = self.state.is_settings_visible.load(Ordering::SeqCst)
-                    || self.state.is_recording_kb.load(Ordering::SeqCst)
-                    || self.state.is_recording_ctrl.load(Ordering::SeqCst)
-                    || self.state.is_recording_settings.load(Ordering::SeqCst);
                 if self.last_logged_show_settings != Some(show_settings) {
                     crate::input::append_hotkey_debug_log(format!(
                         "ui_show_settings visible={show_settings} launched={is_launched} recording_kb={} recording_ctrl={} recording_settings={}",
@@ -74,14 +74,15 @@ impl eframe::App for MainApp {
 
                 // 2. Always-on Teammate Boost HUD
                 // Settings mode uses the Boost tab preview instead of the floating in-game HUD.
-                if is_launched && !show_settings && config.show_teammate_boost {
+                if is_launched && config.show_teammate_boost && config.layout_mode {
+                    render_teammate_boost_position_preview(ctx, &self.state, true);
+                } else if is_launched && config.show_teammate_boost && !show_settings {
                     render_teammate_boost(ctx, &self.state);
-                }
-                if show_settings
+                } else if show_settings
                     && self.settings_tab == SettingsTab::Boost
                     && config.show_teammate_boost
                 {
-                    render_teammate_boost_position_preview(ctx, &self.state);
+                    render_teammate_boost_position_preview(ctx, &self.state, false);
                 }
 
                 // 3. Settings UI (Floating Window)
@@ -154,49 +155,22 @@ impl eframe::App for MainApp {
                 });
 
                 if show_settings {
+                    let mut settings_open = true;
                     egui::Window::new("RL Overlay Settings")
                         .collapsible(true)
                         .resizable(true)
-                        .title_bar(false)
-                        .default_size([450.0, 600.0])
+                        .movable(true)
+                        .default_pos([16.0, 16.0])
+                        .default_size(if is_launched {
+                            [450.0, 600.0]
+                        } else {
+                            [680.0, 760.0]
+                        })
+                        .min_width(420.0)
+                        .min_height(520.0)
+                        .constrain_to(ctx.screen_rect().shrink(8.0))
+                        .open(&mut settings_open)
                         .show(ctx, |ui| {
-                            let title_bar_response = ui
-                                .horizontal(|ui| {
-                                    ui.label(egui::RichText::new("RL Overlay Settings").strong());
-                                    ui.with_layout(
-                                        egui::Layout::right_to_left(egui::Align::Center),
-                                        |ui| {
-                                            let close_btn = ui.add(
-                                                egui::Button::new(
-                                                    egui::RichText::new("  X  ")
-                                                        .strong()
-                                                        .color(egui::Color32::WHITE),
-                                                )
-                                                .fill(egui::Color32::from_rgb(180, 40, 40))
-                                                .min_size(egui::vec2(40.0, 24.0)),
-                                            );
-                                            if close_btn.clicked() {
-                                                crate::input::append_hotkey_debug_log(
-                                                    "settings_close_button_clicked visible=false",
-                                                );
-                                                self.state
-                                                    .is_settings_visible
-                                                    .store(false, Ordering::SeqCst);
-                                            }
-                                        },
-                                    );
-                                })
-                                .response;
-
-                            if title_bar_response
-                                .interact(egui::Sense::drag())
-                                .drag_started()
-                            {
-                                ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
-                            }
-
-                            ui.separator();
-
                             ui.add_space(5.0);
 
                             let mut config_edit = (**self.state.config.load()).clone();
@@ -252,13 +226,6 @@ impl eframe::App for MainApp {
                                         self.is_rl_running,
                                     )
                                 }
-                                SettingsTab::Hotkeys => render_hotkey_settings_tab(
-                                    ui,
-                                    ctx,
-                                    &self.state,
-                                    &mut config_edit,
-                                    &mut changed,
-                                ),
                                 SettingsTab::Debug => {
                                     render_debug_settings_tab(ui, &self.state, is_launched)
                                 }
@@ -268,6 +235,14 @@ impl eframe::App for MainApp {
                                 self.state.save_config(config_edit);
                             }
                         });
+                    if !settings_open {
+                        crate::input::append_hotkey_debug_log(
+                            "settings_window_close_clicked visible=false",
+                        );
+                        self.state
+                            .is_settings_visible
+                            .store(false, Ordering::SeqCst);
+                    }
                 }
             });
 
@@ -281,7 +256,6 @@ fn render_settings_tabs(ui: &mut egui::Ui, selected: &mut SettingsTab, debug_ena
         ui.selectable_value(selected, SettingsTab::Overlay, "Overlay");
         ui.selectable_value(selected, SettingsTab::Session, "Session");
         ui.selectable_value(selected, SettingsTab::Boost, "Boost");
-        ui.selectable_value(selected, SettingsTab::Hotkeys, "Hotkeys");
         if debug_enabled {
             ui.selectable_value(selected, SettingsTab::Debug, "Debug");
         }
@@ -521,6 +495,12 @@ fn render_overlay_settings_tab(
     });
 
     ui.add_space(10.0);
+    render_hotkey_settings_section(ui, ctx, state, config_edit, changed);
+
+    ui.add_space(10.0);
+    render_positioning_settings_section(ui, config_edit, changed);
+
+    ui.add_space(10.0);
     render_launch_controls(ui, ctx, state, config_edit, is_launched);
 }
 
@@ -530,138 +510,125 @@ fn render_session_settings_tab(
     config_edit: &mut crate::state::Config,
     changed: &mut bool,
 ) {
-    ui.group(|ui| {
-        ui.heading("Session Overlay");
-        if ui
-            .checkbox(
-                &mut config_edit.session_overlay_enabled,
-                "Enable Session Overlay",
-            )
-            .changed()
-        {
-            *changed = true;
-        }
+    ui.columns(2, |columns| {
+        columns[0].group(|ui| {
+            ui.heading("Session Overlay");
+            if ui
+                .checkbox(
+                    &mut config_edit.session_overlay_enabled,
+                    "Enable Session Overlay",
+                )
+                .changed()
+            {
+                *changed = true;
+            }
 
-        ui.horizontal(|ui| {
-            ui.label("Display:");
-            egui::ComboBox::new("session_display", "")
-                .selected_text(session_display_label(config_edit.session_overlay_display))
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(
-                        &mut config_edit.session_overlay_display,
-                        SessionOverlayDisplay::Compact,
-                        "Compact",
-                    );
-                    ui.selectable_value(
-                        &mut config_edit.session_overlay_display,
-                        SessionOverlayDisplay::Expanded,
-                        "Expanded",
-                    );
-                });
-            if config_edit.session_overlay_display != state.config.load().session_overlay_display {
+            ui.horizontal(|ui| {
+                ui.label("Display:");
+                egui::ComboBox::new("session_display", "")
+                    .selected_text(session_display_label(config_edit.session_overlay_display))
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut config_edit.session_overlay_display,
+                            SessionOverlayDisplay::Compact,
+                            "Compact",
+                        );
+                        ui.selectable_value(
+                            &mut config_edit.session_overlay_display,
+                            SessionOverlayDisplay::Expanded,
+                            "Expanded",
+                        );
+                    });
+                if config_edit.session_overlay_display
+                    != state.config.load().session_overlay_display
+                {
+                    *changed = true;
+                }
+            });
+
+            ui.label("Scale");
+            if ui
+                .add(egui::Slider::new(
+                    &mut config_edit.session_overlay_scale,
+                    0.6..=2.5,
+                ))
+                .changed()
+            {
+                *changed = true;
+            }
+
+            ui.label("Opacity");
+            if ui
+                .add(egui::Slider::new(
+                    &mut config_edit.session_overlay_opacity,
+                    40..=255,
+                ))
+                .changed()
+            {
+                *changed = true;
+            }
+
+            ui.horizontal(|ui| {
+                ui.label("Anchor:");
+                egui::ComboBox::new("session_anchor", "")
+                    .selected_text(format!("{:?}", config_edit.session_overlay_anchor))
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut config_edit.session_overlay_anchor,
+                            AnchorPos::TopLeft,
+                            "Top Left",
+                        );
+                        ui.selectable_value(
+                            &mut config_edit.session_overlay_anchor,
+                            AnchorPos::TopRight,
+                            "Top Right",
+                        );
+                        ui.selectable_value(
+                            &mut config_edit.session_overlay_anchor,
+                            AnchorPos::BottomLeft,
+                            "Bottom Left",
+                        );
+                        ui.selectable_value(
+                            &mut config_edit.session_overlay_anchor,
+                            AnchorPos::BottomRight,
+                            "Bottom Right",
+                        );
+                        ui.selectable_value(
+                            &mut config_edit.session_overlay_anchor,
+                            AnchorPos::CenterRight,
+                            "Center Right",
+                        );
+                    });
+                if config_edit.session_overlay_anchor != state.config.load().session_overlay_anchor
+                {
+                    *changed = true;
+                }
+            });
+
+            ui.label("X Offset");
+            if ui
+                .add(egui::Slider::new(
+                    &mut config_edit.session_overlay_offset[0],
+                    -800.0..=800.0,
+                ))
+                .changed()
+            {
+                *changed = true;
+            }
+            ui.label("Y Offset");
+            if ui
+                .add(egui::Slider::new(
+                    &mut config_edit.session_overlay_offset[1],
+                    -800.0..=800.0,
+                ))
+                .changed()
+            {
                 *changed = true;
             }
         });
 
-        ui.label("Scale");
-        if ui
-            .add(egui::Slider::new(
-                &mut config_edit.session_overlay_scale,
-                0.6..=2.5,
-            ))
-            .changed()
-        {
-            *changed = true;
-        }
-
-        ui.label("Opacity");
-        if ui
-            .add(egui::Slider::new(
-                &mut config_edit.session_overlay_opacity,
-                40..=255,
-            ))
-            .changed()
-        {
-            *changed = true;
-        }
-
-        ui.horizontal(|ui| {
-            ui.label("Anchor:");
-            egui::ComboBox::new("session_anchor", "")
-                .selected_text(format!("{:?}", config_edit.session_overlay_anchor))
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(
-                        &mut config_edit.session_overlay_anchor,
-                        AnchorPos::TopLeft,
-                        "Top Left",
-                    );
-                    ui.selectable_value(
-                        &mut config_edit.session_overlay_anchor,
-                        AnchorPos::TopRight,
-                        "Top Right",
-                    );
-                    ui.selectable_value(
-                        &mut config_edit.session_overlay_anchor,
-                        AnchorPos::BottomLeft,
-                        "Bottom Left",
-                    );
-                    ui.selectable_value(
-                        &mut config_edit.session_overlay_anchor,
-                        AnchorPos::BottomRight,
-                        "Bottom Right",
-                    );
-                    ui.selectable_value(
-                        &mut config_edit.session_overlay_anchor,
-                        AnchorPos::CenterRight,
-                        "Center Right",
-                    );
-                });
-            if config_edit.session_overlay_anchor != state.config.load().session_overlay_anchor {
-                *changed = true;
-            }
-        });
-
-        ui.label("X Offset");
-        if ui
-            .add(egui::Slider::new(
-                &mut config_edit.session_overlay_offset[0],
-                -800.0..=800.0,
-            ))
-            .changed()
-        {
-            *changed = true;
-        }
-        ui.label("Y Offset");
-        if ui
-            .add(egui::Slider::new(
-                &mut config_edit.session_overlay_offset[1],
-                -800.0..=800.0,
-            ))
-            .changed()
-        {
-            *changed = true;
-        }
-
-        if ui
-            .checkbox(&mut config_edit.layout_mode, "Layout Mode")
-            .changed()
-        {
-            *changed = true;
-        }
-
-        ui.horizontal(|ui| {
-            if ui.button("Reset Lobby Position").clicked() {
-                config_edit.lobby_manual_position = None;
-                *changed = true;
-            }
-            if ui.button("Reset Boost Position").clicked() {
-                config_edit.teammate_boost_manual_position = None;
-                *changed = true;
-            }
-            if ui.button("Reset Session Position").clicked() {
-                config_edit.session_manual_position = None;
-                *changed = true;
-            }
+        columns[1].group(|ui| {
+            render_local_mmr_panel(ui, state);
         });
     });
 
@@ -676,6 +643,93 @@ fn render_session_settings_tab(
             config_edit.session_overlay_opacity,
         );
     });
+}
+
+fn render_local_mmr_panel(ui: &mut egui::Ui, state: &Arc<AppState>) {
+    let identity = state.local_player_identity.load();
+    let local_mmr = state.local_mmr.load();
+
+    ui.heading("Local MMR");
+    if identity.is_known() {
+        debug_status_row(ui, "Player", identity.name.as_str());
+        debug_status_row(ui, "Platform", identity.platform.as_str());
+    } else {
+        ui.colored_label(
+            egui::Color32::from_rgb(220, 200, 100),
+            "Waiting for local player identity.",
+        );
+    }
+
+    ui.add_space(6.0);
+    let can_refresh = identity.is_known() && !local_mmr.fetching;
+    ui.horizontal(|ui| {
+        if ui
+            .add_enabled(can_refresh, egui::Button::new("Refresh"))
+            .clicked()
+        {
+            crate::mmr::start_local_mmr_refresh(state.clone());
+        }
+        if local_mmr.fetching {
+            ui.add(egui::Spinner::new());
+            ui.label("Fetching...");
+        }
+    });
+
+    if local_mmr.last_updated_unix_ms > 0 {
+        debug_status_row(
+            ui,
+            "Updated",
+            &format_age(crate::stats_api::now_ms(), local_mmr.last_updated_unix_ms),
+        );
+    }
+    if !local_mmr.error.is_empty() {
+        ui.colored_label(
+            egui::Color32::from_rgb(230, 120, 80),
+            local_mmr.error.as_str(),
+        );
+    }
+
+    ui.add_space(8.0);
+    let Some(current) = &local_mmr.current else {
+        ui.label(egui::RichText::new("No local MMR snapshot yet.").color(egui::Color32::GRAY));
+        return;
+    };
+
+    let mut rows: Vec<_> = current.playlists.iter().collect();
+    rows.sort_by_key(|(playlist_id, playlist)| {
+        (
+            ranked_playlist_sort_priority(**playlist_id, playlist.name.as_str()),
+            **playlist_id,
+        )
+    });
+
+    if rows.is_empty() {
+        ui.label(egui::RichText::new("No ranked playlist data found.").color(egui::Color32::GRAY));
+        return;
+    }
+
+    egui::Grid::new("local_mmr_grid")
+        .num_columns(3)
+        .spacing(egui::vec2(8.0, 4.0))
+        .striped(true)
+        .show(ui, |ui| {
+            ui.label(egui::RichText::new("Mode").strong());
+            ui.label(egui::RichText::new("MMR").strong());
+            ui.label(egui::RichText::new("Delta").strong());
+            ui.end_row();
+
+            for (playlist_id, playlist) in rows {
+                let previous_rating = local_mmr
+                    .previous
+                    .as_ref()
+                    .and_then(|snapshot| snapshot.playlists.get(playlist_id))
+                    .map(|playlist| playlist.rating);
+                ui.label(compact_playlist_name(playlist.name.as_str()));
+                ui.label(playlist.rating.to_string());
+                render_mmr_delta(ui, previous_rating.map(|rating| playlist.rating - rating));
+                ui.end_row();
+            }
+        });
 }
 
 fn render_boost_settings_tab(
@@ -835,7 +889,7 @@ fn render_boost_settings_tab(
 
         ui.add_space(8.0);
 
-        let inspection = crate::assets::inspect_boost_swap();
+        let inspection = crate::assets::inspect_boost_swap(&config_edit.rocket_league_path);
         debug_status_row(
             ui,
             "Backup Metadata",
@@ -850,6 +904,7 @@ fn render_boost_settings_tab(
                 "not verified"
             },
         );
+        debug_status_row(ui, "Game Files", inspection.game_file_state.label());
         ui.label(
             egui::RichText::new(&inspection.message)
                 .size(10.0)
@@ -869,10 +924,21 @@ fn render_boost_settings_tab(
 
         ui.add_space(8.0);
 
-        // Swapping Checkbox
-        let mut enabled = config_edit.alpha_boost_enabled;
-        let checkbox_resp =
-            ui.checkbox(&mut enabled, "Replace Standard Boost with Alpha Boost (Gold Rush)");
+        let mut enabled =
+            inspection.game_file_state == crate::assets::BoostGameFileState::Alpha;
+        let can_toggle = matches!(
+            inspection.game_file_state,
+            crate::assets::BoostGameFileState::Original
+                | crate::assets::BoostGameFileState::Alpha
+                | crate::assets::BoostGameFileState::Unbacked
+        );
+        let checkbox_resp = ui.add_enabled(
+            can_toggle,
+            egui::Checkbox::new(
+                &mut enabled,
+                "Replace Standard Boost with Alpha Boost (Gold Rush)",
+            ),
+        );
         if checkbox_resp.changed() {
             if config_edit.rocket_league_path.trim().is_empty() {
                 let mut status = state.boost_swap_status.lock().unwrap();
@@ -893,6 +959,18 @@ fn render_boost_settings_tab(
                     );
                 }
             }
+        }
+
+        if inspection.game_file_state == crate::assets::BoostGameFileState::Unbacked {
+            ui.colored_label(
+                egui::Color32::from_rgb(220, 200, 100),
+                "No backup metadata yet. First apply will back up the current game files as originals.",
+            );
+        } else if !can_toggle && path_valid == Some(true) {
+            ui.colored_label(
+                egui::Color32::from_rgb(220, 200, 100),
+                "Current boost files are not a clean original/Alpha pair. Restore originals before applying.",
+            );
         }
 
         if inspection.metadata_exists && ui.button("Restore Original Boost").clicked() {
@@ -998,7 +1076,7 @@ fn preview_teammates(state: &Arc<AppState>) -> Vec<crate::state::PlayerInfo> {
     teammates
 }
 
-fn render_hotkey_settings_tab(
+fn render_hotkey_settings_section(
     ui: &mut egui::Ui,
     ctx: &egui::Context,
     state: &Arc<AppState>,
@@ -1020,6 +1098,44 @@ fn render_hotkey_settings_tab(
         {
             *changed = true;
         }
+    });
+}
+
+fn render_positioning_settings_section(
+    ui: &mut egui::Ui,
+    config_edit: &mut crate::state::Config,
+    changed: &mut bool,
+) {
+    ui.group(|ui| {
+        ui.heading("Overlay Positioning");
+        if ui
+            .checkbox(&mut config_edit.layout_mode, "Enable Drag Positioning")
+            .changed()
+        {
+            *changed = true;
+        }
+
+        if config_edit.layout_mode {
+            ui.colored_label(
+                egui::Color32::from_rgb(220, 200, 100),
+                "Launch the overlay, open settings, then drag visible overlay panels into place.",
+            );
+        }
+
+        ui.horizontal_wrapped(|ui| {
+            if ui.button("Reset Lobby").clicked() {
+                config_edit.lobby_manual_position = None;
+                *changed = true;
+            }
+            if ui.button("Reset Boost").clicked() {
+                config_edit.teammate_boost_manual_position = None;
+                *changed = true;
+            }
+            if ui.button("Reset Session").clicked() {
+                config_edit.session_manual_position = None;
+                *changed = true;
+            }
+        });
     });
 }
 
@@ -1327,7 +1443,7 @@ fn render_launch_controls(
         } else {
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
             ctx.send_viewport_cmd(egui::ViewportCommand::MousePassthrough(false));
-            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize([400.0, 600.0].into()));
+            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize([720.0, 820.0].into()));
         }
     }
 
@@ -1371,32 +1487,32 @@ fn render_overlay(ctx: &egui::Context, state: &Arc<AppState>) {
 
     let offset = base_offset * config.ui_scale;
 
-    let area = egui::Area::new("overlay_area".into())
-        .order(egui::Order::Foreground)
-        .movable(config.layout_mode);
-    let area = if let Some(position) = config.lobby_manual_position {
+    let area = egui::Area::new("overlay_area".into()).order(egui::Order::Foreground);
+    let area = if let Some(position) = active_layout_drag_position(ctx, "lobby") {
+        area.fixed_pos(position)
+    } else if let Some(position) = config.lobby_manual_position {
         area.fixed_pos(normalized_to_pos(ctx, position))
     } else {
         area.anchor(anchor, offset)
     };
 
-    let response = area
-        .show(ctx, |ui| {
-            let frame = egui::Frame::default()
-                .fill(egui::Color32::from_rgba_unmultiplied(
-                    20,
-                    20,
-                    25,
-                    config.transparency,
-                ))
-                .stroke(egui::Stroke::new(
-                    1.0,
-                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 20),
-                ))
-                .corner_radius(6.0 * config.ui_scale)
-                .inner_margin(8.0 * config.ui_scale);
+    let area_response = area.show(ctx, |ui| {
+        let frame = egui::Frame::default()
+            .fill(egui::Color32::from_rgba_unmultiplied(
+                20,
+                20,
+                25,
+                config.transparency,
+            ))
+            .stroke(egui::Stroke::new(
+                1.0,
+                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 20),
+            ))
+            .corner_radius(6.0 * config.ui_scale)
+            .inner_margin(8.0 * config.ui_scale);
 
-            frame.show(ui, |ui| {
+        frame
+            .show(ui, |ui| {
                 ui.vertical(|ui| {
                     ui.horizontal(|ui| {
                         ui.label(
@@ -1418,6 +1534,8 @@ fn render_overlay(ctx: &egui::Context, state: &Arc<AppState>) {
                             );
                         });
                     });
+                    let drag_response =
+                        render_drag_position_handle(ui, config.layout_mode, config.ui_scale);
 
                     ui.add_space(4.0 * config.ui_scale);
 
@@ -1492,7 +1610,8 @@ fn render_overlay(ctx: &egui::Context, state: &Arc<AppState>) {
                                             .color(egui::Color32::from_rgb(180, 200, 255))
                                             .size(8.5 * config.ui_scale),
                                         );
-                                    } else if !p.is_bot
+                                    } else if !p.is_local
+                                        && !p.is_bot
                                         && p.platform.to_lowercase() != "bot"
                                         && p.platform.to_lowercase() != "unknown"
                                     {
@@ -1574,13 +1693,21 @@ fn render_overlay(ctx: &egui::Context, state: &Arc<AppState>) {
                             ui.add_space(1.0 * config.ui_scale);
                         }
                     }
-                });
-            });
-        })
-        .response;
+                    drag_response
+                })
+                .inner
+            })
+            .inner
+    });
 
-    if config.layout_mode {
-        persist_dragged_position(ctx, state, response.rect, "lobby", response.drag_delta());
+    if let Some(drag_response) = area_response.inner {
+        persist_dragged_position(
+            ctx,
+            state,
+            area_response.response.rect.min,
+            "lobby",
+            &drag_response,
+        );
     }
 }
 
@@ -1640,15 +1767,17 @@ fn render_teammate_boost(ctx: &egui::Context, state: &Arc<AppState>) {
     let base_y =
         screen_rect.max.y - config.teammate_boost_offset * config.teammate_hud_scale - height;
 
-    let position = config
-        .teammate_boost_manual_position
-        .map(|position| normalized_to_pos(ctx, position))
+    let position = active_layout_drag_position(ctx, "boost")
+        .or_else(|| {
+            config
+                .teammate_boost_manual_position
+                .map(|position| normalized_to_pos(ctx, position))
+        })
         .unwrap_or_else(|| egui::pos2(base_x.max(0.0), base_y.max(0.0)));
 
     let response = egui::Area::new("teammate_boost_panel".into())
         .fixed_pos(position)
         .order(egui::Order::Foreground)
-        .movable(config.layout_mode)
         .show(ctx, |ui| {
             draw_teammate_boost_panel(
                 ui,
@@ -1657,15 +1786,25 @@ fn render_teammate_boost(ctx: &egui::Context, state: &Arc<AppState>) {
                 config.teammate_hud_scale,
                 config.teammate_boost_display,
             );
-        })
-        .response;
+            render_drag_position_handle(ui, config.layout_mode, config.teammate_hud_scale)
+        });
 
-    if config.layout_mode {
-        persist_dragged_position(ctx, state, response.rect, "boost", response.drag_delta());
+    if let Some(drag_response) = response.inner {
+        persist_dragged_position(
+            ctx,
+            state,
+            response.response.rect.min,
+            "boost",
+            &drag_response,
+        );
     }
 }
 
-fn render_teammate_boost_position_preview(ctx: &egui::Context, state: &Arc<AppState>) {
+fn render_teammate_boost_position_preview(
+    ctx: &egui::Context,
+    state: &Arc<AppState>,
+    draggable: bool,
+) {
     let config = state.config.load();
     let teammates = preview_teammates(state);
     let screen_rect = ctx.input(|i| i.screen_rect());
@@ -1674,24 +1813,46 @@ fn render_teammate_boost_position_preview(ctx: &egui::Context, state: &Arc<AppSt
     let height = teammate_boost_panel_height(teammates.len(), scale, config.teammate_boost_display);
     let base_x = screen_rect.max.x - config.teammate_boost_horizontal_offset * scale - width;
     let base_y = screen_rect.max.y - config.teammate_boost_offset * scale - height;
+    let position = active_layout_drag_position(ctx, "boost")
+        .or_else(|| {
+            config
+                .teammate_boost_manual_position
+                .map(|position| normalized_to_pos(ctx, position))
+        })
+        .unwrap_or_else(|| egui::pos2(base_x.max(0.0), base_y.max(0.0)));
 
-    egui::Area::new("teammate_boost_position_preview".into())
-        .fixed_pos(egui::pos2(base_x.max(0.0), base_y.max(0.0)))
-        .order(egui::Order::Background)
+    let response = egui::Area::new("teammate_boost_position_preview".into())
+        .fixed_pos(position)
+        .order(if draggable {
+            egui::Order::Foreground
+        } else {
+            egui::Order::Background
+        })
         .show(ctx, |ui| {
             ui.set_opacity(0.72);
             draw_teammate_boost_panel(ui, &teammates, 0, scale, config.teammate_boost_display);
+            render_drag_position_handle(ui, draggable, scale)
         });
+
+    if let Some(drag_response) = response.inner {
+        persist_dragged_position(
+            ctx,
+            state,
+            response.response.rect.min,
+            "boost",
+            &drag_response,
+        );
+    }
 }
 
 fn render_session_overlay(ctx: &egui::Context, state: &Arc<AppState>) {
     let config = state.config.load();
-    let position = config
-        .session_manual_position
-        .map(|position| normalized_to_pos(ctx, position));
-    let area = egui::Area::new("session_overlay_panel".into())
-        .order(egui::Order::Foreground)
-        .movable(config.layout_mode);
+    let position = active_layout_drag_position(ctx, "session").or_else(|| {
+        config
+            .session_manual_position
+            .map(|position| normalized_to_pos(ctx, position))
+    });
+    let area = egui::Area::new("session_overlay_panel".into()).order(egui::Order::Foreground);
     let area = if let Some(position) = position {
         area.fixed_pos(position)
     } else {
@@ -1705,20 +1866,25 @@ fn render_session_overlay(ctx: &egui::Context, state: &Arc<AppState>) {
         area.anchor(anchor, offset)
     };
 
-    let response = area
-        .show(ctx, |ui| {
-            draw_session_panel(
-                ui,
-                &state.session.load(),
-                config.session_overlay_scale,
-                config.session_overlay_display,
-                config.session_overlay_opacity,
-            );
-        })
-        .response;
+    let response = area.show(ctx, |ui| {
+        draw_session_panel(
+            ui,
+            &state.session.load(),
+            config.session_overlay_scale,
+            config.session_overlay_display,
+            config.session_overlay_opacity,
+        );
+        render_drag_position_handle(ui, config.layout_mode, config.session_overlay_scale)
+    });
 
-    if config.layout_mode {
-        persist_dragged_position(ctx, state, response.rect, "session", response.drag_delta());
+    if let Some(drag_response) = response.inner {
+        persist_dragged_position(
+            ctx,
+            state,
+            response.response.rect.min,
+            "session",
+            &drag_response,
+        );
     }
 }
 
@@ -1781,6 +1947,40 @@ fn draw_session_panel(
             );
         }
     });
+}
+
+fn render_drag_position_handle(
+    ui: &mut egui::Ui,
+    enabled: bool,
+    scale: f32,
+) -> Option<egui::Response> {
+    if !enabled {
+        return None;
+    }
+
+    ui.add_space(2.0 * scale);
+    let size = egui::vec2(78.0 * scale, 15.0 * scale);
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::drag());
+    let rounding = 3.0 * scale;
+    ui.painter().rect_filled(
+        rect,
+        rounding,
+        egui::Color32::from_rgba_unmultiplied(80, 68, 24, 190),
+    );
+    ui.painter().rect_stroke(
+        rect,
+        rounding,
+        egui::Stroke::new(1.0, egui::Color32::from_rgb(220, 190, 90)),
+        egui::StrokeKind::Inside,
+    );
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        "Drag to move",
+        egui::FontId::proportional(8.0 * scale),
+        egui::Color32::from_rgb(245, 220, 130),
+    );
+    Some(response)
 }
 
 fn streak_label(streak: i32) -> String {
@@ -2056,6 +2256,62 @@ fn session_display_label(display: SessionOverlayDisplay) -> &'static str {
     }
 }
 
+fn ranked_playlist_sort_priority(playlist_id: i32, playlist_name: &str) -> i32 {
+    let name = playlist_name.to_lowercase();
+    if playlist_id == 10 || name.contains("duel") || name.contains("1v1") {
+        0
+    } else if playlist_id == 11 || name.contains("doubles") || name.contains("2v2") {
+        1
+    } else if playlist_id == 13 || name.contains("standard") || name.contains("3v3") {
+        2
+    } else {
+        10
+    }
+}
+
+fn compact_playlist_name(playlist_name: &str) -> String {
+    let name = playlist_name.to_lowercase();
+    if name.contains("duel") || name.contains("1v1") {
+        "1v1".to_string()
+    } else if name.contains("doubles") || name.contains("2v2") {
+        "2v2".to_string()
+    } else if name.contains("standard") || name.contains("3v3") {
+        "3v3".to_string()
+    } else {
+        playlist_name
+            .trim_start_matches("Ranked ")
+            .trim()
+            .to_string()
+    }
+}
+
+fn render_mmr_delta(ui: &mut egui::Ui, delta: Option<i32>) {
+    let Some(delta) = delta else {
+        ui.label(egui::RichText::new("-").color(egui::Color32::GRAY));
+        return;
+    };
+
+    let (text, color) = if delta > 0 {
+        (format!("+{delta}"), egui::Color32::from_rgb(100, 220, 140))
+    } else if delta < 0 {
+        (delta.to_string(), egui::Color32::from_rgb(230, 120, 120))
+    } else {
+        ("0".to_string(), egui::Color32::from_gray(180))
+    };
+    ui.label(egui::RichText::new(text).color(color));
+}
+
+fn format_age(now_unix_ms: u128, then_unix_ms: u128) -> String {
+    let elapsed_seconds = now_unix_ms.saturating_sub(then_unix_ms) / 1000;
+    if elapsed_seconds < 60 {
+        format!("{elapsed_seconds}s ago")
+    } else if elapsed_seconds < 60 * 60 {
+        format!("{}m ago", elapsed_seconds / 60)
+    } else {
+        format!("{}h ago", elapsed_seconds / (60 * 60))
+    }
+}
+
 fn anchor_offset(anchor: AnchorPos, offset: egui::Vec2) -> (egui::Align2, egui::Vec2) {
     match anchor {
         AnchorPos::TopLeft => (egui::Align2::LEFT_TOP, offset),
@@ -2082,18 +2338,48 @@ fn pos_to_normalized(ctx: &egui::Context, pos: egui::Pos2) -> [f32; 2] {
     ]
 }
 
+fn layout_drag_position_id(target: &str) -> egui::Id {
+    egui::Id::new(("layout_drag_position", target))
+}
+
+fn layout_drag_start_id(target: &str) -> egui::Id {
+    egui::Id::new(("layout_drag_pointer_offset", target))
+}
+
+fn active_layout_drag_position(ctx: &egui::Context, target: &str) -> Option<egui::Pos2> {
+    ctx.data(|data| data.get_temp::<egui::Pos2>(layout_drag_position_id(target)))
+}
+
 fn persist_dragged_position(
     ctx: &egui::Context,
     state: &Arc<AppState>,
-    rect: egui::Rect,
+    panel_pos: egui::Pos2,
     target: &str,
-    drag_delta: egui::Vec2,
+    drag_response: &egui::Response,
 ) {
-    if drag_delta == egui::Vec2::ZERO {
+    if !drag_response.drag_started() && !drag_response.dragged() && !drag_response.drag_stopped() {
         return;
     }
 
-    let new_position = pos_to_normalized(ctx, rect.min + drag_delta);
+    let drag_offset_id = layout_drag_start_id(target);
+    let drag_position_id = layout_drag_position_id(target);
+
+    if drag_response.drag_started()
+        && let Some(pointer_pos) = drag_response.interact_pointer_pos()
+    {
+        ctx.data_mut(|data| data.insert_temp(drag_offset_id, pointer_pos - panel_pos));
+    }
+
+    let pointer_pos = drag_response
+        .interact_pointer_pos()
+        .unwrap_or(panel_pos + drag_response.drag_delta());
+    let pointer_offset = ctx
+        .data(|data| data.get_temp::<egui::Vec2>(drag_offset_id))
+        .unwrap_or_default();
+    let new_panel_pos = pointer_pos - pointer_offset;
+    ctx.data_mut(|data| data.insert_temp(drag_position_id, new_panel_pos));
+
+    let new_position = pos_to_normalized(ctx, new_panel_pos);
     let mut config = (**state.config.load()).clone();
     match target {
         "lobby" => config.lobby_manual_position = Some(new_position),
@@ -2102,6 +2388,14 @@ fn persist_dragged_position(
         _ => return,
     }
     state.save_config(config);
+    ctx.request_repaint();
+
+    if drag_response.drag_stopped() {
+        ctx.data_mut(|data| {
+            data.remove_temp::<egui::Vec2>(drag_offset_id);
+            data.remove_temp::<egui::Pos2>(drag_position_id);
+        });
+    }
 }
 
 fn format_key_name(key: &str) -> &str {
@@ -2208,4 +2502,32 @@ fn egui_to_rdev_key(key: egui::Key) -> Option<String> {
         _ => return None,
     };
     Some(s.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compact_playlist_name_formats_common_ranked_modes() {
+        assert_eq!(compact_playlist_name("Ranked Duel 1v1"), "1v1");
+        assert_eq!(compact_playlist_name("Ranked Doubles 2v2"), "2v2");
+        assert_eq!(compact_playlist_name("Ranked Standard 3v3"), "3v3");
+        assert_eq!(compact_playlist_name("Ranked Hoops"), "Hoops");
+    }
+
+    #[test]
+    fn ranked_playlist_sort_priority_orders_core_modes_first() {
+        assert_eq!(ranked_playlist_sort_priority(10, "Ranked Duel"), 0);
+        assert_eq!(ranked_playlist_sort_priority(11, "Ranked Doubles"), 1);
+        assert_eq!(ranked_playlist_sort_priority(13, "Ranked Standard"), 2);
+        assert_eq!(ranked_playlist_sort_priority(27, "Ranked Hoops"), 10);
+    }
+
+    #[test]
+    fn format_age_handles_seconds_minutes_and_hours() {
+        assert_eq!(format_age(10_000, 5_000), "5s ago");
+        assert_eq!(format_age(120_000, 0), "2m ago");
+        assert_eq!(format_age(7_200_000, 0), "2h ago");
+    }
 }

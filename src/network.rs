@@ -1,4 +1,4 @@
-use crate::state::{AppState, PlayerInfo};
+use crate::state::{AppState, LocalPlayerIdentity, PlayerInfo};
 use crate::stats_api::{StatsApiTransport, TcpJsonSplitter};
 use futures_util::StreamExt;
 use serde_json::Value;
@@ -164,6 +164,11 @@ fn handle_update_state(state: &Arc<AppState>, data: &Value) {
 
             if is_local {
                 state.local_team.store(team, Ordering::SeqCst);
+                state.update_local_player_identity(LocalPlayerIdentity {
+                    name: name.clone(),
+                    primary_id: primary_id.to_string(),
+                    platform: platform.clone(),
+                });
             }
 
             let boost = number_field(p, &["Boost", "boost"]).unwrap_or(0) as u8;
@@ -401,5 +406,38 @@ mod tests {
 
         assert!(state.players.load().is_empty());
         assert_eq!(&**state.local_player_name.load(), "");
+    }
+
+    #[test]
+    fn test_lobby_event_keeps_local_identity_for_manual_mmr_refresh() {
+        let state = AppState::new();
+        handle_update_state(
+            &state,
+            &json!({
+                "Players": [
+                    {
+                        "Name": "Me",
+                        "PrimaryId": "Steam|76561198000000000|0",
+                        "TeamNum": 0,
+                        "IsLocalPlayer": true
+                    }
+                ]
+            }),
+        );
+
+        handle_event(&state, &json!({ "Event": "LobbyEntered" }));
+
+        let identity = state.local_player_identity.load();
+        assert_eq!(identity.name, "Me");
+        assert_eq!(identity.platform, "Steam");
+        assert_eq!(identity.primary_id, "Steam|76561198000000000|0");
+
+        let config = state.config.load();
+        assert_eq!(config.cached_local_player_identity.name, "Me");
+        assert_eq!(config.cached_local_player_identity.platform, "Steam");
+        assert_eq!(
+            config.cached_local_player_identity.primary_id,
+            "Steam|76561198000000000|0"
+        );
     }
 }

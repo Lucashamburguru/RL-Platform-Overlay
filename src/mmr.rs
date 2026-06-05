@@ -1,14 +1,21 @@
-use crate::state::AppState;
+use crate::state::{AppState, PlayerInfo};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::time::sleep;
 
 const MMR_TRACKER_WARMUP_HOST: &str = "https://rocketleague.tracker.network";
 const MMR_TRACKER_API_HOST: &str = "https://api.tracker.gg";
 const MMR_RANKED_PLAYLIST_IDS: [i32; 10] = [10, 11, 12, 13, 27, 28, 29, 30, 34, 63];
+const MMR_CACHE_TTL: Duration = Duration::from_secs(60 * 60);
+
+#[derive(Debug, Clone)]
+struct MmrCacheEntry {
+    snapshot: TrackerSnapshot,
+    fetched_at: Instant,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrackerPlayer {
@@ -203,66 +210,98 @@ pub fn start_mmr_fetch_task(state: Arc<AppState>) {
         };
 
         let mut fetching_players = std::collections::HashSet::new();
+        let mut mmr_cache: HashMap<String, MmrCacheEntry> = HashMap::new();
         loop {
             // Sleep 5 seconds between fetches to be gentler on tracker.gg rate limits
             sleep(Duration::from_secs(5)).await;
 
             // Find a player that needs their MMR fetched
             let mut target_player = None;
+            let mut cached_player = None;
             {
                 let players = state.players.load();
                 for (name, info) in players.iter() {
                     // Only fetch for supported platforms and non-bots
-                    if info.is_bot || info.mmr.is_some() || fetching_players.contains(name) {
+                    if info.is_local || info.is_bot {
                         continue;
                     }
 
-                    let platform_lower = info.platform.to_lowercase();
-                    let is_supported =
-                        !info.is_bot && platform_lower != "bot" && platform_lower != "unknown";
+                    let Some((cache_key, tracker_player)) = tracker_player_from_info(name, info)
+                    else {
+                        continue;
+                    };
 
-                    if is_supported {
-                        // Extract the actual ID from the PrimaryId string (e.g. "Steam|76561197981997358|0")
-                        let id_parts: Vec<&str> = info.primary_id.split('|').collect();
-                        let actual_id = if id_parts.len() > 1 {
-                            id_parts[1].to_string()
-                        } else {
-                            name.clone()
-                        };
-                        target_player = Some((name.clone(), info.platform.clone(), actual_id));
-                        break;
+                    if let Some(cache_entry) = mmr_cache.get(&cache_key) {
+                        if cache_entry.fetched_at.elapsed() < MMR_CACHE_TTL {
+                            cached_player = Some((name.clone(), cache_entry.snapshot.clone()));
+                            break;
+                        }
+                        mmr_cache.remove(&cache_key);
+                        fetching_players.remove(&cache_key);
+                    } else if info.mmr.is_some() {
+                        continue;
                     }
+
+                    if fetching_players.contains(&cache_key) {
+                        continue;
+                    }
+
+                    target_player = Some((name.clone(), cache_key, tracker_player));
+                    break;
                 }
             }
 
-            if let Some((name, platform, actual_id)) = target_player {
-                fetching_players.insert(name.clone());
-                let tracker_player = TrackerPlayer {
-                    platform: platform.clone(),
-                    player_name: name.clone(),
-                    player_id: actual_id,
-                };
+            if let Some((name, snapshot)) = cached_player {
+                let mut players_map = (**state.players.load()).clone();
+                if let Some(player_info) = players_map.get_mut(&name)
+                    && !player_info.is_local
+                    && player_info.mmr.is_none()
+                {
+                    player_info.mmr = Some(snapshot);
+                    state.players.store(Arc::new(players_map));
+                }
+                continue;
+            }
 
+            if let Some((name, cache_key, tracker_player)) = target_player {
+                fetching_players.insert(cache_key.clone());
                 match fetch_tracker_snapshot(&client, &tracker_player).await {
                     Ok(snapshot) => {
+                        mmr_cache.insert(
+                            cache_key.clone(),
+                            MmrCacheEntry {
+                                snapshot: snapshot.clone(),
+                                fetched_at: Instant::now(),
+                            },
+                        );
                         let mut players_map = (**state.players.load()).clone();
                         if let Some(player_info) = players_map.get_mut(&name) {
                             player_info.mmr = Some(snapshot);
                             state.players.store(Arc::new(players_map));
                         }
+                        fetching_players.remove(&cache_key);
                     }
                     Err(e) => {
                         if e.contains("404") {
                             // Profile not found or private on tracker.gg.
                             // Cache an empty MMR snapshot so we don't query this player again.
+                            let snapshot = TrackerSnapshot::default();
+                            mmr_cache.insert(
+                                cache_key.clone(),
+                                MmrCacheEntry {
+                                    snapshot: snapshot.clone(),
+                                    fetched_at: Instant::now(),
+                                },
+                            );
                             let mut players_map = (**state.players.load()).clone();
                             if let Some(player_info) = players_map.get_mut(&name) {
-                                player_info.mmr = Some(TrackerSnapshot::default());
+                                player_info.mmr = Some(snapshot);
                                 state.players.store(Arc::new(players_map));
                             }
+                            fetching_players.remove(&cache_key);
                         } else {
                             // Temporary error (rate limit, timeout). Remove from fetching set to retry later.
-                            fetching_players.remove(&name);
+                            fetching_players.remove(&cache_key);
                         }
                     }
                 }
@@ -271,9 +310,106 @@ pub fn start_mmr_fetch_task(state: Arc<AppState>) {
     });
 }
 
+fn tracker_player_from_info(name: &str, info: &PlayerInfo) -> Option<(String, TrackerPlayer)> {
+    let platform_lower = info.platform.to_lowercase();
+    if info.is_local || info.is_bot || platform_lower == "bot" || platform_lower == "unknown" {
+        return None;
+    }
+
+    // Extract the actual ID from PrimaryId, e.g. "Steam|76561197981997358|0".
+    let id_parts: Vec<&str> = info.primary_id.split('|').collect();
+    let actual_id = id_parts
+        .get(1)
+        .filter(|id| !id.trim().is_empty())
+        .map(|id| (*id).to_string())
+        .unwrap_or_else(|| name.to_string());
+    let cache_key = if info.primary_id.trim().is_empty() {
+        format!("{}|{}", platform_lower, name.to_lowercase())
+    } else {
+        info.primary_id.to_lowercase()
+    };
+
+    Some((
+        cache_key,
+        TrackerPlayer {
+            platform: info.platform.clone(),
+            player_name: name.to_string(),
+            player_id: actual_id,
+        },
+    ))
+}
+
+pub fn start_local_mmr_refresh(state: Arc<AppState>) {
+    let current_state = state.local_mmr.load();
+    if current_state.fetching {
+        return;
+    }
+
+    let identity = (*state.local_player_identity.load()).clone();
+    if !identity.is_known() {
+        let mut local_mmr = (**current_state).clone();
+        local_mmr.fetching = false;
+        local_mmr.error = "Waiting for local player identity from Stats API.".to_string();
+        state.local_mmr.store(Arc::new(local_mmr));
+        return;
+    }
+
+    let Some((_, tracker_player)) = tracker_player_from_identity(&identity) else {
+        let mut local_mmr = (**current_state).clone();
+        local_mmr.fetching = false;
+        local_mmr.error = "Local player platform is not supported by Tracker.".to_string();
+        state.local_mmr.store(Arc::new(local_mmr));
+        return;
+    };
+
+    let mut local_mmr = (**current_state).clone();
+    local_mmr.fetching = true;
+    local_mmr.error.clear();
+    state.local_mmr.store(Arc::new(local_mmr));
+
+    tokio::spawn(async move {
+        let result = async {
+            let client = wreq::Client::builder()
+                .timeout(Duration::from_secs(10))
+                .build()
+                .map_err(|e| format!("Failed to build HTTP client: {e}"))?;
+            fetch_tracker_snapshot(&client, &tracker_player).await
+        }
+        .await;
+
+        let mut local_mmr = (**state.local_mmr.load()).clone();
+        local_mmr.fetching = false;
+        match result {
+            Ok(snapshot) => {
+                local_mmr.previous = local_mmr.current.take();
+                local_mmr.current = Some(snapshot);
+                local_mmr.last_updated_unix_ms = crate::stats_api::now_ms();
+                local_mmr.error.clear();
+            }
+            Err(error) => {
+                local_mmr.error = error;
+            }
+        }
+        state.local_mmr.store(Arc::new(local_mmr));
+    });
+}
+
+fn tracker_player_from_identity(
+    identity: &crate::state::LocalPlayerIdentity,
+) -> Option<(String, TrackerPlayer)> {
+    let info = PlayerInfo {
+        name: identity.name.clone(),
+        primary_id: identity.primary_id.clone(),
+        platform: identity.platform.clone(),
+        ..Default::default()
+    };
+    tracker_player_from_info(&identity.name, &info)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::PlayerInfo;
 
     #[tokio::test]
     async fn test_pengiwin_steam() {
@@ -344,5 +480,34 @@ mod tests {
             }
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         }
+    }
+
+    #[test]
+    fn tracker_player_from_info_skips_local_player() {
+        let info = PlayerInfo {
+            name: "Me".to_string(),
+            primary_id: "Steam|1|0".to_string(),
+            platform: "Steam".to_string(),
+            is_local: true,
+            ..Default::default()
+        };
+
+        assert!(tracker_player_from_info("Me", &info).is_none());
+    }
+
+    #[test]
+    fn tracker_player_from_info_uses_stable_primary_id_cache_key() {
+        let info = PlayerInfo {
+            name: "Opponent".to_string(),
+            primary_id: "Steam|76561198000000000|0".to_string(),
+            platform: "Steam".to_string(),
+            ..Default::default()
+        };
+
+        let (cache_key, player) = tracker_player_from_info("Opponent", &info).unwrap();
+
+        assert_eq!(cache_key, "steam|76561198000000000|0");
+        assert_eq!(player.player_id, "76561198000000000");
+        assert_eq!(player.player_name, "Opponent");
     }
 }

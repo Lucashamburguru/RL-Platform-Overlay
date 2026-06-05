@@ -60,6 +60,7 @@ pub struct Config {
     pub teammate_boost_manual_position: Option<[f32; 2]>,
     pub session_manual_position: Option<[f32; 2]>,
     pub layout_mode: bool,
+    pub cached_local_player_identity: LocalPlayerIdentity,
 }
 
 pub fn detect_rocket_league_path() -> Option<String> {
@@ -82,6 +83,9 @@ pub fn detect_rocket_league_path() -> Option<String> {
         if let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) {
             let candidates = [
                 home.join(".local/share/Steam/steamapps/common/rocketleague"),
+                home.join(
+                    ".var/app/com.valvesoftware.Steam/data/Steam/steamapps/common/rocketleague",
+                ),
                 home.join(".steam/steam/steamapps/common/rocketleague"),
                 home.join(".steam/root/steamapps/common/rocketleague"),
             ];
@@ -128,6 +132,7 @@ impl Default for Config {
             teammate_boost_manual_position: None,
             session_manual_position: None,
             layout_mode: false,
+            cached_local_player_identity: LocalPlayerIdentity::default(),
         }
     }
 }
@@ -205,6 +210,23 @@ mod tests {
         assert_eq!(config.ui_scale, 2.2);
         assert!(config.show_bots);
         assert_eq!(config.anchor, AnchorPos::CenterRight);
+        assert!(!config.cached_local_player_identity.is_known());
+    }
+
+    #[test]
+    fn local_player_identity_compares_accounts_case_insensitively() {
+        let a = LocalPlayerIdentity {
+            name: "Me".to_string(),
+            primary_id: "Steam|ABC|0".to_string(),
+            platform: "Steam".to_string(),
+        };
+        let b = LocalPlayerIdentity {
+            name: "DifferentName".to_string(),
+            primary_id: "steam|abc|0".to_string(),
+            platform: "steam".to_string(),
+        };
+
+        assert!(a.same_account(&b));
     }
 }
 
@@ -266,6 +288,37 @@ pub struct PlayerInfo {
     pub mmr: Option<TrackerSnapshot>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LocalPlayerIdentity {
+    pub name: String,
+    pub primary_id: String,
+    pub platform: String,
+}
+
+impl LocalPlayerIdentity {
+    pub fn is_known(&self) -> bool {
+        !self.name.trim().is_empty()
+            && !self.primary_id.trim().is_empty()
+            && !self.platform.trim().is_empty()
+            && self.platform != "Unknown"
+            && self.platform != "BOT"
+    }
+
+    pub fn same_account(&self, other: &Self) -> bool {
+        self.primary_id.eq_ignore_ascii_case(&other.primary_id)
+            && self.platform.eq_ignore_ascii_case(&other.platform)
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct LocalMmrState {
+    pub current: Option<TrackerSnapshot>,
+    pub previous: Option<TrackerSnapshot>,
+    pub fetching: bool,
+    pub last_updated_unix_ms: u128,
+    pub error: String,
+}
+
 pub struct AppState {
     pub debug_enabled: bool,
     pub is_visible: AtomicBool,
@@ -277,6 +330,8 @@ pub struct AppState {
     pub is_recording_settings: AtomicBool,
     pub last_settings_hotkey_unix_ms: AtomicU64,
     pub local_player_name: ArcSwap<String>,
+    pub local_player_identity: ArcSwap<LocalPlayerIdentity>,
+    pub local_mmr: ArcSwap<LocalMmrState>,
     pub local_team: std::sync::atomic::AtomicU8,
     pub players: ArcSwap<HashMap<String, PlayerInfo>>,
     pub config: ArcSwap<Config>,
@@ -297,6 +352,7 @@ impl AppState {
 
     pub fn new_with_debug(debug_enabled: bool) -> Arc<Self> {
         let (config, config_status) = Config::load();
+        let cached_local_player_identity = config.cached_local_player_identity.clone();
         Arc::new(Self {
             debug_enabled,
             is_visible: AtomicBool::new(false),
@@ -308,6 +364,8 @@ impl AppState {
             is_recording_settings: AtomicBool::new(false),
             last_settings_hotkey_unix_ms: AtomicU64::new(0),
             local_player_name: ArcSwap::from_pointee("".to_string()),
+            local_player_identity: ArcSwap::from_pointee(cached_local_player_identity),
+            local_mmr: ArcSwap::from_pointee(LocalMmrState::default()),
             local_team: std::sync::atomic::AtomicU8::new(255),
             players: ArcSwap::from_pointee(HashMap::new()),
             config: ArcSwap::from_pointee(config),
@@ -328,5 +386,30 @@ impl AppState {
         }
         self.config_status.store(Arc::new(status));
         self.config.store(Arc::new(config));
+    }
+
+    pub fn update_local_player_identity(&self, identity: LocalPlayerIdentity) {
+        if !identity.is_known() {
+            return;
+        }
+
+        let current_identity = self.local_player_identity.load();
+        if current_identity.is_known()
+            && current_identity.same_account(&identity)
+            && current_identity.name == identity.name
+        {
+            return;
+        }
+
+        self.local_player_identity.store(Arc::new(identity.clone()));
+
+        let mut config = (**self.config.load()).clone();
+        if !config.cached_local_player_identity.is_known()
+            || !config.cached_local_player_identity.same_account(&identity)
+            || config.cached_local_player_identity.name != identity.name
+        {
+            config.cached_local_player_identity = identity;
+            self.save_config(config);
+        }
     }
 }
