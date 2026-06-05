@@ -1,6 +1,7 @@
 /target/
 **/*.rs.bk
 .env
+.env.*
 config.toml
 rl_debug*.txt
 rl_game_output_debug_*.txt
@@ -13,5 +14,19 @@ assets/switch_raw.jpg
 assets/bot_raw.png
 process_icons.py
 docs/
-Docs/
 .codex
+
+# Editor directories and files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Temp test files
+*_temp.rs
+test_mmr.rs

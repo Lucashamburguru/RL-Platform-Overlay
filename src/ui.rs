@@ -1,4 +1,5 @@
-use crate::state::{AnchorPos, AppState, TeammateBoostDisplay};
+use crate::session::SessionOverlayDisplay;
+use crate::state::{AnchorPos, AppState, DebugCaptureStatus, TeammateBoostDisplay};
 use eframe::egui;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -8,6 +9,7 @@ pub struct MainApp {
     settings_tab: SettingsTab,
     is_rl_running: bool,
     last_rl_check: std::time::Instant,
+    last_logged_show_settings: Option<bool>,
 }
 
 impl MainApp {
@@ -19,13 +21,16 @@ impl MainApp {
             last_rl_check: std::time::Instant::now()
                 .checked_sub(std::time::Duration::from_secs(5))
                 .unwrap_or_else(std::time::Instant::now),
+            last_logged_show_settings: None,
         }
     }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SettingsTab {
+    Setup,
     Overlay,
+    Session,
     Boost,
     Hotkeys,
     Debug,
@@ -44,23 +49,28 @@ impl eframe::App for MainApp {
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(egui::Color32::from_rgba_unmultiplied(0, 0, 0, 0)))
             .show(ctx, |_ui| {
-                // Render the HUD
-                // If launched: obey the toggle hotkey
-                // If not launched: always show for preview
-                let show_hud = if is_launched {
-                    self.state.is_visible.load(Ordering::SeqCst)
-                } else {
-                    true
-                };
+                let show_hud = is_launched && self.state.is_visible.load(Ordering::SeqCst);
 
                 if show_hud {
                     render_overlay(ctx, &self.state);
+                }
+                if is_launched && config.session_overlay_enabled {
+                    render_session_overlay(ctx, &self.state);
                 }
 
                 let show_settings = self.state.is_settings_visible.load(Ordering::SeqCst)
                     || self.state.is_recording_kb.load(Ordering::SeqCst)
                     || self.state.is_recording_ctrl.load(Ordering::SeqCst)
                     || self.state.is_recording_settings.load(Ordering::SeqCst);
+                if self.last_logged_show_settings != Some(show_settings) {
+                    crate::input::append_hotkey_debug_log(format!(
+                        "ui_show_settings visible={show_settings} launched={is_launched} recording_kb={} recording_ctrl={} recording_settings={}",
+                        self.state.is_recording_kb.load(Ordering::SeqCst),
+                        self.state.is_recording_ctrl.load(Ordering::SeqCst),
+                        self.state.is_recording_settings.load(Ordering::SeqCst)
+                    ));
+                    self.last_logged_show_settings = Some(show_settings);
+                }
 
                 // 2. Always-on Teammate Boost HUD
                 // Settings mode uses the Boost tab preview instead of the floating in-game HUD.
@@ -84,7 +94,9 @@ impl eframe::App for MainApp {
 
                     // If settings are visible, we need to be able to click them!
                     // If settings are hidden, we want clicks to pass through to the game.
-                    ctx.send_viewport_cmd(egui::ViewportCommand::MousePassthrough(!show_settings));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::MousePassthrough(
+                        !show_settings && !config.layout_mode,
+                    ));
                 }
 
                 // Show gear icon ONLY if launched AND settings are hidden AND mouse is in top-left
@@ -103,48 +115,45 @@ impl eframe::App for MainApp {
                             .show(ctx, |ui| {
                                 let btn = ui.add(egui::Button::new("⚙ Settings").frame(true));
                                 if btn.clicked() {
+                                    crate::input::append_hotkey_debug_log(
+                                        "gear_settings_button_clicked visible=true",
+                                    );
                                     self.state.is_settings_visible.store(true, Ordering::SeqCst);
                                 }
                             });
                     }
                 }
 
-                if show_settings {
-                    // Fallback: Check for Settings Toggle hotkey inside the UI too
-                    // so it works when the window has focus
-                    let settings_hotkey = config.hotkey_settings.clone();
-                    let hud_hotkey = config.hotkey_kb.clone();
-                    let hotkey_toggle = config.hotkey_toggle;
+                let settings_hotkey = config.hotkey_settings.clone();
+                let hud_hotkey = config.hotkey_kb.clone();
+                let hotkey_toggle = config.hotkey_toggle;
+                ctx.input(|i| {
+                    for event in &i.events {
+                        if let egui::Event::Key { key, pressed, .. } = event
+                            && let Some(name) = egui_to_rdev_key(*key)
+                        {
+                            if *pressed && name == settings_hotkey {
+                                crate::input::append_hotkey_debug_log(format!(
+                                    "egui_keypress key={name} settings_match=true"
+                                ));
+                                crate::input::toggle_settings_hotkey(&self.state, "egui");
+                            }
 
-                    ctx.input(|i| {
-                        for event in &i.events {
-                            if let egui::Event::Key { key, pressed, .. } = event
-                                && let Some(name) = egui_to_rdev_key(*key)
-                            {
-                                // Handle Settings Toggle
-                                if *pressed && name == settings_hotkey {
-                                    let curr =
-                                        self.state.is_settings_visible.load(Ordering::SeqCst);
-                                    self.state
-                                        .is_settings_visible
-                                        .store(!curr, Ordering::SeqCst);
-                                }
-
-                                // Handle HUD Hotkey fallback when focused
-                                if name == hud_hotkey {
-                                    if hotkey_toggle {
-                                        if *pressed {
-                                            let curr = self.state.is_visible.load(Ordering::SeqCst);
-                                            self.state.is_visible.store(!curr, Ordering::SeqCst);
-                                        }
-                                    } else {
-                                        self.state.is_visible.store(*pressed, Ordering::SeqCst);
+                            if show_settings && name == hud_hotkey {
+                                if hotkey_toggle {
+                                    if *pressed {
+                                        let curr = self.state.is_visible.load(Ordering::SeqCst);
+                                        self.state.is_visible.store(!curr, Ordering::SeqCst);
                                     }
+                                } else {
+                                    self.state.is_visible.store(*pressed, Ordering::SeqCst);
                                 }
                             }
                         }
-                    });
+                    }
+                });
 
+                if show_settings {
                     egui::Window::new("RL Overlay Settings")
                         .collapsible(true)
                         .resizable(true)
@@ -167,6 +176,9 @@ impl eframe::App for MainApp {
                                                 .min_size(egui::vec2(40.0, 24.0)),
                                             );
                                             if close_btn.clicked() {
+                                                crate::input::append_hotkey_debug_log(
+                                                    "settings_close_button_clicked visible=false",
+                                                );
                                                 self.state
                                                     .is_settings_visible
                                                     .store(false, Ordering::SeqCst);
@@ -189,11 +201,27 @@ impl eframe::App for MainApp {
 
                             let mut config_edit = (**self.state.config.load()).clone();
                             let mut changed = false;
+                            if !self.state.debug_enabled
+                                && self.settings_tab == SettingsTab::Debug
+                            {
+                                self.settings_tab = SettingsTab::Setup;
+                            }
 
                             render_update_notice(ui, &self.state);
-                            render_settings_tabs(ui, &mut self.settings_tab);
+                            render_settings_tabs(
+                                ui,
+                                &mut self.settings_tab,
+                                self.state.debug_enabled,
+                            );
 
                             egui::ScrollArea::vertical().show(ui, |ui| match self.settings_tab {
+                                SettingsTab::Setup => render_setup_settings_tab(
+                                    ui,
+                                    &self.state,
+                                    &mut config_edit,
+                                    &mut changed,
+                                    self.is_rl_running,
+                                ),
                                 SettingsTab::Overlay => render_overlay_settings_tab(
                                     ui,
                                     ctx,
@@ -202,6 +230,12 @@ impl eframe::App for MainApp {
                                     &mut config_edit,
                                     &mut changed,
                                     is_launched,
+                                ),
+                                SettingsTab::Session => render_session_settings_tab(
+                                    ui,
+                                    &self.state,
+                                    &mut config_edit,
+                                    &mut changed,
                                 ),
                                 SettingsTab::Boost => {
                                     let now = std::time::Instant::now();
@@ -241,12 +275,16 @@ impl eframe::App for MainApp {
     }
 }
 
-fn render_settings_tabs(ui: &mut egui::Ui, selected: &mut SettingsTab) {
+fn render_settings_tabs(ui: &mut egui::Ui, selected: &mut SettingsTab, debug_enabled: bool) {
     ui.horizontal_wrapped(|ui| {
+        ui.selectable_value(selected, SettingsTab::Setup, "Setup");
         ui.selectable_value(selected, SettingsTab::Overlay, "Overlay");
+        ui.selectable_value(selected, SettingsTab::Session, "Session");
         ui.selectable_value(selected, SettingsTab::Boost, "Boost");
         ui.selectable_value(selected, SettingsTab::Hotkeys, "Hotkeys");
-        ui.selectable_value(selected, SettingsTab::Debug, "Debug");
+        if debug_enabled {
+            ui.selectable_value(selected, SettingsTab::Debug, "Debug");
+        }
     });
     ui.separator();
 }
@@ -278,6 +316,103 @@ fn render_update_notice(ui: &mut egui::Ui, state: &Arc<AppState>) {
         ui.hyperlink_to("Download release", &version_check.release_url);
     });
     ui.add_space(6.0);
+}
+
+fn render_setup_settings_tab(
+    ui: &mut egui::Ui,
+    state: &Arc<AppState>,
+    config_edit: &mut crate::state::Config,
+    changed: &mut bool,
+    is_rl_running: bool,
+) {
+    ui.group(|ui| {
+        ui.heading("Stats API Setup");
+        ui.add_space(6.0);
+
+        ui.horizontal(|ui| {
+            ui.label("Rocket League Folder:");
+            if ui
+                .text_edit_singleline(&mut config_edit.rocket_league_path)
+                .changed()
+            {
+                *changed = true;
+            }
+            if ui.button("Auto-detect").clicked()
+                && let Some(path) = crate::state::detect_rocket_league_path()
+            {
+                config_edit.rocket_league_path = path;
+                *changed = true;
+            }
+        });
+
+        let status = crate::setup::inspect_stats_api_setup(&config_edit.rocket_league_path);
+        ui.add_space(6.0);
+        debug_status_row(ui, "Config File", &status.ini_path);
+        debug_status_row(
+            ui,
+            "PacketSendRate",
+            &status
+                .packet_send_rate
+                .map(|rate| rate.to_string())
+                .unwrap_or_else(|| "missing".to_string()),
+        );
+        debug_status_row(
+            ui,
+            "Port",
+            &status
+                .port
+                .map(|port| port.to_string())
+                .unwrap_or_else(|| "49123 default".to_string()),
+        );
+
+        if status.configured {
+            ui.colored_label(egui::Color32::from_rgb(100, 220, 100), status.message);
+        } else if status.exists {
+            ui.colored_label(egui::Color32::from_rgb(220, 190, 90), status.message);
+        } else {
+            ui.colored_label(egui::Color32::from_rgb(230, 120, 80), status.message);
+        }
+
+        if is_rl_running {
+            ui.colored_label(
+                egui::Color32::from_rgb(220, 200, 100),
+                "Rocket League is running. Restart the game after changing this config.",
+            );
+        }
+
+        ui.add_space(8.0);
+        if ui.button("Enable Stats API").clicked() {
+            match crate::setup::ensure_stats_api_setup(&config_edit.rocket_league_path) {
+                Ok(result) => state.stats_api_setup_result.store(Arc::new(result)),
+                Err(error) => state.stats_api_setup_result.store(Arc::new(
+                    crate::setup::StatsApiSetupResult {
+                        message: error,
+                        ..Default::default()
+                    },
+                )),
+            }
+        }
+
+        let result = state.stats_api_setup_result.load();
+        if !result.message.is_empty() {
+            ui.add_space(6.0);
+            let color = if result.changed {
+                egui::Color32::from_rgb(100, 220, 100)
+            } else {
+                egui::Color32::from_gray(180)
+            };
+            ui.colored_label(color, &result.message);
+            if let Some(path) = &result.backup_path {
+                debug_status_row(ui, "Backup", path);
+            }
+            if result.restart_required {
+                ui.colored_label(
+                    egui::Color32::from_rgb(220, 200, 100),
+                    "Restart Rocket League once before expecting the overlay to connect.",
+                );
+            }
+        }
+    });
 }
 
 fn render_overlay_settings_tab(
@@ -387,6 +522,160 @@ fn render_overlay_settings_tab(
 
     ui.add_space(10.0);
     render_launch_controls(ui, ctx, state, config_edit, is_launched);
+}
+
+fn render_session_settings_tab(
+    ui: &mut egui::Ui,
+    state: &Arc<AppState>,
+    config_edit: &mut crate::state::Config,
+    changed: &mut bool,
+) {
+    ui.group(|ui| {
+        ui.heading("Session Overlay");
+        if ui
+            .checkbox(
+                &mut config_edit.session_overlay_enabled,
+                "Enable Session Overlay",
+            )
+            .changed()
+        {
+            *changed = true;
+        }
+
+        ui.horizontal(|ui| {
+            ui.label("Display:");
+            egui::ComboBox::new("session_display", "")
+                .selected_text(session_display_label(config_edit.session_overlay_display))
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(
+                        &mut config_edit.session_overlay_display,
+                        SessionOverlayDisplay::Compact,
+                        "Compact",
+                    );
+                    ui.selectable_value(
+                        &mut config_edit.session_overlay_display,
+                        SessionOverlayDisplay::Expanded,
+                        "Expanded",
+                    );
+                });
+            if config_edit.session_overlay_display != state.config.load().session_overlay_display {
+                *changed = true;
+            }
+        });
+
+        ui.label("Scale");
+        if ui
+            .add(egui::Slider::new(
+                &mut config_edit.session_overlay_scale,
+                0.6..=2.5,
+            ))
+            .changed()
+        {
+            *changed = true;
+        }
+
+        ui.label("Opacity");
+        if ui
+            .add(egui::Slider::new(
+                &mut config_edit.session_overlay_opacity,
+                40..=255,
+            ))
+            .changed()
+        {
+            *changed = true;
+        }
+
+        ui.horizontal(|ui| {
+            ui.label("Anchor:");
+            egui::ComboBox::new("session_anchor", "")
+                .selected_text(format!("{:?}", config_edit.session_overlay_anchor))
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(
+                        &mut config_edit.session_overlay_anchor,
+                        AnchorPos::TopLeft,
+                        "Top Left",
+                    );
+                    ui.selectable_value(
+                        &mut config_edit.session_overlay_anchor,
+                        AnchorPos::TopRight,
+                        "Top Right",
+                    );
+                    ui.selectable_value(
+                        &mut config_edit.session_overlay_anchor,
+                        AnchorPos::BottomLeft,
+                        "Bottom Left",
+                    );
+                    ui.selectable_value(
+                        &mut config_edit.session_overlay_anchor,
+                        AnchorPos::BottomRight,
+                        "Bottom Right",
+                    );
+                    ui.selectable_value(
+                        &mut config_edit.session_overlay_anchor,
+                        AnchorPos::CenterRight,
+                        "Center Right",
+                    );
+                });
+            if config_edit.session_overlay_anchor != state.config.load().session_overlay_anchor {
+                *changed = true;
+            }
+        });
+
+        ui.label("X Offset");
+        if ui
+            .add(egui::Slider::new(
+                &mut config_edit.session_overlay_offset[0],
+                -800.0..=800.0,
+            ))
+            .changed()
+        {
+            *changed = true;
+        }
+        ui.label("Y Offset");
+        if ui
+            .add(egui::Slider::new(
+                &mut config_edit.session_overlay_offset[1],
+                -800.0..=800.0,
+            ))
+            .changed()
+        {
+            *changed = true;
+        }
+
+        if ui
+            .checkbox(&mut config_edit.layout_mode, "Layout Mode")
+            .changed()
+        {
+            *changed = true;
+        }
+
+        ui.horizontal(|ui| {
+            if ui.button("Reset Lobby Position").clicked() {
+                config_edit.lobby_manual_position = None;
+                *changed = true;
+            }
+            if ui.button("Reset Boost Position").clicked() {
+                config_edit.teammate_boost_manual_position = None;
+                *changed = true;
+            }
+            if ui.button("Reset Session Position").clicked() {
+                config_edit.session_manual_position = None;
+                *changed = true;
+            }
+        });
+    });
+
+    ui.add_space(10.0);
+    ui.group(|ui| {
+        ui.label(egui::RichText::new("Preview").strong());
+        draw_session_panel(
+            ui,
+            &state.session.load(),
+            config_edit.session_overlay_scale.min(1.4),
+            config_edit.session_overlay_display,
+            config_edit.session_overlay_opacity,
+        );
+    });
 }
 
 fn render_boost_settings_tab(
@@ -546,6 +835,28 @@ fn render_boost_settings_tab(
 
         ui.add_space(8.0);
 
+        let inspection = crate::assets::inspect_boost_swap();
+        debug_status_row(
+            ui,
+            "Backup Metadata",
+            if inspection.metadata_exists { "yes" } else { "no" },
+        );
+        debug_status_row(
+            ui,
+            "Cached Assets",
+            if inspection.cache_verified {
+                "verified"
+            } else {
+                "not verified"
+            },
+        );
+        ui.label(
+            egui::RichText::new(&inspection.message)
+                .size(10.0)
+                .color(egui::Color32::from_gray(160)),
+        );
+        ui.add_space(8.0);
+
         // Warning message required by user
         ui.group(|ui| {
             ui.horizontal(|ui| {
@@ -560,7 +871,8 @@ fn render_boost_settings_tab(
 
         // Swapping Checkbox
         let mut enabled = config_edit.alpha_boost_enabled;
-        let checkbox_resp = ui.checkbox(&mut enabled, "Replace Standard Boost with Alpha Boost (Gold Rush)");
+        let checkbox_resp =
+            ui.checkbox(&mut enabled, "Replace Standard Boost with Alpha Boost (Gold Rush)");
         if checkbox_resp.changed() {
             if config_edit.rocket_league_path.trim().is_empty() {
                 let mut status = state.boost_swap_status.lock().unwrap();
@@ -570,10 +882,33 @@ fn render_boost_settings_tab(
                 *status = "Error: Invalid Rocket League directory. Check the path and try again.".to_string();
             } else {
                 if enabled {
-                    crate::assets::start_apply_alpha_boost(state.clone(), config_edit.rocket_league_path.clone());
+                    crate::assets::start_apply_alpha_boost(
+                        state.clone(),
+                        config_edit.rocket_league_path.clone(),
+                    );
                 } else {
-                    crate::assets::start_restore_standard_boost(state.clone(), config_edit.rocket_league_path.clone());
+                    crate::assets::start_restore_standard_boost(
+                        state.clone(),
+                        config_edit.rocket_league_path.clone(),
+                    );
                 }
+            }
+        }
+
+        if inspection.metadata_exists && ui.button("Restore Original Boost").clicked() {
+            if config_edit.rocket_league_path.trim().is_empty() {
+                let mut status = state.boost_swap_status.lock().unwrap();
+                *status = "Error: Configure your Rocket League path first.".to_string();
+            } else if path_valid != Some(true) {
+                let mut status = state.boost_swap_status.lock().unwrap();
+                *status =
+                    "Error: Invalid Rocket League directory. Check the path and try again."
+                        .to_string();
+            } else {
+                crate::assets::start_restore_standard_boost(
+                    state.clone(),
+                    config_edit.rocket_league_path.clone(),
+                );
             }
         }
 
@@ -581,10 +916,20 @@ fn render_boost_settings_tab(
         let status = state.boost_swap_status.lock().unwrap().clone();
         if status != "Idle" {
             ui.add_space(6.0);
-            if status.starts_with("Error") || status.starts_with("Download failed") || status.starts_with("Backup failed") || status.starts_with("Swap failed") || status.starts_with("Restore failed") {
-                ui.colored_label(egui::Color32::from_rgb(230, 80, 80), format!("❌ {}", status));
+            if status.starts_with("Error")
+                || status.starts_with("Download failed")
+                || status.starts_with("Backup failed")
+                || status.starts_with("Swap failed")
+                || status.starts_with("Restore failed")
+                || status.starts_with("Failed")
+                || status.starts_with("Blocked")
+            {
+                ui.colored_label(egui::Color32::from_rgb(230, 80, 80), format!("❌ {status}"));
             } else if status.starts_with("Success") {
-                ui.colored_label(egui::Color32::from_rgb(100, 225, 100), format!("✔ {}", status));
+                ui.colored_label(
+                    egui::Color32::from_rgb(100, 225, 100),
+                    format!("✔ {status}"),
+                );
             } else {
                 ui.horizontal(|ui| {
                     ui.add(egui::Spinner::new());
@@ -817,6 +1162,43 @@ fn render_debug_settings_tab(ui: &mut egui::Ui, state: &Arc<AppState>, is_launch
 
         let players = state.players.load();
         debug_status_row(ui, "Players", &players.len().to_string());
+        debug_status_row(
+            ui,
+            "Hotkey Log",
+            &crate::input::hotkey_debug_log_path().display().to_string(),
+        );
+        if ui.button("Clear Hotkey Log").clicked() {
+            let path = crate::input::hotkey_debug_log_path();
+            match std::fs::write(&path, "") {
+                Ok(()) => crate::input::append_hotkey_debug_log("hotkey_log_cleared"),
+                Err(error) => crate::input::append_hotkey_debug_log(format!(
+                    "hotkey_log_clear_failed error={error}"
+                )),
+            }
+        }
+
+        let diagnostics = state.network_diagnostics.load();
+        debug_status_row(ui, "Transport", diagnostics.transport.label());
+        debug_status_row(ui, "Last Event", diagnostics.last_event.as_str());
+        debug_status_row(
+            ui,
+            "Last Event ms",
+            &diagnostics.last_event_unix_ms.to_string(),
+        );
+        if !diagnostics.last_parse_error.is_empty() {
+            debug_status_row(
+                ui,
+                "Last Parse Error",
+                diagnostics.last_parse_error.as_str(),
+            );
+        }
+        if !diagnostics.last_connection_error.is_empty() {
+            debug_status_row(
+                ui,
+                "Last Connection Error",
+                diagnostics.last_connection_error.as_str(),
+            );
+        }
 
         ui.separator();
         let version_check = state.version_check.load();
@@ -851,6 +1233,65 @@ fn render_debug_settings_tab(ui: &mut egui::Ui, state: &Arc<AppState>, is_launch
                 player.name, player.team, player.platform, player.boost
             ));
         }
+    });
+
+    ui.add_space(10.0);
+    ui.group(|ui| {
+        ui.heading("Stats API Capture");
+        let capture = state.debug_capture_status.load();
+        if capture.running {
+            ui.horizontal(|ui| {
+                ui.add(egui::Spinner::new());
+                ui.label("Capturing 30 seconds of Stats API output...");
+            });
+        } else if ui.button("Capture 30s Stats API Output").clicked() {
+            start_debug_capture(state.clone());
+        }
+
+        render_capture_status(ui, &capture);
+    });
+}
+
+fn render_capture_status(ui: &mut egui::Ui, capture: &DebugCaptureStatus) {
+    if !capture.message.is_empty() {
+        ui.colored_label(egui::Color32::from_rgb(100, 220, 100), &capture.message);
+    }
+    if !capture.error.is_empty() {
+        ui.colored_label(egui::Color32::from_rgb(230, 80, 80), &capture.error);
+    }
+    if !capture.last_output_path.is_empty() {
+        debug_status_row(ui, "Output", &capture.last_output_path);
+    }
+}
+
+fn start_debug_capture(state: Arc<AppState>) {
+    let output = crate::stats_api::default_capture_path(crate::state::config_dir());
+    state
+        .debug_capture_status
+        .store(Arc::new(DebugCaptureStatus {
+            running: true,
+            last_output_path: output.display().to_string(),
+            message: String::new(),
+            error: String::new(),
+        }));
+
+    tokio::spawn(async move {
+        let result = crate::stats_api::capture_to_file(&output, 30).await;
+        let status = match result {
+            Ok(()) => DebugCaptureStatus {
+                running: false,
+                last_output_path: output.display().to_string(),
+                message: "Capture complete.".to_string(),
+                error: String::new(),
+            },
+            Err(error) => DebugCaptureStatus {
+                running: false,
+                last_output_path: output.display().to_string(),
+                message: String::new(),
+                error: format!("Capture failed: {error}"),
+            },
+        };
+        state.debug_capture_status.store(Arc::new(status));
     });
 }
 
@@ -930,8 +1371,16 @@ fn render_overlay(ctx: &egui::Context, state: &Arc<AppState>) {
 
     let offset = base_offset * config.ui_scale;
 
-    egui::Area::new("overlay_area".into())
-        .anchor(anchor, offset)
+    let area = egui::Area::new("overlay_area".into())
+        .order(egui::Order::Foreground)
+        .movable(config.layout_mode);
+    let area = if let Some(position) = config.lobby_manual_position {
+        area.fixed_pos(normalized_to_pos(ctx, position))
+    } else {
+        area.anchor(anchor, offset)
+    };
+
+    let response = area
         .show(ctx, |ui| {
             let frame = egui::Frame::default()
                 .fill(egui::Color32::from_rgba_unmultiplied(
@@ -1127,7 +1576,12 @@ fn render_overlay(ctx: &egui::Context, state: &Arc<AppState>) {
                     }
                 });
             });
-        });
+        })
+        .response;
+
+    if config.layout_mode {
+        persist_dragged_position(ctx, state, response.rect, "lobby", response.drag_delta());
+    }
 }
 
 fn render_teammate_boost(ctx: &egui::Context, state: &Arc<AppState>) {
@@ -1186,9 +1640,15 @@ fn render_teammate_boost(ctx: &egui::Context, state: &Arc<AppState>) {
     let base_y =
         screen_rect.max.y - config.teammate_boost_offset * config.teammate_hud_scale - height;
 
-    egui::Area::new("teammate_boost_panel".into())
-        .fixed_pos(egui::pos2(base_x.max(0.0), base_y.max(0.0)))
+    let position = config
+        .teammate_boost_manual_position
+        .map(|position| normalized_to_pos(ctx, position))
+        .unwrap_or_else(|| egui::pos2(base_x.max(0.0), base_y.max(0.0)));
+
+    let response = egui::Area::new("teammate_boost_panel".into())
+        .fixed_pos(position)
         .order(egui::Order::Foreground)
+        .movable(config.layout_mode)
         .show(ctx, |ui| {
             draw_teammate_boost_panel(
                 ui,
@@ -1197,7 +1657,12 @@ fn render_teammate_boost(ctx: &egui::Context, state: &Arc<AppState>) {
                 config.teammate_hud_scale,
                 config.teammate_boost_display,
             );
-        });
+        })
+        .response;
+
+    if config.layout_mode {
+        persist_dragged_position(ctx, state, response.rect, "boost", response.drag_delta());
+    }
 }
 
 fn render_teammate_boost_position_preview(ctx: &egui::Context, state: &Arc<AppState>) {
@@ -1217,6 +1682,115 @@ fn render_teammate_boost_position_preview(ctx: &egui::Context, state: &Arc<AppSt
             ui.set_opacity(0.72);
             draw_teammate_boost_panel(ui, &teammates, 0, scale, config.teammate_boost_display);
         });
+}
+
+fn render_session_overlay(ctx: &egui::Context, state: &Arc<AppState>) {
+    let config = state.config.load();
+    let position = config
+        .session_manual_position
+        .map(|position| normalized_to_pos(ctx, position));
+    let area = egui::Area::new("session_overlay_panel".into())
+        .order(egui::Order::Foreground)
+        .movable(config.layout_mode);
+    let area = if let Some(position) = position {
+        area.fixed_pos(position)
+    } else {
+        let (anchor, offset) = anchor_offset(
+            config.session_overlay_anchor,
+            egui::vec2(
+                config.session_overlay_offset[0],
+                config.session_overlay_offset[1],
+            ),
+        );
+        area.anchor(anchor, offset)
+    };
+
+    let response = area
+        .show(ctx, |ui| {
+            draw_session_panel(
+                ui,
+                &state.session.load(),
+                config.session_overlay_scale,
+                config.session_overlay_display,
+                config.session_overlay_opacity,
+            );
+        })
+        .response;
+
+    if config.layout_mode {
+        persist_dragged_position(ctx, state, response.rect, "session", response.drag_delta());
+    }
+}
+
+fn draw_session_panel(
+    ui: &mut egui::Ui,
+    session: &crate::session::SessionState,
+    scale: f32,
+    display: SessionOverlayDisplay,
+    opacity: u8,
+) {
+    let width = match display {
+        SessionOverlayDisplay::Compact => 155.0 * scale,
+        SessionOverlayDisplay::Expanded => 220.0 * scale,
+    };
+    let frame = egui::Frame::default()
+        .fill(egui::Color32::from_rgba_unmultiplied(16, 18, 24, opacity))
+        .stroke(egui::Stroke::new(1.0, egui::Color32::from_white_alpha(24)))
+        .corner_radius(6.0 * scale)
+        .inner_margin(8.0 * scale);
+
+    frame.show(ui, |ui| {
+        ui.set_min_width(width);
+        ui.label(
+            egui::RichText::new("SESSION")
+                .size(9.0 * scale)
+                .strong()
+                .color(egui::Color32::from_gray(170)),
+        );
+        ui.add_space(4.0 * scale);
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new(format!("{}W", session.wins))
+                    .size(17.0 * scale)
+                    .strong()
+                    .color(egui::Color32::from_rgb(90, 230, 150)),
+            );
+            ui.label(
+                egui::RichText::new(format!("{}L", session.losses))
+                    .size(17.0 * scale)
+                    .strong()
+                    .color(egui::Color32::from_rgb(255, 105, 105)),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(
+                    egui::RichText::new(streak_label(session.streak))
+                        .size(12.0 * scale)
+                        .color(egui::Color32::from_rgb(220, 220, 245)),
+                );
+            });
+        });
+
+        if display == SessionOverlayDisplay::Expanded {
+            ui.separator();
+            debug_status_row(ui, "Matches", &session.matches_played.to_string());
+            debug_status_row(ui, "Last", session.last_result.label());
+            debug_status_row(
+                ui,
+                "Score",
+                &format!("{} - {}", session.blue_score, session.orange_score),
+            );
+        }
+    });
+}
+
+fn streak_label(streak: i32) -> String {
+    if streak > 0 {
+        format!("+{} streak", streak)
+    } else if streak < 0 {
+        format!("{} streak", streak)
+    } else {
+        "no streak".to_string()
+    }
 }
 
 fn draw_teammate_boost_panel(
@@ -1473,6 +2047,61 @@ fn teammate_boost_row_height(scale: f32, display: TeammateBoostDisplay) -> f32 {
         TeammateBoostDisplay::Compact => 21.0 * scale,
         TeammateBoostDisplay::Numbers => 20.0 * scale,
     }
+}
+
+fn session_display_label(display: SessionOverlayDisplay) -> &'static str {
+    match display {
+        SessionOverlayDisplay::Compact => "Compact",
+        SessionOverlayDisplay::Expanded => "Expanded",
+    }
+}
+
+fn anchor_offset(anchor: AnchorPos, offset: egui::Vec2) -> (egui::Align2, egui::Vec2) {
+    match anchor {
+        AnchorPos::TopLeft => (egui::Align2::LEFT_TOP, offset),
+        AnchorPos::TopRight => (egui::Align2::RIGHT_TOP, offset),
+        AnchorPos::BottomLeft => (egui::Align2::LEFT_BOTTOM, offset),
+        AnchorPos::BottomRight => (egui::Align2::RIGHT_BOTTOM, offset),
+        AnchorPos::CenterRight => (egui::Align2::RIGHT_CENTER, offset),
+    }
+}
+
+fn normalized_to_pos(ctx: &egui::Context, position: [f32; 2]) -> egui::Pos2 {
+    let rect = ctx.input(|i| i.screen_rect());
+    egui::pos2(
+        rect.left() + rect.width() * position[0].clamp(0.0, 1.0),
+        rect.top() + rect.height() * position[1].clamp(0.0, 1.0),
+    )
+}
+
+fn pos_to_normalized(ctx: &egui::Context, pos: egui::Pos2) -> [f32; 2] {
+    let rect = ctx.input(|i| i.screen_rect());
+    [
+        ((pos.x - rect.left()) / rect.width().max(1.0)).clamp(0.0, 1.0),
+        ((pos.y - rect.top()) / rect.height().max(1.0)).clamp(0.0, 1.0),
+    ]
+}
+
+fn persist_dragged_position(
+    ctx: &egui::Context,
+    state: &Arc<AppState>,
+    rect: egui::Rect,
+    target: &str,
+    drag_delta: egui::Vec2,
+) {
+    if drag_delta == egui::Vec2::ZERO {
+        return;
+    }
+
+    let new_position = pos_to_normalized(ctx, rect.min + drag_delta);
+    let mut config = (**state.config.load()).clone();
+    match target {
+        "lobby" => config.lobby_manual_position = Some(new_position),
+        "boost" => config.teammate_boost_manual_position = Some(new_position),
+        "session" => config.session_manual_position = Some(new_position),
+        _ => return,
+    }
+    state.save_config(config);
 }
 
 fn format_key_name(key: &str) -> &str {

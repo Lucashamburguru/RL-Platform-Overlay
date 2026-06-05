@@ -1,9 +1,63 @@
-use crate::state::AppState;
+use crate::state::{AppState, config_dir};
 use gilrs::{Event, Gilrs};
 use rdev::{EventType, listen};
 use std::collections::HashSet;
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+const SETTINGS_TOGGLE_DEBOUNCE_MS: u128 = 200;
+
+pub fn hotkey_debug_log_path() -> PathBuf {
+    config_dir()
+        .map(|dir| dir.join("hotkey_debug.log"))
+        .unwrap_or_else(|| PathBuf::from("hotkey_debug.log"))
+}
+
+pub fn append_hotkey_debug_log(message: impl AsRef<str>) {
+    let path = hotkey_debug_log_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+
+    let now_ms = now_ms();
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(file, "{now_ms} {}", message.as_ref());
+    }
+}
+
+fn now_ms() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+}
+
+pub fn toggle_settings_hotkey(state: &Arc<AppState>, source: &str) {
+    let event_ms = now_ms();
+    let last = state.last_settings_hotkey_unix_ms.load(Ordering::SeqCst) as u128;
+    let elapsed = event_ms.saturating_sub(last);
+    if elapsed < SETTINGS_TOGGLE_DEBOUNCE_MS {
+        append_hotkey_debug_log(format!(
+            "settings_toggle_ignored_duplicate source={source} elapsed_ms={elapsed}"
+        ));
+        return;
+    }
+
+    state
+        .last_settings_hotkey_unix_ms
+        .store(event_ms as u64, Ordering::SeqCst);
+    let current = state.is_settings_visible.load(Ordering::SeqCst);
+    state.is_settings_visible.store(!current, Ordering::SeqCst);
+    append_hotkey_debug_log(format!(
+        "settings_toggle source={source} current={current} new={}",
+        !current
+    ));
+    println!("Settings menu visibility toggled to: {}", !current);
+}
 
 pub fn start_input_tasks(state: Arc<AppState>) {
     let state_ctrl = state.clone();
@@ -95,25 +149,31 @@ pub fn start_input_tasks(state: Arc<AppState>) {
     let state_kb = state.clone();
     std::thread::spawn(move || {
         println!("Keyboard listener thread started.");
+        append_hotkey_debug_log("keyboard_listener_started");
+        let mut pressed_keyboard_hotkeys = HashSet::new();
         let callback = move |event: rdev::Event| match event.event_type {
             EventType::KeyPress(key) => {
+                let key_debug = format!("{:?}", key);
                 if state_kb.is_recording_kb.load(Ordering::SeqCst) {
                     let mut new_config = (**state_kb.config.load()).clone();
-                    new_config.hotkey_kb = format!("{:?}", key);
+                    new_config.hotkey_kb = key_debug.clone();
                     state_kb.save_config(new_config);
                     state_kb.is_recording_kb.store(false, Ordering::SeqCst);
                     println!("Keyboard hotkey updated to: {:?}", key);
+                    append_hotkey_debug_log(format!("record_keyboard_hotkey key={key_debug}"));
                 } else if state_kb.is_recording_settings.load(Ordering::SeqCst) {
                     let mut new_config = (**state_kb.config.load()).clone();
-                    new_config.hotkey_settings = format!("{:?}", key);
+                    new_config.hotkey_settings = key_debug.clone();
                     state_kb.save_config(new_config);
                     state_kb
                         .is_recording_settings
                         .store(false, Ordering::SeqCst);
                     println!("Settings hotkey updated to: {:?}", key);
+                    append_hotkey_debug_log(format!("record_settings_hotkey key={key_debug}"));
                 } else {
                     let config = state_kb.config.load();
-                    let key_str = format!("{:?}", key);
+                    let key_str = key_debug;
+                    let first_press = pressed_keyboard_hotkeys.insert(key_str.clone());
                     let is_match = if key_str == config.hotkey_kb {
                         true
                     } else if key_str.starts_with("Kp") && config.hotkey_kb.starts_with("Num") {
@@ -124,29 +184,37 @@ pub fn start_input_tasks(state: Arc<AppState>) {
                     } else {
                         false
                     };
+                    let settings_before = state_kb.is_settings_visible.load(Ordering::SeqCst);
+                    let hud_before = state_kb.is_visible.load(Ordering::SeqCst);
+                    append_hotkey_debug_log(format!(
+                        "keypress key={key_str} first_press={first_press} hud_match={is_match} settings_match={} settings_before={settings_before} hud_before={hud_before}",
+                        key_str == config.hotkey_settings
+                    ));
 
-                    if is_match {
+                    if first_press && is_match {
                         if config.hotkey_toggle {
                             let current = state_kb.is_visible.load(Ordering::SeqCst);
                             state_kb.is_visible.store(!current, Ordering::SeqCst);
+                            append_hotkey_debug_log(format!(
+                                "hud_toggle current={current} new={}",
+                                !current
+                            ));
                         } else {
                             state_kb.is_visible.store(true, Ordering::SeqCst);
+                            append_hotkey_debug_log("hud_hold_visible true");
                         }
                     }
 
                     // Handle Settings Toggle Hotkey
-                    if key_str == config.hotkey_settings {
-                        let current = state_kb.is_settings_visible.load(Ordering::SeqCst);
-                        state_kb
-                            .is_settings_visible
-                            .store(!current, Ordering::SeqCst);
-                        println!("Settings menu visibility toggled to: {}", !current);
+                    if first_press && key_str == config.hotkey_settings {
+                        toggle_settings_hotkey(&state_kb, "rdev");
                     }
                 }
             }
             EventType::KeyRelease(key) => {
                 let config = state_kb.config.load();
                 let key_str = format!("{:?}", key);
+                let was_pressed = pressed_keyboard_hotkeys.remove(&key_str);
                 let is_match = if key_str == config.hotkey_kb {
                     true
                 } else if key_str.starts_with("Kp") && config.hotkey_kb.starts_with("Num") {
@@ -156,9 +224,14 @@ pub fn start_input_tasks(state: Arc<AppState>) {
                 } else {
                     false
                 };
+                append_hotkey_debug_log(format!(
+                    "keyrelease key={key_str} was_pressed={was_pressed} hud_match={is_match} settings_match={}",
+                    key_str == config.hotkey_settings
+                ));
 
                 if !config.hotkey_toggle && is_match {
                     state_kb.is_visible.store(false, Ordering::SeqCst);
+                    append_hotkey_debug_log("hud_hold_visible false");
                 }
             }
             _ => {}

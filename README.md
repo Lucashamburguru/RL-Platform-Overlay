@@ -42,6 +42,11 @@ cargo run --bin debug_game_output -- --seconds 30 --output rl_game_output_debug.
 
 The tool connects to the local Rocket League Stats API and writes payloads plus derived summaries to the output file.
 
+To show the in-app Debug tab:
+```bash
+cargo run -- --debug
+```
+
 ## Tech Stack
 - **Language**: Rust
 - **UI**: egui / eframe

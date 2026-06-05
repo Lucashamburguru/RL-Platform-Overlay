@@ -1,3 +1,6 @@
+use crate::session::{SessionOverlayDisplay, SessionState};
+use crate::setup::StatsApiSetupResult;
+use crate::stats_api::StatsApiTransport;
 use arc_swap::ArcSwap;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -5,7 +8,7 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub enum AnchorPos {
@@ -47,6 +50,16 @@ pub struct Config {
     pub teammate_boost_display: TeammateBoostDisplay,
     pub rocket_league_path: String,
     pub alpha_boost_enabled: bool,
+    pub session_overlay_enabled: bool,
+    pub session_overlay_scale: f32,
+    pub session_overlay_opacity: u8,
+    pub session_overlay_anchor: AnchorPos,
+    pub session_overlay_offset: [f32; 2],
+    pub session_overlay_display: SessionOverlayDisplay,
+    pub lobby_manual_position: Option<[f32; 2]>,
+    pub teammate_boost_manual_position: Option<[f32; 2]>,
+    pub session_manual_position: Option<[f32; 2]>,
+    pub layout_mode: bool,
 }
 
 pub fn detect_rocket_league_path() -> Option<String> {
@@ -105,6 +118,16 @@ impl Default for Config {
             teammate_boost_display: TeammateBoostDisplay::Bars,
             rocket_league_path,
             alpha_boost_enabled: false,
+            session_overlay_enabled: false,
+            session_overlay_scale: 1.4,
+            session_overlay_opacity: 170,
+            session_overlay_anchor: AnchorPos::TopLeft,
+            session_overlay_offset: [24.0, 150.0],
+            session_overlay_display: SessionOverlayDisplay::Compact,
+            lobby_manual_position: None,
+            teammate_boost_manual_position: None,
+            session_manual_position: None,
+            layout_mode: false,
         }
     }
 }
@@ -212,6 +235,23 @@ pub struct VersionCheck {
 use crate::mmr::TrackerSnapshot;
 
 #[derive(Clone, Debug, Default)]
+pub struct NetworkDiagnostics {
+    pub transport: StatsApiTransport,
+    pub last_event: String,
+    pub last_event_unix_ms: u128,
+    pub last_parse_error: String,
+    pub last_connection_error: String,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct DebugCaptureStatus {
+    pub running: bool,
+    pub last_output_path: String,
+    pub message: String,
+    pub error: String,
+}
+
+#[derive(Clone, Debug, Default)]
 pub struct PlayerInfo {
     pub name: String,
     pub primary_id: String,
@@ -227,6 +267,7 @@ pub struct PlayerInfo {
 }
 
 pub struct AppState {
+    pub debug_enabled: bool,
     pub is_visible: AtomicBool,
     pub is_settings_visible: AtomicBool,
     pub is_connected: AtomicBool,
@@ -234,19 +275,30 @@ pub struct AppState {
     pub is_recording_kb: AtomicBool,
     pub is_recording_ctrl: AtomicBool,
     pub is_recording_settings: AtomicBool,
+    pub last_settings_hotkey_unix_ms: AtomicU64,
     pub local_player_name: ArcSwap<String>,
     pub local_team: std::sync::atomic::AtomicU8,
     pub players: ArcSwap<HashMap<String, PlayerInfo>>,
     pub config: ArcSwap<Config>,
     pub config_status: ArcSwap<ConfigStatus>,
     pub version_check: ArcSwap<VersionCheck>,
+    pub network_diagnostics: ArcSwap<NetworkDiagnostics>,
+    pub debug_capture_status: ArcSwap<DebugCaptureStatus>,
+    pub stats_api_setup_result: ArcSwap<StatsApiSetupResult>,
+    pub session: ArcSwap<SessionState>,
     pub boost_swap_status: Arc<std::sync::Mutex<String>>,
 }
 
 impl AppState {
+    #[cfg(test)]
     pub fn new() -> Arc<Self> {
+        Self::new_with_debug(false)
+    }
+
+    pub fn new_with_debug(debug_enabled: bool) -> Arc<Self> {
         let (config, config_status) = Config::load();
         Arc::new(Self {
+            debug_enabled,
             is_visible: AtomicBool::new(false),
             is_settings_visible: AtomicBool::new(true),
             is_connected: AtomicBool::new(false),
@@ -254,12 +306,17 @@ impl AppState {
             is_recording_kb: AtomicBool::new(false),
             is_recording_ctrl: AtomicBool::new(false),
             is_recording_settings: AtomicBool::new(false),
+            last_settings_hotkey_unix_ms: AtomicU64::new(0),
             local_player_name: ArcSwap::from_pointee("".to_string()),
             local_team: std::sync::atomic::AtomicU8::new(255),
             players: ArcSwap::from_pointee(HashMap::new()),
             config: ArcSwap::from_pointee(config),
             config_status: ArcSwap::from_pointee(config_status),
             version_check: ArcSwap::from_pointee(VersionCheck::default()),
+            network_diagnostics: ArcSwap::from_pointee(NetworkDiagnostics::default()),
+            debug_capture_status: ArcSwap::from_pointee(DebugCaptureStatus::default()),
+            stats_api_setup_result: ArcSwap::from_pointee(StatsApiSetupResult::default()),
+            session: ArcSwap::from_pointee(SessionState::default()),
             boost_swap_status: Arc::new(std::sync::Mutex::new("Idle".to_string())),
         })
     }

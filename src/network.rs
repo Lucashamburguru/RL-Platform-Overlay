@@ -1,4 +1,5 @@
 use crate::state::{AppState, PlayerInfo};
+use crate::stats_api::{StatsApiTransport, TcpJsonSplitter};
 use futures_util::StreamExt;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -18,12 +19,15 @@ pub async fn start_network_task(state: Arc<AppState>) {
             Ok((mut ws_stream, _)) => {
                 println!("Connected to Rocket League via WebSocket!");
                 state.is_connected.store(true, Ordering::SeqCst);
+                update_transport(&state, StatsApiTransport::WebSocket);
                 while let Some(msg) = ws_stream.next().await {
                     if let Ok(msg) = msg
                         && let Ok(text) = msg.to_text()
-                        && let Ok(json) = serde_json::from_str::<Value>(text)
                     {
-                        handle_event(&state, &json);
+                        match serde_json::from_str::<Value>(text) {
+                            Ok(json) => handle_event(&state, &json),
+                            Err(error) => update_parse_error(&state, error.to_string()),
+                        }
                     }
                 }
                 state.is_connected.store(false, Ordering::SeqCst);
@@ -36,56 +40,21 @@ pub async fn start_network_task(state: Arc<AppState>) {
                     if let Ok(mut stream) = TcpStream::connect(addr).await {
                         println!("Connected to Rocket League via TCP!");
                         state.is_connected.store(true, Ordering::SeqCst);
+                        update_transport(&state, StatsApiTransport::Tcp);
                         let mut buffer = [0u8; 16384];
-                        let mut leftover = String::new();
+                        let mut splitter = TcpJsonSplitter::default();
                         loop {
                             match stream.read(&mut buffer).await {
                                 Ok(0) => break, // EOF
                                 Ok(n) => {
-                                    let text = format!(
-                                        "{}{}",
-                                        leftover,
-                                        String::from_utf8_lossy(&buffer[..n])
-                                    );
-                                    leftover.clear();
-
-                                    // Try to find complete JSON objects in the stream
-                                    let mut start = 0;
-                                    let mut depth = 0;
-                                    let mut in_string = false;
-                                    let mut escaped = false;
-
-                                    for (i, c) in text.char_indices() {
-                                        if escaped {
-                                            escaped = false;
-                                            continue;
-                                        }
-                                        match c {
-                                            '\\' if in_string => escaped = true,
-                                            '"' => in_string = !in_string,
-                                            '{' if !in_string => {
-                                                if depth == 0 {
-                                                    start = i;
-                                                }
-                                                depth += 1;
+                                    let text = String::from_utf8_lossy(&buffer[..n]);
+                                    for json_str in splitter.push(&text) {
+                                        match serde_json::from_str::<Value>(&json_str) {
+                                            Ok(json) => handle_event(&state, &json),
+                                            Err(error) => {
+                                                update_parse_error(&state, error.to_string())
                                             }
-                                            '}' if !in_string => {
-                                                depth -= 1;
-                                                if depth == 0 {
-                                                    let json_str = &text[start..=i];
-                                                    if let Ok(json) =
-                                                        serde_json::from_str::<Value>(json_str)
-                                                    {
-                                                        handle_event(&state, &json);
-                                                    }
-                                                }
-                                            }
-                                            _ => {}
                                         }
-                                    }
-
-                                    if depth > 0 {
-                                        leftover = text[start..].to_string();
                                     }
                                 }
                                 Err(_) => break,
@@ -96,10 +65,12 @@ pub async fn start_network_task(state: Arc<AppState>) {
                         state.local_player_name.store(Arc::new("".to_string()));
                     } else {
                         state.is_connected.store(false, Ordering::SeqCst);
+                        update_connection_error(&state, "Could not connect via TCP.".to_string());
                     }
                 } else {
                     state.is_connected.store(false, Ordering::SeqCst);
                     eprintln!("Connection failed: {}. Retrying in 5s...", e);
+                    update_connection_error(&state, e.to_string());
                 }
             }
         }
@@ -109,12 +80,16 @@ pub async fn start_network_task(state: Arc<AppState>) {
 
 fn handle_event(state: &Arc<AppState>, json: &Value) {
     let event = json["Event"].as_str().unwrap_or("Unknown");
+    update_last_event(state, event);
     match event {
         "UpdateState" => handle_update_state(state, &json["Data"]),
         "MatchEnded" | "MatchDestroyed" | "LobbyEntered" => {
             state.players.store(Arc::new(HashMap::new()));
             state.local_player_name.store(Arc::new("".to_string()));
             state.local_team.store(255, Ordering::SeqCst);
+            let mut session = (**state.session.load()).clone();
+            session.handle_reset_event();
+            state.session.store(Arc::new(session));
             println!("Match ended, clearing player list.");
         }
         _ => println!("Received event: {}", event),
@@ -225,6 +200,39 @@ fn handle_update_state(state: &Arc<AppState>, data: &Value) {
         // println!("State Updated: {} players in lobby", new_players.len());
     }
     state.players.store(Arc::new(new_players));
+
+    let local_team = state.local_team.load(Ordering::SeqCst);
+    let local_team_hint = (local_team != 255).then_some(local_team);
+    let mut session = (**state.session.load()).clone();
+    session.handle_update_state(&real_data, local_team_hint);
+    state.session.store(Arc::new(session));
+}
+
+fn update_transport(state: &Arc<AppState>, transport: StatsApiTransport) {
+    let mut diagnostics = (**state.network_diagnostics.load()).clone();
+    diagnostics.transport = transport;
+    diagnostics.last_connection_error.clear();
+    state.network_diagnostics.store(Arc::new(diagnostics));
+}
+
+fn update_last_event(state: &Arc<AppState>, event: &str) {
+    let mut diagnostics = (**state.network_diagnostics.load()).clone();
+    diagnostics.last_event = event.to_string();
+    diagnostics.last_event_unix_ms = crate::stats_api::now_ms();
+    diagnostics.last_parse_error.clear();
+    state.network_diagnostics.store(Arc::new(diagnostics));
+}
+
+fn update_parse_error(state: &Arc<AppState>, error: String) {
+    let mut diagnostics = (**state.network_diagnostics.load()).clone();
+    diagnostics.last_parse_error = error;
+    state.network_diagnostics.store(Arc::new(diagnostics));
+}
+
+fn update_connection_error(state: &Arc<AppState>, error: String) {
+    let mut diagnostics = (**state.network_diagnostics.load()).clone();
+    diagnostics.last_connection_error = error;
+    state.network_diagnostics.store(Arc::new(diagnostics));
 }
 
 fn string_field<'a>(value: &'a Value, keys: &[&str]) -> Option<&'a str> {

@@ -2,7 +2,10 @@ mod assets;
 mod input;
 mod mmr;
 mod network;
+mod session;
+mod setup;
 mod state;
+mod stats_api;
 mod ui;
 mod update;
 
@@ -11,7 +14,8 @@ use eframe::egui;
 
 #[tokio::main]
 async fn main() -> eframe::Result<()> {
-    let state = AppState::new();
+    let debug_enabled = std::env::args().any(|arg| arg == "--debug");
+    let state = AppState::new_with_debug(debug_enabled);
 
     // Start background tasks
     let net_state = state.clone();

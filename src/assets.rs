@@ -1,8 +1,64 @@
 use crate::state::config_dir;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::ffi::OsStr;
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 use sysinfo::{ProcessesToUpdate, System};
+
+const BOOST_RELEASE_TAG: &str = "alpha-boost-assets-v1";
+const BACKUP_METADATA_FILE: &str = "backup_metadata.json";
+const METADATA_VERSION: u32 = 1;
+
+// Fill these with the SHA-256 values of the final GitHub Release assets.
+// Until then, Alpha Boost apply fails closed before any download or file write.
+const ALPHA_VISUAL_SHA256: &str =
+    "b4bee6087142a1f7fcbc61a1cca1a7a093e282d2aba2559da783b643abb5449d";
+const ALPHA_AUDIO_SHA256: &str = "cca81ccfdd4bfb63464211cbd8354f86ec884a43afbe890c2998593242231211";
+
+#[derive(Clone, Copy, Debug)]
+struct BoostAssetSpec {
+    file_name: &'static str,
+    url: &'static str,
+    expected_sha256: &'static str,
+}
+
+const ALPHA_VISUAL_SPEC: BoostAssetSpec = BoostAssetSpec {
+    file_name: "Boost_Standard_SF.upk",
+    url: "https://github.com/Lucashamburguru/RL-Platform-Overlay/releases/download/alpha-boost-assets-v1/Boost_Standard_SF.upk",
+    expected_sha256: ALPHA_VISUAL_SHA256,
+};
+
+const ALPHA_AUDIO_SPEC: BoostAssetSpec = BoostAssetSpec {
+    file_name: "SFX_Boost_Standard.bnk",
+    url: "https://github.com/Lucashamburguru/RL-Platform-Overlay/releases/download/alpha-boost-assets-v1/SFX_Boost_Standard.bnk",
+    expected_sha256: ALPHA_AUDIO_SHA256,
+};
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct BoostBackupMetadata {
+    version: u32,
+    created_unix_ms: u128,
+    release_tag: String,
+    files: Vec<BoostBackupFileMetadata>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct BoostBackupFileMetadata {
+    file_name: String,
+    original_size: u64,
+    original_sha256: String,
+    backup_path: String,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct BoostSwapInspection {
+    pub metadata_exists: bool,
+    pub cache_verified: bool,
+    pub message: String,
+}
 
 pub fn is_rocket_league_running() -> bool {
     fn is_rocket_league_name(name: &OsStr) -> bool {
@@ -31,6 +87,36 @@ pub fn is_rocket_league_running() -> bool {
     false
 }
 
+pub fn inspect_boost_swap() -> BoostSwapInspection {
+    let Ok(conf_dir) =
+        config_dir().ok_or_else(|| "Could not resolve config directory.".to_string())
+    else {
+        return BoostSwapInspection {
+            message: "Could not resolve config directory.".to_string(),
+            ..Default::default()
+        };
+    };
+
+    let metadata_exists = backup_metadata_path(&conf_dir).exists();
+    let cache_verified = asset_hashes_configured()
+        && cached_asset_verified(&conf_dir, ALPHA_VISUAL_SPEC)
+        && cached_asset_verified(&conf_dir, ALPHA_AUDIO_SPEC);
+
+    let message = if !asset_hashes_configured() {
+        "Alpha Boost asset hashes are not configured.".to_string()
+    } else if cache_verified {
+        "Cached Alpha Boost assets verified.".to_string()
+    } else {
+        format!("Assets will download from GitHub Release {BOOST_RELEASE_TAG}.")
+    };
+
+    BoostSwapInspection {
+        metadata_exists,
+        cache_verified,
+        message,
+    }
+}
+
 fn cooked_pc_console_path(rocket_league_path: &str) -> Result<PathBuf, String> {
     if rocket_league_path.trim().is_empty() {
         return Err("Rocket League folder path is empty.".to_string());
@@ -55,49 +141,113 @@ fn cooked_pc_console_path(rocket_league_path: &str) -> Result<PathBuf, String> {
     Ok(cooked_path)
 }
 
-fn boost_backup_dir() -> Result<PathBuf, String> {
-    let conf_dir =
-        config_dir().ok_or_else(|| "Could not resolve user config directory.".to_string())?;
+fn boost_backup_dir(conf_dir: &Path) -> Result<PathBuf, String> {
     let backup_path = conf_dir.join("backups").join("Boost");
-    if !backup_path.exists() {
-        fs::create_dir_all(&backup_path)
-            .map_err(|e| format!("Failed to create backup directory: {}", e))?;
-    }
+    fs::create_dir_all(&backup_path)
+        .map_err(|e| format!("Failed to create backup directory: {e}"))?;
     Ok(backup_path)
+}
+
+fn boost_cache_dir(conf_dir: &Path) -> Result<PathBuf, String> {
+    let cache_path = conf_dir.join("cache").join("Boost");
+    fs::create_dir_all(&cache_path)
+        .map_err(|e| format!("Failed to create cache directory: {e}"))?;
+    Ok(cache_path)
+}
+
+fn backup_metadata_path(conf_dir: &Path) -> PathBuf {
+    conf_dir
+        .join("backups")
+        .join("Boost")
+        .join(BACKUP_METADATA_FILE)
+}
+
+fn asset_hashes_configured() -> bool {
+    expected_hash_configured(ALPHA_VISUAL_SHA256) && expected_hash_configured(ALPHA_AUDIO_SHA256)
+}
+
+fn expected_hash_configured(hash: &str) -> bool {
+    hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn cached_asset_verified(conf_dir: &Path, spec: BoostAssetSpec) -> bool {
+    if !expected_hash_configured(spec.expected_sha256) {
+        return false;
+    }
+    let path = conf_dir.join("cache").join("Boost").join(spec.file_name);
+    file_sha256(&path)
+        .map(|actual| actual.eq_ignore_ascii_case(spec.expected_sha256))
+        .unwrap_or(false)
+}
+
+async fn ensure_verified_cached_asset(
+    conf_dir: &Path,
+    spec: BoostAssetSpec,
+) -> Result<PathBuf, String> {
+    if !expected_hash_configured(spec.expected_sha256) {
+        return Err(format!(
+            "Error: SHA-256 is not configured for {}. Upload the GitHub Release asset and fill the expected hash constant.",
+            spec.file_name
+        ));
+    }
+
+    let cache_dir = boost_cache_dir(conf_dir)?;
+    let cache_path = cache_dir.join(spec.file_name);
+    if cache_path.exists() {
+        match file_sha256(&cache_path) {
+            Ok(hash) if hash.eq_ignore_ascii_case(spec.expected_sha256) => {
+                return Ok(cache_path);
+            }
+            Ok(_) | Err(_) => {
+                let _ = fs::remove_file(&cache_path);
+            }
+        }
+    }
+
+    download_file(spec.url, &cache_path).await?;
+    let actual = file_sha256(&cache_path)?;
+    if !actual.eq_ignore_ascii_case(spec.expected_sha256) {
+        let _ = fs::remove_file(&cache_path);
+        return Err(format!(
+            "Failed: hash verification failed for {}.",
+            spec.file_name
+        ));
+    }
+
+    Ok(cache_path)
 }
 
 async fn download_file(url: &str, dest_path: &Path) -> Result<(), String> {
     let client = wreq::Client::builder()
         .timeout(std::time::Duration::from_secs(60))
         .build()
-        .map_err(|e| format!("HTTP client init failed: {}", e))?;
+        .map_err(|e| format!("HTTP client init failed: {e}"))?;
 
     let response = client
         .get(url)
         .header("User-Agent", "RL-Platform-Overlay")
         .send()
         .await
-        .map_err(|e| format!("Request failed: {}", e))?;
+        .map_err(|e| format!("Request failed: {e}"))?;
 
     let status = response.status();
     if !status.is_success() {
-        return Err(format!("Server returned HTTP status {}", status));
+        return Err(format!("Server returned HTTP status {status}"));
     }
 
     let bytes = response
         .bytes()
         .await
-        .map_err(|e| format!("Failed to read response bytes: {}", e))?;
+        .map_err(|e| format!("Failed to read response bytes: {e}"))?;
 
     if let Some(parent) = dest_path.parent() {
         fs::create_dir_all(parent)
-            .map_err(|e| format!("Failed to create cache directories: {}", e))?;
+            .map_err(|e| format!("Failed to create cache directories: {e}"))?;
     }
 
     let temp_path = dest_path.with_extension("download");
-    fs::write(&temp_path, bytes).map_err(|e| format!("Failed to write temporary file: {}", e))?;
-    fs::rename(&temp_path, dest_path)
-        .map_err(|e| format!("Failed to replace cached file: {}", e))?;
+    fs::write(&temp_path, bytes).map_err(|e| format!("Failed to write temporary file: {e}"))?;
+    fs::rename(&temp_path, dest_path).map_err(|e| format!("Failed to replace cached file: {e}"))?;
 
     Ok(())
 }
@@ -108,141 +258,43 @@ pub fn start_apply_alpha_boost(
 ) {
     let state_clone = state.clone();
     tokio::spawn(async move {
-        {
-            let mut status = state_clone.boost_swap_status.lock().unwrap();
-            *status = "Initializing Alpha Boost swap...".to_string();
-        }
-
-        // 1. Validate game paths
-        let game_dir = match cooked_pc_console_path(&rocket_league_path) {
-            Ok(path) => path,
-            Err(e) => {
-                let mut status = state_clone.boost_swap_status.lock().unwrap();
-                *status = format!("Error: {}", e);
-                return;
+        set_boost_status(&state_clone, "Initializing Alpha Boost swap...");
+        match apply_alpha_boost(&rocket_league_path).await {
+            Ok(()) => {
+                let mut config = (**state_clone.config.load()).clone();
+                config.alpha_boost_enabled = true;
+                state_clone.save_config(config);
+                set_boost_status(&state_clone, "Success: Alpha Boost applied!");
             }
-        };
-
-        let conf_dir =
-            match config_dir().ok_or_else(|| "Could not resolve config directory.".to_string()) {
-                Ok(path) => path,
-                Err(e) => {
-                    let mut status = state_clone.boost_swap_status.lock().unwrap();
-                    *status = format!("Error: {}", e);
-                    return;
-                }
-            };
-
-        let cache_dir = conf_dir.join("cache").join("Boost");
-        let visual_cache = cache_dir.join("Boost_Standard_SF.upk");
-        let audio_cache = cache_dir.join("SFX_Boost_Standard.bnk");
-
-        // 2. Download custom visuals if not cached
-        if !visual_cache.exists() {
-            {
-                let mut status = state_clone.boost_swap_status.lock().unwrap();
-                *status = "Downloading custom visuals (~370KB)...".to_string();
-            }
-            let url =
-                "https://api.rlpeak.com/v1/files/Boost/Boost_AlphaReward/Boost_Standard_SF.upk";
-            if let Err(e) = download_file(url, &visual_cache).await {
-                let mut status = state_clone.boost_swap_status.lock().unwrap();
-                *status = format!("Download failed: {}", e);
-                return;
-            }
-        }
-
-        // 3. Download custom audio if not cached
-        if !audio_cache.exists() {
-            {
-                let mut status = state_clone.boost_swap_status.lock().unwrap();
-                *status = "Downloading custom audio (~77KB)...".to_string();
-            }
-            let url =
-                "https://api.rlpeak.com/v1/files/Boost/Boost_AlphaReward/SFX_Boost_Standard.bnk";
-            if let Err(e) = download_file(url, &audio_cache).await {
-                let mut status = state_clone.boost_swap_status.lock().unwrap();
-                *status = format!("Download failed: {}", e);
-                return;
-            }
-        }
-
-        // 4. Perform backups and copy files
-        {
-            let mut status = state_clone.boost_swap_status.lock().unwrap();
-            *status = "Backing up original assets...".to_string();
-        }
-
-        let backup_dir = match boost_backup_dir() {
-            Ok(dir) => dir,
-            Err(e) => {
-                let mut status = state_clone.boost_swap_status.lock().unwrap();
-                *status = format!("Backup failed: {}", e);
-                return;
-            }
-        };
-
-        let visual_target = game_dir.join("Boost_Standard_SF.upk");
-        let audio_target = game_dir.join("SFX_Boost_Standard.bnk");
-
-        let visual_backup = backup_dir.join("Boost_Standard_SF.upk");
-        let audio_backup = backup_dir.join("SFX_Boost_Standard.bnk");
-
-        // Verify standard target assets exist in standard folder
-        if !visual_target.exists() || !visual_target.is_file() {
-            let mut status = state_clone.boost_swap_status.lock().unwrap();
-            *status = "Error: Standard Boost visuals not found in game directory.".to_string();
-            return;
-        }
-        if !audio_target.exists() || !audio_target.is_file() {
-            let mut status = state_clone.boost_swap_status.lock().unwrap();
-            *status = "Error: Standard Boost audio not found in game directory.".to_string();
-            return;
-        }
-
-        // Backup originals once
-        if !visual_backup.exists()
-            && let Err(e) = fs::copy(&visual_target, &visual_backup)
-        {
-            let mut status = state_clone.boost_swap_status.lock().unwrap();
-            *status = format!("Backup failed: {}", e);
-            return;
-        }
-        if !audio_backup.exists()
-            && let Err(e) = fs::copy(&audio_target, &audio_backup)
-        {
-            let mut status = state_clone.boost_swap_status.lock().unwrap();
-            *status = format!("Backup failed: {}", e);
-            return;
-        }
-
-        {
-            let mut status = state_clone.boost_swap_status.lock().unwrap();
-            *status = "Applying Alpha Boost assets...".to_string();
-        }
-
-        // Overwrite
-        if let Err(e) = fs::copy(&visual_cache, &visual_target) {
-            let mut status = state_clone.boost_swap_status.lock().unwrap();
-            *status = format!("Swap failed (check write permissions): {}", e);
-            return;
-        }
-        if let Err(e) = fs::copy(&audio_cache, &audio_target) {
-            let mut status = state_clone.boost_swap_status.lock().unwrap();
-            *status = format!("Swap failed (check write permissions): {}", e);
-            return;
-        }
-
-        // Update configuration state
-        let mut config = (**state_clone.config.load()).clone();
-        config.alpha_boost_enabled = true;
-        state_clone.save_config(config);
-
-        {
-            let mut status = state_clone.boost_swap_status.lock().unwrap();
-            *status = "Success: Alpha Boost applied!".to_string();
+            Err(error) => set_boost_status(&state_clone, &error),
         }
     });
+}
+
+async fn apply_alpha_boost(rocket_league_path: &str) -> Result<(), String> {
+    if !asset_hashes_configured() {
+        return Err("Error: Alpha Boost asset hashes are not configured. Fill the GitHub Release SHA-256 constants before applying.".to_string());
+    }
+
+    let game_dir = cooked_pc_console_path(rocket_league_path)?;
+    let conf_dir =
+        config_dir().ok_or_else(|| "Error: Could not resolve config directory.".to_string())?;
+
+    let visual_cache = ensure_verified_cached_asset(&conf_dir, ALPHA_VISUAL_SPEC).await?;
+    let audio_cache = ensure_verified_cached_asset(&conf_dir, ALPHA_AUDIO_SPEC).await?;
+
+    let targets = boost_targets(&game_dir);
+    verify_targets_exist(&targets)?;
+
+    let metadata = ensure_backup_metadata(&conf_dir, &targets)?;
+    verify_targets_known(&targets, &metadata, &[ALPHA_VISUAL_SPEC, ALPHA_AUDIO_SPEC])?;
+
+    fs::copy(&visual_cache, &targets[0].1)
+        .map_err(|e| format!("Swap failed (check write permissions): {e}"))?;
+    fs::copy(&audio_cache, &targets[1].1)
+        .map_err(|e| format!("Swap failed (check write permissions): {e}"))?;
+
+    Ok(())
 }
 
 pub fn start_restore_standard_boost(
@@ -251,81 +303,223 @@ pub fn start_restore_standard_boost(
 ) {
     let state_clone = state.clone();
     tokio::spawn(async move {
-        {
-            let mut status = state_clone.boost_swap_status.lock().unwrap();
-            *status = "Restoring Standard Boost...".to_string();
-        }
-
-        // 1. Validate game paths
-        let game_dir = match cooked_pc_console_path(&rocket_league_path) {
-            Ok(path) => path,
-            Err(e) => {
-                let mut status = state_clone.boost_swap_status.lock().unwrap();
-                *status = format!("Error: {}", e);
-                return;
+        set_boost_status(&state_clone, "Restoring Standard Boost...");
+        match restore_standard_boost(&rocket_league_path) {
+            Ok(()) => {
+                let mut config = (**state_clone.config.load()).clone();
+                config.alpha_boost_enabled = false;
+                state_clone.save_config(config);
+                set_boost_status(&state_clone, "Success: Standard Boost restored!");
             }
-        };
-
-        let backup_dir = match boost_backup_dir() {
-            Ok(dir) => dir,
-            Err(e) => {
-                let mut status = state_clone.boost_swap_status.lock().unwrap();
-                *status = format!("Backup resolve failed: {}", e);
-                return;
-            }
-        };
-
-        let visual_target = game_dir.join("Boost_Standard_SF.upk");
-        let audio_target = game_dir.join("SFX_Boost_Standard.bnk");
-
-        let visual_backup = backup_dir.join("Boost_Standard_SF.upk");
-        let audio_backup = backup_dir.join("SFX_Boost_Standard.bnk");
-
-        // Verify backups exist
-        if !visual_backup.exists() || !visual_backup.is_file() {
-            let mut status = state_clone.boost_swap_status.lock().unwrap();
-            *status = "Error: Backup visuals file not found. Cannot restore.".to_string();
-            return;
-        }
-        if !audio_backup.exists() || !audio_backup.is_file() {
-            let mut status = state_clone.boost_swap_status.lock().unwrap();
-            *status = "Error: Backup audio file not found. Cannot restore.".to_string();
-            return;
-        }
-
-        // Overwrite game targets with backed up original assets
-        if let Err(e) = fs::copy(&visual_backup, &visual_target) {
-            let mut status = state_clone.boost_swap_status.lock().unwrap();
-            *status = format!("Restore failed (check permissions): {}", e);
-            return;
-        }
-        if let Err(e) = fs::copy(&audio_backup, &audio_target) {
-            let mut status = state_clone.boost_swap_status.lock().unwrap();
-            *status = format!("Restore failed (check permissions): {}", e);
-            return;
-        }
-
-        // Update configuration state
-        let mut config = (**state_clone.config.load()).clone();
-        config.alpha_boost_enabled = false;
-        state_clone.save_config(config);
-
-        {
-            let mut status = state_clone.boost_swap_status.lock().unwrap();
-            *status = "Success: Standard Boost restored!".to_string();
+            Err(error) => set_boost_status(&state_clone, &error),
         }
     });
+}
+
+fn restore_standard_boost(rocket_league_path: &str) -> Result<(), String> {
+    let game_dir = cooked_pc_console_path(rocket_league_path)?;
+    let conf_dir =
+        config_dir().ok_or_else(|| "Error: Could not resolve config directory.".to_string())?;
+    let metadata = load_backup_metadata(&conf_dir)?
+        .ok_or_else(|| "Error: Backup metadata not found. Cannot restore safely.".to_string())?;
+    let targets = boost_targets(&game_dir);
+
+    for (file_name, target) in targets {
+        let file_metadata = metadata_file(&metadata, file_name)?;
+        let backup_path = PathBuf::from(&file_metadata.backup_path);
+        if !backup_path.exists() {
+            return Err(format!("Restore failed: backup missing for {file_name}."));
+        }
+        let backup_hash = file_sha256(&backup_path)?;
+        if !backup_hash.eq_ignore_ascii_case(&file_metadata.original_sha256) {
+            return Err(format!(
+                "Restore failed: backup hash does not match metadata for {file_name}."
+            ));
+        }
+        fs::copy(&backup_path, &target)
+            .map_err(|e| format!("Restore failed (check permissions): {e}"))?;
+    }
+
+    Ok(())
+}
+
+fn set_boost_status(state: &std::sync::Arc<crate::state::AppState>, message: &str) {
+    let mut status = state.boost_swap_status.lock().unwrap();
+    *status = message.to_string();
+}
+
+fn boost_targets(game_dir: &Path) -> Vec<(&'static str, PathBuf)> {
+    vec![
+        (
+            ALPHA_VISUAL_SPEC.file_name,
+            game_dir.join(ALPHA_VISUAL_SPEC.file_name),
+        ),
+        (
+            ALPHA_AUDIO_SPEC.file_name,
+            game_dir.join(ALPHA_AUDIO_SPEC.file_name),
+        ),
+    ]
+}
+
+fn verify_targets_exist(targets: &[(&str, PathBuf)]) -> Result<(), String> {
+    for (file_name, target) in targets {
+        if !target.exists() || !target.is_file() {
+            return Err(format!("Error: {file_name} not found in game directory."));
+        }
+    }
+    Ok(())
+}
+
+fn ensure_backup_metadata(
+    conf_dir: &Path,
+    targets: &[(&str, PathBuf)],
+) -> Result<BoostBackupMetadata, String> {
+    if let Some(metadata) = load_backup_metadata(conf_dir)? {
+        return Ok(metadata);
+    }
+
+    let backup_dir = boost_backup_dir(conf_dir)?;
+    let mut files = Vec::new();
+    for (file_name, target) in targets {
+        let backup_path = backup_dir.join(file_name);
+        if !backup_path.exists() {
+            fs::copy(target, &backup_path).map_err(|e| format!("Backup failed: {e}"))?;
+        }
+        let metadata = fs::metadata(&backup_path)
+            .map_err(|e| format!("Backup metadata failed for {file_name}: {e}"))?;
+        files.push(BoostBackupFileMetadata {
+            file_name: (*file_name).to_string(),
+            original_size: metadata.len(),
+            original_sha256: file_sha256(&backup_path)?,
+            backup_path: backup_path.display().to_string(),
+        });
+    }
+
+    let metadata = BoostBackupMetadata {
+        version: METADATA_VERSION,
+        created_unix_ms: now_ms(),
+        release_tag: BOOST_RELEASE_TAG.to_string(),
+        files,
+    };
+    save_backup_metadata(conf_dir, &metadata)?;
+    Ok(metadata)
+}
+
+fn load_backup_metadata(conf_dir: &Path) -> Result<Option<BoostBackupMetadata>, String> {
+    let path = backup_metadata_path(conf_dir);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let content =
+        fs::read_to_string(&path).map_err(|e| format!("Could not read backup metadata: {e}"))?;
+    serde_json::from_str(&content)
+        .map(Some)
+        .map_err(|e| format!("Could not parse backup metadata at {}: {e}", path.display()))
+}
+
+fn save_backup_metadata(conf_dir: &Path, metadata: &BoostBackupMetadata) -> Result<(), String> {
+    let path = backup_metadata_path(conf_dir);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("Could not create backup metadata folder: {e}"))?;
+    }
+    let content = serde_json::to_string_pretty(metadata)
+        .map_err(|e| format!("Could not serialize backup metadata: {e}"))?;
+    fs::write(&path, content).map_err(|e| format!("Could not write backup metadata: {e}"))
+}
+
+fn verify_targets_known(
+    targets: &[(&str, PathBuf)],
+    metadata: &BoostBackupMetadata,
+    specs: &[BoostAssetSpec],
+) -> Result<(), String> {
+    for (file_name, target) in targets {
+        let actual_hash = file_sha256(target)?;
+        let original_hash = &metadata_file(metadata, file_name)?.original_sha256;
+        let alpha_hash = specs
+            .iter()
+            .find(|spec| spec.file_name == *file_name)
+            .map(|spec| spec.expected_sha256)
+            .unwrap_or("");
+        let is_original = actual_hash.eq_ignore_ascii_case(&original_hash);
+        let is_alpha =
+            expected_hash_configured(alpha_hash) && actual_hash.eq_ignore_ascii_case(alpha_hash);
+        if !is_original && !is_alpha {
+            return Err(format!(
+                "Blocked: current {file_name} does not match original backup metadata or verified Alpha Boost asset. Restore/recover originals before applying."
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn metadata_file<'a>(
+    metadata: &'a BoostBackupMetadata,
+    file_name: &str,
+) -> Result<&'a BoostBackupFileMetadata, String> {
+    metadata
+        .files
+        .iter()
+        .find(|file| file.file_name == file_name)
+        .ok_or_else(|| format!("Backup metadata missing entry for {file_name}."))
+}
+
+fn file_sha256(path: &Path) -> Result<String, String> {
+    let mut file =
+        fs::File::open(path).map_err(|e| format!("Could not open {}: {e}", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 16 * 1024];
+    loop {
+        let n = file
+            .read(&mut buffer)
+            .map_err(|e| format!("Could not read {}: {e}", path.display()))?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buffer[..n]);
+    }
+    Ok(hex_lower(&hasher.finalize()))
+}
+
+fn hex_lower(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        output.push(HEX[(byte >> 4) as usize] as char);
+        output.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    output
+}
+
+fn now_ms() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn temp_dir(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("rl_overlay_assets_{name}_{}", now_ms()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    fn fake_spec(file_name: &'static str, hash: &'static str) -> BoostAssetSpec {
+        BoostAssetSpec {
+            file_name,
+            url: "https://example.invalid/file",
+            expected_sha256: hash,
+        }
+    }
+
     #[test]
     fn test_cooked_pc_console_path_validation() {
-        let temp_dir = std::env::temp_dir().join("rl_overlay_test_assets");
-        let _ = fs::remove_dir_all(&temp_dir);
-        fs::create_dir_all(&temp_dir).unwrap();
+        let temp_dir = temp_dir("path_validation");
 
         assert!(cooked_pc_console_path("").is_err());
         assert!(cooked_pc_console_path(&temp_dir.to_string_lossy()).is_err());
@@ -337,6 +531,91 @@ mod tests {
         let resolved = cooked_pc_console_path(&temp_dir.to_string_lossy()).unwrap();
         assert_eq!(resolved, cooked);
 
-        let _ = fs::remove_dir_all(&temp_dir);
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn hash_matches_known_sha256() {
+        let root = temp_dir("hash");
+        let path = root.join("sample.bin");
+        fs::write(&path, b"abc").unwrap();
+        assert_eq!(
+            file_sha256(&path).unwrap(),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn backup_metadata_round_trips() {
+        let root = temp_dir("metadata");
+        let game_dir = root.join("game");
+        let conf_dir = root.join("config");
+        fs::create_dir_all(&game_dir).unwrap();
+        fs::write(game_dir.join("Boost_Standard_SF.upk"), b"visual-original").unwrap();
+        fs::write(game_dir.join("SFX_Boost_Standard.bnk"), b"audio-original").unwrap();
+
+        let targets = boost_targets(&game_dir);
+        let metadata = ensure_backup_metadata(&conf_dir, &targets).unwrap();
+        assert_eq!(metadata.files.len(), 2);
+        assert!(backup_metadata_path(&conf_dir).exists());
+
+        let loaded = load_backup_metadata(&conf_dir).unwrap().unwrap();
+        assert_eq!(loaded.files.len(), 2);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn verify_targets_known_blocks_unknown_target() {
+        let root = temp_dir("unknown");
+        let game_dir = root.join("game");
+        let conf_dir = root.join("config");
+        fs::create_dir_all(&game_dir).unwrap();
+        fs::write(game_dir.join("Boost_Standard_SF.upk"), b"visual-original").unwrap();
+        fs::write(game_dir.join("SFX_Boost_Standard.bnk"), b"audio-original").unwrap();
+        let targets = boost_targets(&game_dir);
+        let metadata = ensure_backup_metadata(&conf_dir, &targets).unwrap();
+
+        fs::write(game_dir.join("Boost_Standard_SF.upk"), b"unknown-change").unwrap();
+        let specs = [
+            fake_spec(
+                "Boost_Standard_SF.upk",
+                "0000000000000000000000000000000000000000000000000000000000000000",
+            ),
+            fake_spec(
+                "SFX_Boost_Standard.bnk",
+                "0000000000000000000000000000000000000000000000000000000000000000",
+            ),
+        ];
+        let error = verify_targets_known(&targets, &metadata, &specs).unwrap_err();
+        assert!(error.starts_with("Blocked:"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn restore_refuses_corrupt_backup() {
+        let root = temp_dir("restore_corrupt");
+        let conf_dir = root.join("config");
+        let backup_dir = boost_backup_dir(&conf_dir).unwrap();
+        let backup_path = backup_dir.join("Boost_Standard_SF.upk");
+        fs::write(&backup_path, b"original").unwrap();
+        let metadata = BoostBackupMetadata {
+            version: METADATA_VERSION,
+            created_unix_ms: now_ms(),
+            release_tag: BOOST_RELEASE_TAG.to_string(),
+            files: vec![BoostBackupFileMetadata {
+                file_name: "Boost_Standard_SF.upk".to_string(),
+                original_size: 8,
+                original_sha256: file_sha256(&backup_path).unwrap(),
+                backup_path: backup_path.display().to_string(),
+            }],
+        };
+        save_backup_metadata(&conf_dir, &metadata).unwrap();
+        fs::write(&backup_path, b"corrupt").unwrap();
+        let loaded = load_backup_metadata(&conf_dir).unwrap().unwrap();
+        let file_metadata = metadata_file(&loaded, "Boost_Standard_SF.upk").unwrap();
+        let backup_hash = file_sha256(&PathBuf::from(&file_metadata.backup_path)).unwrap();
+        assert!(!backup_hash.eq_ignore_ascii_case(&file_metadata.original_sha256));
+        let _ = fs::remove_dir_all(root);
     }
 }

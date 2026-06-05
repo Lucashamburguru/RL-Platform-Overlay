@@ -17,3 +17,15 @@ teammate_boost_offset = 180.0
 teammate_boost_horizontal_offset = 110.0
 teammate_hud_scale = 2.2
 teammate_boost_display = "Bars"
+rocket_league_path = ""
+alpha_boost_enabled = false
+session_overlay_enabled = false
+session_overlay_scale = 1.4
+session_overlay_opacity = 170
+session_overlay_anchor = "TopLeft"
+session_overlay_offset = [
+    24.0,
+    150.0,
+]
+session_overlay_display = "Compact"
+layout_mode = false
