@@ -14,6 +14,40 @@ mod update;
 use eframe::egui;
 use state::AppState;
 
+#[cfg(target_os = "windows")]
+fn configure_windows_transparent_window(cc: &eframe::CreationContext<'_>) {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use winapi::shared::windef::HWND;
+    use winapi::um::dwmapi::DwmExtendFrameIntoClientArea;
+    use winapi::um::uxtheme::MARGINS;
+    use winapi::um::winuser::{
+        GWL_EXSTYLE, GetWindowLongW, LWA_ALPHA, SetLayeredWindowAttributes, SetWindowLongW,
+        WS_EX_LAYERED,
+    };
+
+    let Ok(window_handle) = cc.window_handle() else {
+        return;
+    };
+    let RawWindowHandle::Win32(handle) = window_handle.as_raw() else {
+        return;
+    };
+    let hwnd = handle.hwnd.get() as HWND;
+
+    unsafe {
+        let ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE);
+        SetWindowLongW(hwnd, GWL_EXSTYLE, ex_style | WS_EX_LAYERED as i32);
+        SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA);
+
+        let margins = MARGINS {
+            cxLeftWidth: -1,
+            cxRightWidth: -1,
+            cyTopHeight: -1,
+            cyBottomHeight: -1,
+        };
+        DwmExtendFrameIntoClientArea(hwnd, &margins);
+    }
+}
+
 pub async fn run(debug_enabled: bool) -> eframe::Result<()> {
     let state = AppState::new_with_debug(debug_enabled);
 
@@ -51,6 +85,9 @@ pub async fn run(debug_enabled: bool) -> eframe::Result<()> {
         "RL Overlay Settings",
         options,
         Box::new(|cc| {
+            #[cfg(target_os = "windows")]
+            configure_windows_transparent_window(cc);
+
             egui_extras::install_image_loaders(&cc.egui_ctx);
             cc.egui_ctx.set_visuals(egui::Visuals::dark());
             Ok(Box::new(ui::MainApp::new(state)))

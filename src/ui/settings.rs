@@ -762,15 +762,19 @@ fn render_launch_controls(
         state.is_launched.store(new_val, Ordering::SeqCst);
         if new_val {
             state.is_settings_visible.store(false, Ordering::SeqCst);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Transparent(true));
             ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(
                 config_edit.window_size.into(),
             ));
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
             ctx.send_viewport_cmd(egui::ViewportCommand::MousePassthrough(true));
+            ctx.request_repaint();
         } else {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Transparent(true));
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
             ctx.send_viewport_cmd(egui::ViewportCommand::MousePassthrough(false));
             ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize([720.0, 820.0].into()));
+            ctx.request_repaint();
         }
     }
 

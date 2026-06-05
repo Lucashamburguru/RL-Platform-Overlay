@@ -367,12 +367,23 @@ pub fn start_local_mmr_refresh(state: Arc<AppState>) {
         return;
     };
 
+    let runtime = match tokio::runtime::Handle::try_current() {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            let mut local_mmr = (**current_state).clone();
+            local_mmr.fetching = false;
+            local_mmr.error = format!("Could not start local MMR refresh: {error}");
+            state.local_mmr.store(Arc::new(local_mmr));
+            return;
+        }
+    };
+
     let mut local_mmr = (**current_state).clone();
     local_mmr.fetching = true;
     local_mmr.error.clear();
     state.local_mmr.store(Arc::new(local_mmr));
 
-    tokio::spawn(async move {
+    runtime.spawn(async move {
         let result = async {
             let client = wreq::Client::builder()
                 .timeout(Duration::from_secs(10))
@@ -414,7 +425,7 @@ fn tracker_player_from_identity(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::PlayerInfo;
+    use crate::state::{LocalPlayerIdentity, PlayerInfo};
 
     #[tokio::test]
     #[ignore = "hits live tracker.gg endpoints"]
@@ -487,6 +498,28 @@ mod tests {
             }
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         }
+    }
+
+    #[test]
+    fn local_mmr_refresh_without_runtime_reports_error() {
+        let state = AppState::new();
+        state
+            .local_player_identity
+            .store(Arc::new(LocalPlayerIdentity {
+                name: "Me".to_string(),
+                primary_id: "Steam|76561198000000000|0".to_string(),
+                platform: "Steam".to_string(),
+            }));
+
+        start_local_mmr_refresh(state.clone());
+
+        let local_mmr = state.local_mmr.load();
+        assert!(!local_mmr.fetching);
+        assert!(
+            local_mmr
+                .error
+                .starts_with("Could not start local MMR refresh:")
+        );
     }
 
     #[test]

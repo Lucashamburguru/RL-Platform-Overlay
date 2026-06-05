@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.14] - 2026-06-05
+
+### Fixed
+- **Windows Overlay Transparency**: Reapplies transparent layered-window settings and repaints on launch/settings transitions to prevent the overlay from appearing as a black fullscreen surface.
+- **CI Stability**: Prevents local MMR refresh from panicking when triggered outside a Tokio runtime during synchronous unit tests.
+
+---
+
 ## [0.1.10] - 2026-06-03
 
 ### Added

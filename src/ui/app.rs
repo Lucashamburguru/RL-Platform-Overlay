@@ -21,6 +21,7 @@ pub struct MainApp {
     rl_process_detection_detail: String,
     last_rl_check: std::time::Instant,
     last_logged_show_settings: Option<bool>,
+    last_viewport_mode: Option<(bool, bool, bool)>,
     rocket_league_process_watcher: crate::assets::RocketLeagueProcessWatcher,
 }
 
@@ -35,6 +36,7 @@ impl MainApp {
                 .checked_sub(std::time::Duration::from_secs(5))
                 .unwrap_or_else(std::time::Instant::now),
             last_logged_show_settings: None,
+            last_viewport_mode: None,
             rocket_league_process_watcher: crate::assets::RocketLeagueProcessWatcher::new(),
         }
     }
@@ -83,6 +85,15 @@ impl eframe::App for MainApp {
                     && config.show_teammate_boost);
         let show_boost_hud =
             is_launched && config.show_teammate_boost && !show_settings && !config.layout_mode;
+        let mouse_passthrough = is_launched && !show_settings && !config.layout_mode;
+
+        let viewport_mode = (is_launched, show_settings, mouse_passthrough);
+        if self.last_viewport_mode != Some(viewport_mode) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Transparent(true));
+            ctx.send_viewport_cmd(egui::ViewportCommand::MousePassthrough(mouse_passthrough));
+            ctx.request_repaint();
+            self.last_viewport_mode = Some(viewport_mode);
+        }
 
         // 1. Unified Background (Transparent)
         egui::CentralPanel::default()
@@ -126,7 +137,7 @@ impl eframe::App for MainApp {
                     // If settings are visible, we need to be able to click them!
                     // If settings are hidden, we want clicks to pass through to the game.
                     ctx.send_viewport_cmd(egui::ViewportCommand::MousePassthrough(
-                        !show_settings && !config.layout_mode,
+                        mouse_passthrough,
                     ));
                 }
 
