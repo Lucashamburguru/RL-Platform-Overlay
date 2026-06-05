@@ -21,7 +21,8 @@ pub struct MainApp {
     rl_process_detection_detail: String,
     last_rl_check: std::time::Instant,
     last_logged_show_settings: Option<bool>,
-    last_viewport_state: Option<(bool, bool, bool, bool, [f32; 2])>,
+    #[allow(clippy::type_complexity)]
+    last_viewport_state: Option<(bool, bool, bool, bool, Option<egui::Pos2>, [f32; 2])>,
     hwnd: Option<isize>,
     rocket_league_process_watcher: crate::assets::RocketLeagueProcessWatcher,
 }
@@ -93,12 +94,44 @@ impl eframe::App for MainApp {
         let show_boost_hud =
             is_launched && config.show_teammate_boost && !show_settings && !config.layout_mode;
         let mouse_passthrough = is_launched && !show_settings && !config.layout_mode;
-        let maximized = is_launched;
-        let window_size = if is_launched {
+        let mut target_size = if is_launched {
             config.window_size
         } else {
             [720.0, 820.0]
         };
+
+        let mut target_pos = None;
+        #[allow(unused_mut)]
+        let mut fullscreen = false;
+
+        #[cfg(target_os = "windows")]
+        if is_launched && let Some(hwnd) = self.hwnd {
+            use winapi::shared::windef::HWND;
+            use winapi::um::winuser::{
+                GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow,
+            };
+            let hwnd_val = hwnd as HWND;
+            unsafe {
+                let hmonitor = MonitorFromWindow(hwnd_val, MONITOR_DEFAULTTONEAREST);
+                let mut info: MONITORINFO = std::mem::zeroed();
+                info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+                if GetMonitorInfoW(hmonitor, &mut info as *mut MONITORINFO as *mut _) != 0 {
+                    let scale = ctx.pixels_per_point();
+                    let monitor_x = info.rcMonitor.left as f32 / scale;
+                    let monitor_y = info.rcMonitor.top as f32 / scale;
+                    let monitor_w = (info.rcMonitor.right - info.rcMonitor.left) as f32 / scale;
+                    let monitor_h = (info.rcMonitor.bottom - info.rcMonitor.top) as f32 / scale;
+
+                    target_pos = Some(egui::pos2(monitor_x, monitor_y));
+                    target_size = [monitor_w, monitor_h - 1.0];
+                }
+            }
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        if is_launched {
+            fullscreen = true;
+        }
 
         // Style enforcement on Windows
         #[cfg(target_os = "windows")]
@@ -119,14 +152,16 @@ impl eframe::App for MainApp {
             is_launched,
             show_settings,
             mouse_passthrough,
-            maximized,
-            window_size,
+            fullscreen,
+            target_pos,
+            target_size,
         );
         if self.last_viewport_state != Some(viewport_state) {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(maximized));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(fullscreen));
             ctx.send_viewport_cmd(egui::ViewportCommand::MousePassthrough(mouse_passthrough));
-            if !maximized {
-                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(window_size.into()));
+            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(target_size.into()));
+            if let Some(pos) = target_pos {
+                ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(pos));
             }
             ctx.request_repaint();
             self.last_viewport_state = Some(viewport_state);

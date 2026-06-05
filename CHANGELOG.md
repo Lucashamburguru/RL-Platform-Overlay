@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.16] - 2026-06-05
+
+### Fixed
+- **Windows Fullscreen Transparency**: Replaced `winit` viewport maximize/size commands with direct Win32 API monitor geometry queries, positioning the borderless window at monitor top-left with a height minus 1 pixel. This prevents Windows from enforcing native window caption decorations or disabling DWM transparency (direct flip black screen).
+
+---
+
 ## [0.1.15] - 2026-06-05
 
 ### Fixed
