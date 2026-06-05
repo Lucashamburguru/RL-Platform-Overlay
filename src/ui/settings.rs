@@ -724,7 +724,7 @@ fn render_positioning_settings_section(
         if config_edit.layout_mode {
             ui.colored_label(
                 egui::Color32::from_rgb(220, 200, 100),
-                "Launch the overlay, open settings, then drag visible overlay panels into place.",
+                "Drag the visible panels into place. Drag positioning will automatically turn off when settings are closed to restore game click-through.",
             );
         }
 

@@ -79,11 +79,20 @@ impl eframe::App for MainApp {
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let is_launched = self.state.is_launched.load(Ordering::SeqCst);
-        let config = self.state.config.load();
         let show_settings = self.state.is_settings_visible.load(Ordering::SeqCst)
             || self.state.is_recording_kb.load(Ordering::SeqCst)
             || self.state.is_recording_ctrl.load(Ordering::SeqCst)
             || self.state.is_recording_settings.load(Ordering::SeqCst);
+
+        // Auto-disable drag positioning when settings are closed to ensure click-through is restored
+        let mut config = self.state.config.load();
+        if !show_settings && config.layout_mode {
+            let mut config_edit = (**config).clone();
+            config_edit.layout_mode = false;
+            self.state.save_config(config_edit);
+            config = self.state.config.load();
+        }
+
         let show_hud =
             is_launched && (self.state.is_visible.load(Ordering::SeqCst) || config.layout_mode);
         let show_session_overlay = is_launched && config.session_overlay_enabled;
