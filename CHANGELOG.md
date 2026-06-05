@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.15] - 2026-06-05
+
+### Fixed
+- **Windows Fullscreen Transparency**: Replaced native winit fullscreen commands with maximized borderless always-on-top window commands, preventing Windows Fullscreen Optimizations from disabling DWM composition and turning the background black.
+- **Custom Title Bar Dragging**: Implemented mouse-down drag detection on custom title bar to ensure immediate OS-level window drag handling.
+
+---
+
 ## [0.1.14] - 2026-06-05
 
 ### Fixed

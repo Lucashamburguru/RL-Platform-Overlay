@@ -21,12 +21,13 @@ pub struct MainApp {
     rl_process_detection_detail: String,
     last_rl_check: std::time::Instant,
     last_logged_show_settings: Option<bool>,
-    last_viewport_mode: Option<(bool, bool, bool)>,
+    last_viewport_state: Option<(bool, bool, bool, bool, [f32; 2])>,
+    hwnd: Option<isize>,
     rocket_league_process_watcher: crate::assets::RocketLeagueProcessWatcher,
 }
 
 impl MainApp {
-    pub fn new(state: Arc<AppState>) -> Self {
+    pub fn new(state: Arc<AppState>, hwnd: Option<isize>) -> Self {
         Self {
             state,
             settings_tab: SettingsTab::Overlay,
@@ -36,7 +37,8 @@ impl MainApp {
                 .checked_sub(std::time::Duration::from_secs(5))
                 .unwrap_or_else(std::time::Instant::now),
             last_logged_show_settings: None,
-            last_viewport_mode: None,
+            last_viewport_state: None,
+            hwnd,
             rocket_league_process_watcher: crate::assets::RocketLeagueProcessWatcher::new(),
         }
     }
@@ -65,7 +67,12 @@ pub(super) enum SettingsTab {
 
 impl eframe::App for MainApp {
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
-        [0.0, 0.0, 0.0, 0.0]
+        let is_launched = self.state.is_launched.load(Ordering::SeqCst);
+        if is_launched {
+            [0.0, 0.0, 0.0, 0.0]
+        } else {
+            [0.12, 0.12, 0.12, 1.0]
+        }
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
@@ -86,205 +93,255 @@ impl eframe::App for MainApp {
         let show_boost_hud =
             is_launched && config.show_teammate_boost && !show_settings && !config.layout_mode;
         let mouse_passthrough = is_launched && !show_settings && !config.layout_mode;
+        let maximized = is_launched;
+        let window_size = if is_launched {
+            config.window_size
+        } else {
+            [720.0, 820.0]
+        };
 
-        let viewport_mode = (is_launched, show_settings, mouse_passthrough);
-        if self.last_viewport_mode != Some(viewport_mode) {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Transparent(true));
-            ctx.send_viewport_cmd(egui::ViewportCommand::MousePassthrough(mouse_passthrough));
-            ctx.request_repaint();
-            self.last_viewport_mode = Some(viewport_mode);
+        // Style enforcement on Windows
+        #[cfg(target_os = "windows")]
+        if let Some(hwnd) = self.hwnd {
+            use winapi::shared::windef::HWND;
+            use winapi::um::winuser::{GWL_EXSTYLE, GetWindowLongW, WS_EX_LAYERED};
+            let hwnd_val = hwnd as HWND;
+            unsafe {
+                let ex_style = GetWindowLongW(hwnd_val, GWL_EXSTYLE);
+                let is_layered = (ex_style & WS_EX_LAYERED as i32) != 0;
+                if is_launched != is_layered {
+                    set_window_transparency(hwnd, is_launched);
+                }
+            }
         }
 
-        // 1. Unified Background (Transparent)
-        egui::CentralPanel::default()
-            .frame(egui::Frame::NONE.fill(egui::Color32::from_rgba_unmultiplied(0, 0, 0, 0)))
-            .show(ctx, |_ui| {
-                if show_hud {
-                    render_overlay(ctx, &self.state);
-                }
-                if show_session_overlay {
-                    render_session_overlay(ctx, &self.state);
-                }
+        let viewport_state = (
+            is_launched,
+            show_settings,
+            mouse_passthrough,
+            maximized,
+            window_size,
+        );
+        if self.last_viewport_state != Some(viewport_state) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(maximized));
+            ctx.send_viewport_cmd(egui::ViewportCommand::MousePassthrough(mouse_passthrough));
+            if !maximized {
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(window_size.into()));
+            }
+            ctx.request_repaint();
+            self.last_viewport_state = Some(viewport_state);
+        }
 
-                if self.last_logged_show_settings != Some(show_settings) {
-                    crate::input::append_hotkey_debug_log(format!(
-                        "ui_show_settings visible={show_settings} launched={is_launched} recording_kb={} recording_ctrl={} recording_settings={}",
-                        self.state.is_recording_kb.load(Ordering::SeqCst),
-                        self.state.is_recording_ctrl.load(Ordering::SeqCst),
-                        self.state.is_recording_settings.load(Ordering::SeqCst)
-                    ));
-                    self.last_logged_show_settings = Some(show_settings);
-                }
+        if is_launched {
+            // 1. Unified Background (Transparent)
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE.fill(egui::Color32::from_rgba_unmultiplied(0, 0, 0, 0)))
+                .show(ctx, |_ui| {
+                    if show_hud {
+                        render_overlay(ctx, &self.state);
+                    }
+                    if show_session_overlay {
+                        render_session_overlay(ctx, &self.state);
+                    }
 
-                // 2. Always-on Teammate Boost HUD
-                // Settings mode uses the Boost tab preview instead of the floating in-game HUD.
-                if is_launched && config.show_teammate_boost && config.layout_mode {
-                    render_teammate_boost_position_preview(ctx, &self.state, true);
-                } else if show_boost_hud {
-                    render_teammate_boost(ctx, &self.state);
-                } else if show_boost_position_preview {
-                    render_teammate_boost_position_preview(ctx, &self.state, false);
-                }
+                    if self.last_logged_show_settings != Some(show_settings) {
+                        crate::input::append_hotkey_debug_log(format!(
+                            "ui_show_settings visible={show_settings} launched={is_launched} recording_kb={} recording_ctrl={} recording_settings={}",
+                            self.state.is_recording_kb.load(Ordering::SeqCst),
+                            self.state.is_recording_ctrl.load(Ordering::SeqCst),
+                            self.state.is_recording_settings.load(Ordering::SeqCst)
+                        ));
+                        self.last_logged_show_settings = Some(show_settings);
+                    }
 
-                // 3. Settings UI (Floating Window)
+                    // 2. Always-on Teammate Boost HUD
+                    // Settings mode uses the Boost tab preview instead of the floating in-game HUD.
+                    if config.show_teammate_boost && config.layout_mode {
+                        render_teammate_boost_position_preview(ctx, &self.state, true);
+                    } else if show_boost_hud {
+                        render_teammate_boost(ctx, &self.state);
+                    } else if show_boost_position_preview {
+                        render_teammate_boost_position_preview(ctx, &self.state, false);
+                    }
 
-                // Keep window on top every frame when launched
-                if is_launched {
+                    // Keep window on top every frame when launched
                     ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
                         egui::WindowLevel::AlwaysOnTop,
                     ));
 
-                    // If settings are visible, we need to be able to click them!
-                    // If settings are hidden, we want clicks to pass through to the game.
-                    ctx.send_viewport_cmd(egui::ViewportCommand::MousePassthrough(
-                        mouse_passthrough,
-                    ));
-                }
+                    // Show gear icon ONLY if settings are hidden AND mouse is in top-left
+                    if !show_settings {
+                        let mouse_pos = ctx.input(|i| {
+                            i.pointer
+                                .interact_pos()
+                                .unwrap_or(egui::Pos2::new(-100.0, -100.0))
+                        });
+                        let gear_rect =
+                            egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(100.0, 100.0));
 
-                // Show gear icon ONLY if launched AND settings are hidden AND mouse is in top-left
-                if is_launched && !show_settings {
-                    let mouse_pos = ctx.input(|i| {
-                        i.pointer
-                            .interact_pos()
-                            .unwrap_or(egui::Pos2::new(-100.0, -100.0))
-                    });
-                    let gear_rect =
-                        egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(100.0, 100.0));
-
-                    if gear_rect.contains(mouse_pos) {
-                        egui::Area::new("settings_toggle".into())
-                            .anchor(egui::Align2::LEFT_TOP, egui::vec2(10.0, 10.0))
-                            .show(ctx, |ui| {
-                                let btn = ui.add(egui::Button::new("⚙ Settings").frame(true));
-                                if btn.clicked() {
-                                    crate::input::append_hotkey_debug_log(
-                                        "gear_settings_button_clicked visible=true",
-                                    );
-                                    self.state.is_settings_visible.store(true, Ordering::SeqCst);
-                                }
-                            });
-                    }
-                }
-
-                let settings_hotkey = config.hotkey_settings.clone();
-                let hud_hotkey = config.hotkey_kb.clone();
-                let hotkey_toggle = config.hotkey_toggle;
-                ctx.input(|i| {
-                    for event in &i.events {
-                        if let egui::Event::Key { key, pressed, .. } = event
-                            && let Some(name) = egui_to_rdev_key(*key)
-                        {
-                            if *pressed && name == settings_hotkey {
-                                crate::input::append_hotkey_debug_log(format!(
-                                    "egui_keypress key={name} settings_match=true"
-                                ));
-                                crate::input::toggle_settings_hotkey(&self.state, "egui");
-                            }
-
-                            if show_settings && name == hud_hotkey {
-                                if hotkey_toggle {
-                                    if *pressed {
-                                        let curr = self.state.is_visible.load(Ordering::SeqCst);
-                                        self.state.is_visible.store(!curr, Ordering::SeqCst);
+                        if gear_rect.contains(mouse_pos) {
+                            egui::Area::new("settings_toggle".into())
+                                .anchor(egui::Align2::LEFT_TOP, egui::vec2(10.0, 10.0))
+                                .show(ctx, |ui| {
+                                    let btn = ui.add(egui::Button::new("⚙ Settings").frame(true));
+                                    if btn.clicked() {
+                                        crate::input::append_hotkey_debug_log(
+                                            "gear_settings_button_clicked visible=true",
+                                        );
+                                        self.state.is_settings_visible.store(true, Ordering::SeqCst);
                                     }
-                                } else {
-                                    self.state.is_visible.store(*pressed, Ordering::SeqCst);
+                                });
+                        }
+                    }
+
+                    let settings_hotkey = config.hotkey_settings.clone();
+                    let hud_hotkey = config.hotkey_kb.clone();
+                    let hotkey_toggle = config.hotkey_toggle;
+                    ctx.input(|i| {
+                        for event in &i.events {
+                            if let egui::Event::Key { key, pressed, .. } = event
+                                && let Some(name) = egui_to_rdev_key(*key)
+                            {
+                                if *pressed && name == settings_hotkey {
+                                    crate::input::append_hotkey_debug_log(format!(
+                                        "egui_keypress key={name} settings_match=true"
+                                    ));
+                                    crate::input::toggle_settings_hotkey(&self.state, "egui");
+                                }
+
+                                if show_settings && name == hud_hotkey {
+                                    if hotkey_toggle {
+                                        if *pressed {
+                                            let curr = self.state.is_visible.load(Ordering::SeqCst);
+                                            self.state.is_visible.store(!curr, Ordering::SeqCst);
+                                        }
+                                    } else {
+                                        self.state.is_visible.store(*pressed, Ordering::SeqCst);
+                                    }
                                 }
                             }
                         }
+                    });
+
+                    // Float settings Window over overlay
+                    if show_settings {
+                        let mut settings_open = true;
+                        egui::Window::new("RL Overlay Settings")
+                            .collapsible(true)
+                            .resizable(true)
+                            .movable(true)
+                            .default_pos([16.0, 16.0])
+                            .default_size([450.0, 600.0])
+                            .min_width(420.0)
+                            .min_height(520.0)
+                            .constrain_to(ctx.screen_rect().shrink(8.0))
+                            .open(&mut settings_open)
+                            .show(ctx, |ui| {
+                                self.render_settings_content(ui, ctx, is_launched);
+                            });
+                        if !settings_open {
+                            crate::input::append_hotkey_debug_log(
+                                "settings_window_close_clicked visible=false",
+                            );
+                            self.state
+                                .is_settings_visible
+                                .store(false, Ordering::SeqCst);
+                        }
                     }
                 });
+        } else {
+            // Launcher Stopped: Render dashboard or settings directly filled
+            // Custom Title Bar
+            egui::TopBottomPanel::top("custom_title_bar")
+                .frame(
+                    egui::Frame::default()
+                        .fill(egui::Color32::from_rgb(20, 20, 25))
+                        .inner_margin(8.0),
+                )
+                .show(ctx, |ui| {
+                    let title_bar_rect = ui.max_rect();
+                    let drag_id = ui.id().with("title_bar_drag");
+                    let drag_response = ui.interact(title_bar_rect, drag_id, egui::Sense::drag());
 
-                if show_settings {
-                    let mut settings_open = true;
-                    egui::Window::new("RL Overlay Settings")
-                        .collapsible(true)
-                        .resizable(true)
-                        .movable(true)
-                        .default_pos([16.0, 16.0])
-                        .default_size(if is_launched {
-                            [450.0, 600.0]
-                        } else {
-                            [680.0, 760.0]
-                        })
-                        .min_width(420.0)
-                        .min_height(520.0)
-                        .constrain_to(ctx.screen_rect().shrink(8.0))
-                        .open(&mut settings_open)
-                        .show(ctx, |ui| {
-                            ui.add_space(5.0);
+                    if drag_response.is_pointer_button_down_on() {
+                        ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                    }
 
-                            let mut config_edit = (**self.state.config.load()).clone();
-                            let mut changed = false;
-                            if !self.state.debug_enabled
-                                && self.settings_tab == SettingsTab::Debug
-                            {
-                                self.settings_tab = SettingsTab::Setup;
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new("⚙  RL Platform Overlay")
+                                .strong()
+                                .color(egui::Color32::from_rgb(220, 220, 230))
+                                .size(13.0),
+                        );
+
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let close_resp = ui.add(
+                                egui::Button::new(
+                                    egui::RichText::new("🗙")
+                                        .color(egui::Color32::from_rgb(180, 180, 190)),
+                                )
+                                .frame(false),
+                            );
+                            if close_resp.clicked() {
+                                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
                             }
 
-                            render_update_notice(ui, &self.state);
-                            render_settings_tabs(
-                                ui,
-                                &mut self.settings_tab,
-                                self.state.debug_enabled,
+                            let min_resp = ui.add(
+                                egui::Button::new(
+                                    egui::RichText::new("🗕")
+                                        .color(egui::Color32::from_rgb(180, 180, 190)),
+                                )
+                                .frame(false),
                             );
-                            self.refresh_rocket_league_process_detection();
-
-                            egui::ScrollArea::vertical().show(ui, |ui| match self.settings_tab {
-                                SettingsTab::Setup => render_setup_settings_tab(
-                                    ui,
-                                    &self.state,
-                                    &mut config_edit,
-                                    &mut changed,
-                                    self.is_rl_running,
-                                ),
-                                SettingsTab::Overlay => render_overlay_settings_tab(
-                                    ui,
-                                    ctx,
-                                    &self.state,
-                                    &config,
-                                    &mut config_edit,
-                                    &mut changed,
-                                    is_launched,
-                                ),
-                                SettingsTab::Session => render_session_settings_tab(
-                                    ui,
-                                    &self.state,
-                                    &mut config_edit,
-                                    &mut changed,
-                                ),
-                                SettingsTab::Boost => render_boost_settings_tab(
-                                    ui,
-                                    &self.state,
-                                    &mut config_edit,
-                                    &mut changed,
-                                    self.is_rl_running,
-                                ),
-                                SettingsTab::Debug => {
-                                    render_debug_settings_tab(
-                                        ui,
-                                        &self.state,
-                                        is_launched,
-                                        self.is_rl_running,
-                                        &self.rl_process_detection_detail,
-                                    )
-                                }
-                            });
-
-                            if changed {
-                                self.state.save_config(config_edit);
+                            if min_resp.clicked() {
+                                ui.ctx()
+                                    .send_viewport_cmd(egui::ViewportCommand::Minimized(true));
                             }
                         });
-                    if !settings_open {
-                        crate::input::append_hotkey_debug_log(
-                            "settings_window_close_clicked visible=false",
-                        );
-                        self.state
-                            .is_settings_visible
-                            .store(false, Ordering::SeqCst);
-                    }
-                }
-            });
+                    });
+                });
+
+            if show_settings {
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::NONE.inner_margin(12.0))
+                    .show(ctx, |ui| {
+                        self.render_settings_content(ui, ctx, is_launched);
+                    });
+            } else {
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::NONE.inner_margin(20.0))
+                    .show(ctx, |ui| {
+                        ui.vertical_centered(|ui| {
+                            ui.add_space(100.0);
+                            ui.heading("RL Platform Overlay");
+                            ui.add_space(20.0);
+                            ui.label("The overlay is currently stopped.");
+                            ui.add_space(20.0);
+                            if ui
+                                .button(egui::RichText::new("Open Settings").heading())
+                                .clicked()
+                            {
+                                self.state.is_settings_visible.store(true, Ordering::SeqCst);
+                            }
+                            ui.add_space(10.0);
+                            if ui
+                                .button(egui::RichText::new("Launch Overlay").heading())
+                                .clicked()
+                            {
+                                self.state.is_launched.store(true, Ordering::SeqCst);
+                                self.state
+                                    .is_settings_visible
+                                    .store(false, Ordering::SeqCst);
+                            }
+                            ui.add_space(20.0);
+                            if ui.button("Quit").clicked() {
+                                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                            }
+                        });
+                    });
+            }
+        }
 
         schedule_repaint(
             ctx,
@@ -346,4 +403,106 @@ fn boost_operation_running(state: &Arc<AppState>) -> bool {
         && !status.starts_with("Failed")
         && !status.starts_with("Blocked")
         && !status.starts_with("Success")
+}
+
+#[cfg(target_os = "windows")]
+fn set_window_transparency(hwnd: isize, transparent: bool) {
+    use winapi::shared::windef::HWND;
+    use winapi::um::dwmapi::DwmExtendFrameIntoClientArea;
+    use winapi::um::uxtheme::MARGINS;
+    use winapi::um::winuser::{
+        GWL_EXSTYLE, GetWindowLongW, LWA_ALPHA, SetLayeredWindowAttributes, SetWindowLongW,
+        WS_EX_LAYERED,
+    };
+
+    let hwnd = hwnd as HWND;
+    unsafe {
+        let ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE);
+        if transparent {
+            if (ex_style & WS_EX_LAYERED as i32) == 0 {
+                SetWindowLongW(hwnd, GWL_EXSTYLE, ex_style | WS_EX_LAYERED as i32);
+                SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA);
+            }
+            let margins = MARGINS {
+                cxLeftWidth: -1,
+                cxRightWidth: -1,
+                cyTopHeight: -1,
+                cyBottomHeight: -1,
+            };
+            let _ = DwmExtendFrameIntoClientArea(hwnd, &margins);
+        } else {
+            if (ex_style & WS_EX_LAYERED as i32) != 0 {
+                SetWindowLongW(hwnd, GWL_EXSTYLE, ex_style & !(WS_EX_LAYERED as i32));
+            }
+            let margins = MARGINS {
+                cxLeftWidth: 0,
+                cxRightWidth: 0,
+                cyTopHeight: 0,
+                cyBottomHeight: 0,
+            };
+            let _ = DwmExtendFrameIntoClientArea(hwnd, &margins);
+        }
+    }
+}
+
+impl MainApp {
+    fn render_settings_content(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &egui::Context,
+        is_launched: bool,
+    ) {
+        ui.add_space(5.0);
+
+        let config = self.state.config.load();
+        let mut config_edit = (**config).clone();
+        let mut changed = false;
+        if !self.state.debug_enabled && self.settings_tab == SettingsTab::Debug {
+            self.settings_tab = SettingsTab::Setup;
+        }
+
+        render_update_notice(ui, &self.state);
+        render_settings_tabs(ui, &mut self.settings_tab, self.state.debug_enabled);
+        self.refresh_rocket_league_process_detection();
+
+        egui::ScrollArea::vertical().show(ui, |ui| match self.settings_tab {
+            SettingsTab::Setup => render_setup_settings_tab(
+                ui,
+                &self.state,
+                &mut config_edit,
+                &mut changed,
+                self.is_rl_running,
+            ),
+            SettingsTab::Overlay => render_overlay_settings_tab(
+                ui,
+                ctx,
+                &self.state,
+                &config,
+                &mut config_edit,
+                &mut changed,
+                is_launched,
+            ),
+            SettingsTab::Session => {
+                render_session_settings_tab(ui, &self.state, &mut config_edit, &mut changed)
+            }
+            SettingsTab::Boost => render_boost_settings_tab(
+                ui,
+                &self.state,
+                &mut config_edit,
+                &mut changed,
+                self.is_rl_running,
+            ),
+            SettingsTab::Debug => render_debug_settings_tab(
+                ui,
+                &self.state,
+                is_launched,
+                self.is_rl_running,
+                &self.rl_process_detection_detail,
+            ),
+        });
+
+        if changed {
+            self.state.save_config(config_edit);
+        }
+    }
 }

@@ -268,7 +268,7 @@ pub(super) fn render_overlay_settings_tab(
     render_positioning_settings_section(ui, config_edit, changed);
 
     ui.add_space(10.0);
-    render_launch_controls(ui, ctx, state, config_edit, is_launched);
+    render_launch_controls(ui, ctx, state, is_launched);
 }
 
 pub(super) fn render_session_settings_tab(
@@ -749,7 +749,6 @@ fn render_launch_controls(
     ui: &mut egui::Ui,
     ctx: &egui::Context,
     state: &Arc<AppState>,
-    config_edit: &crate::state::Config,
     is_launched: bool,
 ) {
     let btn_text = if is_launched {
@@ -762,19 +761,6 @@ fn render_launch_controls(
         state.is_launched.store(new_val, Ordering::SeqCst);
         if new_val {
             state.is_settings_visible.store(false, Ordering::SeqCst);
-            ctx.send_viewport_cmd(egui::ViewportCommand::Transparent(true));
-            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(
-                config_edit.window_size.into(),
-            ));
-            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
-            ctx.send_viewport_cmd(egui::ViewportCommand::MousePassthrough(true));
-            ctx.request_repaint();
-        } else {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Transparent(true));
-            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
-            ctx.send_viewport_cmd(egui::ViewportCommand::MousePassthrough(false));
-            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize([720.0, 820.0].into()));
-            ctx.request_repaint();
         }
     }
 
