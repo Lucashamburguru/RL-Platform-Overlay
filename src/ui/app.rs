@@ -453,6 +453,15 @@ fn boost_operation_running(state: &Arc<AppState>) -> bool {
         && !status.starts_with("Success")
 }
 
+/// Configures window transparency on Windows using extended styling and Desktop Window Manager (DWM).
+///
+/// When `transparent` is true, this function turns the window into a layered window
+/// (`WS_EX_LAYERED`) and extends the DWM glass frame margin completely into the client area (`-1`).
+/// Any clear-color pixels (transparent black: `[0, 0, 0, 0]`) rendered by egui will show as
+/// fully transparent, enabling the transparent overlay.
+///
+/// When `transparent` is false, it removes the layered window style and resets margins to `0`
+/// to restore standard solid rendering.
 #[cfg(target_os = "windows")]
 fn set_window_transparency(hwnd: isize, transparent: bool) {
     use winapi::shared::windef::HWND;
@@ -493,6 +502,16 @@ fn set_window_transparency(hwnd: isize, transparent: bool) {
     }
 }
 
+/// Enforces a borderless style on Windows by stripping decorations, title captions, resize borders,
+/// and native system menu caption buttons.
+///
+/// This is called on every frame update on Windows because window management updates inside `winit`'s
+/// event loop (like resizing or repositioning) can asynchronously reset window styles and re-apply
+/// native borders or accessibility buttons.
+///
+/// It checks if any of the target decoration styles (`WS_CAPTION`, `WS_SYSMENU`, `WS_THICKFRAME`,
+/// `WS_MINIMIZEBOX`, `WS_MAXIMIZEBOX`) are set, strips them if present via `SetWindowLongW`,
+/// and issues `SetWindowPos` with `SWP_FRAMECHANGED` to force Windows to re-evaluate the frame.
 #[cfg(target_os = "windows")]
 fn enforce_borderless_style(hwnd: isize) {
     use winapi::shared::windef::HWND;

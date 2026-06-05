@@ -444,6 +444,14 @@ pub fn start_apply_alpha_boost(
     });
 }
 
+/// Asynchronously swaps Standard Boost assets with Alpha Boost assets in Rocket League.
+///
+/// This function:
+/// 1. Resolves the game directory and cache/backup directories.
+/// 2. Ensures the Alpha Boost visual and audio assets are downloaded and verified in the cache.
+/// 3. Backs up the original Standard Boost files and saves metadata (with SHA-256 hashes) if not already done.
+/// 4. Verifies the game's active target files match either the original backup or verified Alpha files (preventing corruption).
+/// 5. Overwrites the game files in `TAGame/CookedPCConsole` with the cached Alpha Boost files.
 async fn apply_alpha_boost(rocket_league_path: &str) -> Result<(), String> {
     if !asset_hashes_configured() {
         return Err("Error: Alpha Boost asset hashes are not configured. Fill the GitHub Release SHA-256 constants before applying.".to_string());
@@ -489,6 +497,12 @@ pub fn start_restore_standard_boost(
     });
 }
 
+/// Restores the original Standard Boost files from backup.
+///
+/// This function:
+/// 1. Reads the backup metadata file saved during the initial swap.
+/// 2. Verifies the backup files exist on disk and match the recorded original SHA-256 hashes.
+/// 3. Overwrites the game files in `TAGame/CookedPCConsole` with the clean backups, reversing the swap.
 fn restore_standard_boost(rocket_league_path: &str) -> Result<(), String> {
     let game_dir = cooked_pc_console_path(rocket_league_path)?;
     let conf_dir =

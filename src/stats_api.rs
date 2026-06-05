@@ -29,12 +29,23 @@ impl StatsApiTransport {
     }
 }
 
+/// A streaming parser helper that accumulates fragmented TCP buffer streams and splits them
+/// into complete, valid JSON object strings.
+///
+/// Because TCP is stream-oriented and does not guarantee packet boundaries, payloads can arrive
+/// split across packets or concatenated together. This splitter uses basic brace-matching
+/// depth analysis (while respecting JSON string escapes and double quotes) to identify complete
+/// top-level `{ ... }` JSON objects.
 #[derive(Clone, Debug, Default)]
 pub struct TcpJsonSplitter {
     leftover: String,
 }
 
 impl TcpJsonSplitter {
+    /// Feeds a new text chunk from the TCP stream and returns any completed JSON payloads.
+    ///
+    /// If a JSON object is only partially received, its characters are retained in an internal
+    /// buffer (`leftover`) and will be completed by subsequent calls to `push`.
     pub fn push(&mut self, chunk: &str) -> Vec<String> {
         let text = format!("{}{}", self.leftover, chunk);
         self.leftover.clear();
