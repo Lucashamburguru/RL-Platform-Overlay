@@ -2,59 +2,73 @@
 
 ![Overlay Preview](assets/hud_preview.png)
 
-A Rocket League overlay for identifying player platforms, real-time MMR/ranks, session stats, and teammate boost in real time.
+A lightweight, high-performance Rocket League overlay for tracking player platforms, real-time MMR/ranks, session stats, and teammate boost in real time.
+
+> [!IMPORTANT]
+> **100% Anti-Cheat Safe**: This overlay runs as a completely separate, out-of-process application. It **does not** inject DLLs, modify game memory, or hook graphics APIs, making it fully compliant with Easy Anti-Cheat (EAC) and safe from bans.
 
 ---
 
-## Features
+## ⚡ Quick Start Guide
 
-- **Platform & MMR Tracking**: Detects player platforms (Steam, Epic, Xbox, PlayStation, Switch) and queries real-time MMR and rank brackets from tracker.gg.
-- **Session Stats Overlay**: Overlay HUD showing session statistics (wins, losses, win rate, win streak, and elapsed time).
-- **Cosmetic Swapper (Alpha Boost)**: Built-in Alpha Boost swapper that replaces Standard Boost visual and audio assets with Gold Rush (locally only), complete with cache verification and safe original backup restoration.
-- **Teammate Boost HUD**: Float teammate boost indicators with multiple layout and scale customization options.
-- **Interactive Drag Positioning**: Arrange HUD panels directly on the screen in drag layout mode, which auto-saves positions and automatically disables when settings are closed to restore game click-through.
-- **Clean Borderless Window Integration**: Windows-specific Win32 style verification that strips native caption controls and positions the window `height - 1.0` to bypass Direct Flip black-screen optimizations and hide all native close/minimize/maximize buttons.
-- **Hotkey Support (Keyboard & Gamepads)**: Global keyboard hooks (`rdev`) and gamepad polling (`gilrs`) for toggling overlay visibility or settings.
-- **Debug Capture Tool**: Saves raw Rocket League Stats API payloads for network and event analysis.
-- **Lightweight & High Performance**: Built in native Rust using egui's hardware-accelerated immediate mode GUI, resulting in a tiny memory footprint (under 30MB) and near-zero CPU overhead so your game's FPS remains unaffected.
-- **Cross-Platform**: Full Windows and Linux support.
+You can get the overlay running in less than 2 minutes:
 
----
+1. **Download the app**: Download the latest pre-built executable from [Releases](https://github.com/Lucashamburguru/RL-Platform-Overlay/releases).
+2. **Auto-Configure Rocket League**:
+   - Open the application.
+   - Go to the **Setup** tab, click **Auto-detect** to find your Rocket League folder, and click **Enable Stats API**.
+   - Restart Rocket League if it was already running.
+3. **Launch the Overlay**: Customize your hotkeys on the settings page, click **Launch Overlay**, and play!
 
-## Initial Setup
-
-The overlay communicates with Rocket League's native Stats API. You can enable this automatically from within the application settings:
-
-1. Launch the application (it starts in stopped/launcher mode).
-2. Open the **Setup** tab, then enter or click **Auto-detect** to locate your Rocket League directory.
-3. Click **Enable Stats API**. The app will automatically configure the required settings in your `DefaultStatsAPI.ini` file.
-4. Restart Rocket League if it was already running.
-
-*Alternatively (Manual Setup)*:
-If you prefer to configure it manually, navigate to your game installation's `TAGame/Config/` directory, open `DefaultStatsAPI.ini` in a text editor, set `PacketSendRate` to a value greater than `0` (e.g. `30.0`), and restart the game.
+*Note: If you prefer manual configuration, you can edit your game's `TAGame/Config/DefaultStatsAPI.ini` file and set `PacketSendRate` to a value greater than `0` (e.g. `30.0`).*
 
 ---
 
-## Usage
+## 🎮 Features
 
-1. Download the pre-built executable from [Releases](https://github.com/Lucashamburguru/RL-Platform-Overlay/releases) or build it from source.
-2. Open the settings menu and configure your preferred hotkeys (supports keyboard and gamepads).
-3. Move the window to the monitor you play on.
-4. Press **Launch Overlay** and you are done.
+* **See Ranks & MMR Instantly**: View the Matchmaking Rating (MMR) and rank brackets for everyone in your lobby (Steam, Epic, PlayStation, Xbox, Switch) directly on your screen—no Alt-Tabbing required.
+* **Teammate Boost HUD**: Keep track of your teammate's boost level in real time with multiple HUD styles, sizes, and layout scale options.
+* **Dynamic Session Tracker**: View your session wins, losses, win rate, win streak, and session age overlaid directly onto your screen.
+* **Free Gold Rush (Alpha Boost)**: Swap Standard Boost for the visual and audio assets of the legendary Gold Rush boost locally with a single click. Includes automated cache verification and safe original asset restoration.
+* **Interactive Drag Layouts**: Drag and resize the overlay panels anywhere on your screen. The layout mode automatically saves positions and disables itself when settings are closed so you can click through to the game without interruption.
+* **Clean Borderless Overlay**: Utilizes a custom Windows Win32 layout engine to hide all OS-level caption controls (minimize/close buttons) and bypass Windows "Fullscreen Optimizations" (direct flip) to prevent the screen from turning black.
+* **Hotkey Support**: Quickly toggle the overlay HUD or settings window using customizable keyboard keys or controller buttons.
+* **Zero FPS Impact**: Built in native Rust using hardware-accelerated immediate mode GUI. It runs at near-zero CPU and RAM overhead (<30MB), ensuring it never causes game lag or input latency.
+* **Cross-Platform**: Full Windows and Linux support.
 
 ---
 
-## Debug Capture
+## 🛠️ Developer & Technical Info
 
-To save raw game output for parser debugging:
+If you are a developer, want to compile from source, or want to contribute:
+
+### Tech Stack
+* **Language**: Rust
+* **UI Framework**: egui / eframe (Glow renderer)
+* **Input Hooking**: GilRs (Gamepad) & rdev (Keyboard)
+* **Data Sources**: Rocket League Stats API & tracker.gg HTML scraping.
+
+### Build from Source
+Ensure you have the Rust toolchain installed.
+
+#### Windows Build Dependencies
+Building on Windows requires **CMake**, **NASM** (Netwide Assembler), and **LLVM** (for `libclang` used by `bindgen` to compile BoringSSL/wreq dependencies). You can install them using `winget`:
+```powershell
+winget install Kitware.CMake
+winget install NASM.NASM
+winget install LLVM.LLVM
+```
+Set the `LIBCLANG_PATH` environment variable to your LLVM bin folder (e.g., `C:\Program Files\LLVM\bin`) and restart your terminal.
+
+> [!NOTE]
+> Since this program was primarily developed and tested in Linux, additional packages, build tools (like Visual Studio Build Tools), or configuration steps might be required depending on your local Windows development environment.
+
+#### Build Command
 ```bash
-cargo run --bin debug_game_output -- --seconds 30 --output rl_game_output_debug.txt
+cargo build --release
 ```
 
-The tool connects to the local Rocket League Stats API and writes payloads plus derived summaries to the output file.
-
 ### Running in Debug Mode
-
 You can run the application with the `--debug` command-line flag to expose a dedicated **Debug** tab inside the settings interface (useful for inspecting raw packet data, process logs, and network state).
 
 *   **Windows (compiled binary)**:
@@ -62,7 +76,7 @@ You can run the application with the `--debug` command-line flag to expose a ded
         ```powershell
         .\rl-platform-overlay.exe --debug
         ```
-    *   Alternatively, right-click `rl-platform-overlay.exe`, select **Create shortcut**, right-click the newly created shortcut, select **Properties**, and append ` --debug` to the end of the **Target** field (e.g. `C:\path\to\rl-platform-overlay.exe --debug`).
+    *   Alternatively, right-click `rl-platform-overlay.exe`, select **Create shortcut**, right-click the shortcut, select **Properties**, and append ` --debug` to the end of the **Target** field.
 *   **Linux (compiled binary)**:
     *   Open a terminal in the folder containing the binary and run:
         ```bash
@@ -73,51 +87,10 @@ You can run the application with the `--debug` command-line flag to expose a ded
     cargo run -- --debug
     ```
 
----
-
-## Tech Stack
-
-- **Language**: Rust
-- **UI**: egui / eframe (Glow renderer)
-- **Input**: GilRs (Gamepad) & rdev (Keyboard)
-- **Data**: [Rocket League Stats API](https://www.rocketleague.com/en/developer/stats-api) and tracker.gg HTML scraping.
-
----
-
-## Build from Source
-
-Ensure you have the Rust toolchain installed.
-
-### Windows Build Dependencies
-
-Building this project from source on Windows requires **CMake**, **NASM** (Netwide Assembler), and **LLVM** (for `libclang` used by `bindgen` to compile BoringSSL/wreq dependencies).
-
-You can install all three dependencies quickly using `winget` (Windows Package Manager):
-
-1. **Install tools via PowerShell**:
-   ```powershell
-   winget install Kitware.CMake
-   winget install NASM.NASM
-   winget install LLVM.LLVM
-   ```
-
-2. **Configure Environment Variables**:
-   - Open the Windows Start menu, search for **"Edit the system environment variables"**, and click it.
-   - Click the **"Environment Variables..."** button.
-   - Under **User variables** (or System variables), click **"New..."** to add `LIBCLANG_PATH`:
-     - **Variable name**: `LIBCLANG_PATH`
-     - **Variable value**: `C:\Program Files\LLVM\bin` (or your custom LLVM installation bin path)
-   - Click **OK** to save.
-
-3. **Restart your IDE / Terminal**:
-   - Close and restart VS Code, command prompt, or PowerShell so that the updated `PATH` and `LIBCLANG_PATH` environment variables are loaded.
-
-> [!NOTE]
-> Since this program was primarily developed and tested in Linux, additional packages, build tools (like Visual Studio Build Tools), or configuration steps might be required depending on your local Windows development environment.
-
-Once complete, run the build command:
+### Debug Capture
+To save raw game output for parser debugging:
 ```bash
-cargo build --release
+cargo run --bin debug_game_output -- --seconds 30 --output rl_game_output_debug.txt
 ```
 
 ---
@@ -125,6 +98,8 @@ cargo build --release
 ## AI Disclosure
 
 This project was developed and refactored with the assistance of **Gemini** and **Codex** AI coding models.
+
+---
 
 ## License
 
