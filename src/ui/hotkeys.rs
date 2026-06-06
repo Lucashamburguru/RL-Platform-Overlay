@@ -42,8 +42,8 @@ fn render_keyboard_hotkey_row(
     state: &Arc<AppState>,
     config_edit: &mut crate::state::Config,
 ) {
+    ui.label("Show/Hide HUD (Keyboard):");
     ui.horizontal(|ui| {
-        ui.label("Show/Hide HUD (Keyboard):");
         if state.is_recording_kb.load(Ordering::SeqCst) {
             ui.colored_label(egui::Color32::YELLOW, "Listening...");
             if ui.button("Cancel").clicked() {
@@ -70,8 +70,8 @@ fn render_controller_hotkey_row(
     state: &Arc<AppState>,
     config_edit: &crate::state::Config,
 ) {
+    ui.label("Show/Hide HUD (Controller):");
     ui.horizontal(|ui| {
-        ui.label("Show/Hide HUD (Controller):");
         if state.is_recording_ctrl.load(Ordering::SeqCst) {
             ui.colored_label(egui::Color32::YELLOW, "Listening...");
             if ui.button("Cancel").clicked() {
@@ -94,8 +94,8 @@ fn render_settings_hotkey_row(
     state: &Arc<AppState>,
     config_edit: &mut crate::state::Config,
 ) {
+    ui.label("Open/Close Settings (Keyboard):");
     ui.horizontal(|ui| {
-        ui.label("Open/Close Settings (Keyboard):");
         if state.is_recording_settings.load(Ordering::SeqCst) {
             ui.colored_label(egui::Color32::YELLOW, "Listening...");
             if ui.button("Cancel").clicked() {

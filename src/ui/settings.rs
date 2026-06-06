@@ -62,7 +62,7 @@ pub(super) fn render_update_notice(ui: &mut egui::Ui, state: &Arc<AppState>) {
 
 pub(super) fn render_setup_settings_tab(
     ui: &mut egui::Ui,
-    ctx: &egui::Context,
+    _ctx: &egui::Context,
     state: &Arc<AppState>,
     config_edit: &mut crate::state::Config,
     changed: &mut bool,
@@ -158,15 +158,12 @@ pub(super) fn render_setup_settings_tab(
     });
 
     ui.add_space(10.0);
-    render_hotkey_settings_section(ui, ctx, state, config_edit, changed);
-
-    ui.add_space(10.0);
     render_positioning_settings_section(ui, config_edit, changed);
 }
 
 pub(super) fn render_overlay_settings_tab(
     ui: &mut egui::Ui,
-    _ctx: &egui::Context,
+    ctx: &egui::Context,
     state: &Arc<AppState>,
     config: &crate::state::Config,
     config_edit: &mut crate::state::Config,
@@ -177,7 +174,7 @@ pub(super) fn render_overlay_settings_tab(
         ui.heading("Lobby Overlay Settings");
         ui.add_space(6.0);
 
-        ui.columns(2, |columns| {
+        ui.columns(3, |columns| {
             columns[0].vertical(|ui| {
                 ui.label("Transparency");
                 if ui
@@ -262,6 +259,10 @@ pub(super) fn render_overlay_settings_tab(
                 {
                     *changed = true;
                 }
+            });
+
+            columns[2].vertical(|ui| {
+                render_hotkey_settings_section(ui, ctx, state, config_edit, changed);
             });
         });
     });
