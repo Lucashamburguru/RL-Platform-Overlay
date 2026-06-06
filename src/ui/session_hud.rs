@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use super::common::debug_status_row;
 use super::layout::{
-    active_layout_drag_position, anchor_offset, normalized_to_pos, persist_dragged_position,
+    active_layout_drag_position, normalized_to_pos, persist_dragged_position,
     render_drag_position_handle,
 };
 
@@ -20,14 +20,8 @@ pub(super) fn render_session_overlay(ctx: &egui::Context, state: &Arc<AppState>)
     let area = if let Some(position) = position {
         area.fixed_pos(position)
     } else {
-        let (anchor, offset) = anchor_offset(
-            config.session_overlay_anchor,
-            egui::vec2(
-                config.session_overlay_offset[0],
-                config.session_overlay_offset[1],
-            ),
-        );
-        area.anchor(anchor, offset)
+        // Fallback default: Top Left
+        area.anchor(egui::Align2::LEFT_TOP, egui::vec2(24.0, 150.0) * config.session_overlay_scale)
     };
 
     let response = area.show(ctx, |ui| {

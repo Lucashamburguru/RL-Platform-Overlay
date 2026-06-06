@@ -11,16 +11,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub enum AnchorPos {
-    #[default]
-    TopLeft,
-    TopRight,
-    BottomLeft,
-    BottomRight,
-    CenterRight,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub enum TeammateBoostDisplay {
     #[default]
     Bars,
@@ -52,9 +42,7 @@ pub struct Config {
     pub ui_scale: f32,
     pub show_bots: bool,
     pub window_size: [f32; 2],
-    pub anchor: AnchorPos,
     pub lobby_theme: LobbyTheme,
-    pub lobby_offset: [f32; 2],
     pub lobby_display_mode: LobbyDisplayMode,
     pub monitor_index: usize,
     pub hotkey_kb: String,
@@ -63,8 +51,6 @@ pub struct Config {
     pub hotkey_toggle: bool,
     pub show_stats: bool,
     pub show_teammate_boost: bool,
-    pub teammate_boost_offset: f32,
-    pub teammate_boost_horizontal_offset: f32,
     pub teammate_hud_scale: f32,
     pub teammate_boost_display: TeammateBoostDisplay,
     pub rocket_league_path: String,
@@ -72,8 +58,6 @@ pub struct Config {
     pub session_overlay_enabled: bool,
     pub session_overlay_scale: f32,
     pub session_overlay_opacity: u8,
-    pub session_overlay_anchor: AnchorPos,
-    pub session_overlay_offset: [f32; 2],
     pub session_overlay_display: SessionOverlayDisplay,
     pub lobby_manual_position: Option<[f32; 2]>,
     pub teammate_boost_manual_position: Option<[f32; 2]>,
@@ -196,9 +180,7 @@ impl Default for Config {
             ui_scale: 2.2,
             show_bots: true,
             window_size: [1920.0, 1080.0],
-            anchor: AnchorPos::CenterRight,
             lobby_theme: LobbyTheme::default(),
-            lobby_offset: [0.0, 0.0],
             lobby_display_mode: LobbyDisplayMode::default(),
             monitor_index: 0,
             hotkey_kb: "Backspace".to_string(),
@@ -207,8 +189,6 @@ impl Default for Config {
             hotkey_toggle: false,
             show_stats: true,
             show_teammate_boost: false,
-            teammate_boost_offset: 180.0,
-            teammate_boost_horizontal_offset: 110.0,
             teammate_hud_scale: 2.2,
             teammate_boost_display: TeammateBoostDisplay::Bars,
             rocket_league_path,
@@ -216,8 +196,6 @@ impl Default for Config {
             session_overlay_enabled: false,
             session_overlay_scale: 1.4,
             session_overlay_opacity: 170,
-            session_overlay_anchor: AnchorPos::TopLeft,
-            session_overlay_offset: [24.0, 150.0],
             session_overlay_display: SessionOverlayDisplay::Compact,
             lobby_manual_position: None,
             teammate_boost_manual_position: None,
@@ -313,7 +291,6 @@ mod tests {
         assert_eq!(config.ui_scale, 2.2);
         assert!(config.show_bots);
         assert_eq!(config.lobby_display_mode, LobbyDisplayMode::Expanded);
-        assert_eq!(config.anchor, AnchorPos::CenterRight);
         assert!(!config.cached_local_player_identity.is_known());
     }
 

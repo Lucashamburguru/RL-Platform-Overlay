@@ -107,11 +107,13 @@ pub(super) fn render_teammate_boost(ctx: &egui::Context, state: &Arc<AppState>) 
         config.teammate_hud_scale,
         config.teammate_boost_display,
     );
+    let default_offset_x = 110.0;
+    let default_offset_y = 180.0;
     let base_x = screen_rect.max.x
-        - config.teammate_boost_horizontal_offset * config.teammate_hud_scale
+        - default_offset_x * config.teammate_hud_scale
         - width;
     let base_y =
-        screen_rect.max.y - config.teammate_boost_offset * config.teammate_hud_scale - height;
+        screen_rect.max.y - default_offset_y * config.teammate_hud_scale - height;
 
     let position = active_layout_drag_position(ctx, "boost")
         .or_else(|| {
@@ -157,8 +159,10 @@ pub(super) fn render_teammate_boost_position_preview(
     let scale = config.teammate_hud_scale;
     let width = teammate_boost_width(scale, config.teammate_boost_display);
     let height = teammate_boost_panel_height(teammates.len(), scale, config.teammate_boost_display);
-    let base_x = screen_rect.max.x - config.teammate_boost_horizontal_offset * scale - width;
-    let base_y = screen_rect.max.y - config.teammate_boost_offset * scale - height;
+    let default_offset_x = 110.0;
+    let default_offset_y = 180.0;
+    let base_x = screen_rect.max.x - default_offset_x * scale - width;
+    let base_y = screen_rect.max.y - default_offset_y * scale - height;
     let position = active_layout_drag_position(ctx, "boost")
         .or_else(|| {
             config

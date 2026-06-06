@@ -1,4 +1,4 @@
-use crate::state::{AnchorPos, AppState, PlayerInfo};
+use crate::state::{AppState, PlayerInfo};
 use eframe::egui;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -91,23 +91,14 @@ pub(super) fn render_overlay(ctx: &egui::Context, state: &Arc<AppState>) {
     let config = state.config.load();
     let players = state.players.load();
 
-    let (anchor, base_offset) = match config.anchor {
-        AnchorPos::TopLeft => (egui::Align2::LEFT_TOP, egui::vec2(20.0, 20.0)),
-        AnchorPos::TopRight => (egui::Align2::RIGHT_TOP, egui::vec2(-20.0, 20.0)),
-        AnchorPos::BottomLeft => (egui::Align2::LEFT_BOTTOM, egui::vec2(20.0, -20.0)),
-        AnchorPos::BottomRight => (egui::Align2::RIGHT_BOTTOM, egui::vec2(-20.0, -20.0)),
-        AnchorPos::CenterRight => (egui::Align2::RIGHT_CENTER, egui::vec2(-20.0, 0.0)),
-    };
-
-    let offset = (base_offset + egui::vec2(config.lobby_offset[0], config.lobby_offset[1])) * config.ui_scale;
-
     let area = egui::Area::new("overlay_area".into()).order(egui::Order::Foreground);
     let area = if let Some(position) = active_layout_drag_position(ctx, "lobby") {
         area.fixed_pos(position)
     } else if let Some(position) = config.lobby_manual_position {
         area.fixed_pos(normalized_to_pos(ctx, position))
     } else {
-        area.anchor(anchor, offset)
+        // Fallback default: Center Right
+        area.anchor(egui::Align2::RIGHT_CENTER, egui::vec2(-20.0, 0.0) * config.ui_scale)
     };
 
     let area_response = area.show(ctx, |ui| {

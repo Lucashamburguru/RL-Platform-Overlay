@@ -12,14 +12,22 @@ pub(super) fn render_hotkey_settings_section(
 ) {
     ui.group(|ui| {
         ui.heading("Hotkeys");
+        ui.label(
+            egui::RichText::new("Configure shortcuts to show/hide the HUD overlay in-game or toggle this settings panel.")
+                .size(10.5)
+                .color(egui::Color32::from_gray(160)),
+        );
+        ui.add_space(6.0);
+
         render_keyboard_hotkey_row(ui, ctx, state, config_edit);
         render_controller_hotkey_row(ui, state, config_edit);
         render_settings_hotkey_row(ui, ctx, state, config_edit);
 
+        ui.add_space(4.0);
         if ui
             .checkbox(
                 &mut config_edit.hotkey_toggle,
-                "Toggle Hotkey (Instead of Hold)",
+                "Toggle HUD Visibility (instead of holding key)",
             )
             .changed()
         {
@@ -35,7 +43,7 @@ fn render_keyboard_hotkey_row(
     config_edit: &mut crate::state::Config,
 ) {
     ui.horizontal(|ui| {
-        ui.label("Keyboard:");
+        ui.label("Show/Hide HUD (Keyboard):");
         if state.is_recording_kb.load(Ordering::SeqCst) {
             ui.colored_label(egui::Color32::YELLOW, "Listening...");
             if ui.button("Cancel").clicked() {
@@ -63,7 +71,7 @@ fn render_controller_hotkey_row(
     config_edit: &crate::state::Config,
 ) {
     ui.horizontal(|ui| {
-        ui.label("Controller:");
+        ui.label("Show/Hide HUD (Controller):");
         if state.is_recording_ctrl.load(Ordering::SeqCst) {
             ui.colored_label(egui::Color32::YELLOW, "Listening...");
             if ui.button("Cancel").clicked() {
@@ -87,7 +95,7 @@ fn render_settings_hotkey_row(
     config_edit: &mut crate::state::Config,
 ) {
     ui.horizontal(|ui| {
-        ui.label("Settings Toggle:");
+        ui.label("Open/Close Settings (Keyboard):");
         if state.is_recording_settings.load(Ordering::SeqCst) {
             ui.colored_label(egui::Color32::YELLOW, "Listening...");
             if ui.button("Cancel").clicked() {

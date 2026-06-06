@@ -1,5 +1,5 @@
 use crate::session::SessionOverlayDisplay;
-use crate::state::{AnchorPos, AppState, TeammateBoostDisplay};
+use crate::state::{AppState, TeammateBoostDisplay};
 use eframe::egui;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -214,35 +214,6 @@ pub(super) fn render_overlay_settings_tab(
                         *changed = true;
                     }
                 });
-
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    ui.label("Anchor:");
-                    egui::ComboBox::new("anchor_pos", "")
-                        .selected_text(format!("{:?}", config_edit.anchor))
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut config_edit.anchor, AnchorPos::TopLeft, "Top Left");
-                            ui.selectable_value(&mut config_edit.anchor, AnchorPos::TopRight, "Top Right");
-                            ui.selectable_value(
-                                &mut config_edit.anchor,
-                                AnchorPos::BottomLeft,
-                                "Bottom Left",
-                            );
-                            ui.selectable_value(
-                                &mut config_edit.anchor,
-                                AnchorPos::BottomRight,
-                                "Bottom Right",
-                            );
-                            ui.selectable_value(
-                                &mut config_edit.anchor,
-                                AnchorPos::CenterRight,
-                                "Center Right",
-                            );
-                        });
-                    if config_edit.anchor != config.anchor {
-                        *changed = true;
-                    }
-                });
             });
 
             columns[1].vertical(|ui| {
@@ -275,23 +246,7 @@ pub(super) fn render_overlay_settings_tab(
                     }
                 });
 
-                ui.add_space(8.0);
-                ui.label("X Offset");
-                if ui
-                    .add(egui::Slider::new(&mut config_edit.lobby_offset[0], -800.0..=800.0))
-                    .changed()
-                {
-                    *changed = true;
-                }
 
-                ui.add_space(8.0);
-                ui.label("Y Offset");
-                if ui
-                    .add(egui::Slider::new(&mut config_edit.lobby_offset[1], -800.0..=800.0))
-                    .changed()
-                {
-                    *changed = true;
-                }
 
                 ui.add_space(8.0);
                 if ui
@@ -393,63 +348,7 @@ pub(super) fn render_session_settings_tab(
                 *changed = true;
             }
 
-            ui.horizontal(|ui| {
-                ui.label("Anchor:");
-                egui::ComboBox::new("session_anchor", "")
-                    .selected_text(format!("{:?}", config_edit.session_overlay_anchor))
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(
-                            &mut config_edit.session_overlay_anchor,
-                            AnchorPos::TopLeft,
-                            "Top Left",
-                        );
-                        ui.selectable_value(
-                            &mut config_edit.session_overlay_anchor,
-                            AnchorPos::TopRight,
-                            "Top Right",
-                        );
-                        ui.selectable_value(
-                            &mut config_edit.session_overlay_anchor,
-                            AnchorPos::BottomLeft,
-                            "Bottom Left",
-                        );
-                        ui.selectable_value(
-                            &mut config_edit.session_overlay_anchor,
-                            AnchorPos::BottomRight,
-                            "Bottom Right",
-                        );
-                        ui.selectable_value(
-                            &mut config_edit.session_overlay_anchor,
-                            AnchorPos::CenterRight,
-                            "Center Right",
-                        );
-                    });
-                if config_edit.session_overlay_anchor != state.config.load().session_overlay_anchor
-                {
-                    *changed = true;
-                }
-            });
 
-            ui.label("X Offset");
-            if ui
-                .add(egui::Slider::new(
-                    &mut config_edit.session_overlay_offset[0],
-                    -800.0..=800.0,
-                ))
-                .changed()
-            {
-                *changed = true;
-            }
-            ui.label("Y Offset");
-            if ui
-                .add(egui::Slider::new(
-                    &mut config_edit.session_overlay_offset[1],
-                    -800.0..=800.0,
-                ))
-                .changed()
-            {
-                *changed = true;
-            }
         });
 
         columns[1].group(|ui| {
@@ -538,31 +437,7 @@ pub(super) fn render_boost_settings_tab(
             *changed = true;
         }
 
-        ui.add_space(5.0);
-        ui.label("Horizontal Offset");
-        let max_horizontal_offset =
-            (config_edit.window_size[0] / config_edit.teammate_hud_scale.max(0.1)).max(600.0);
-        if ui
-            .add(egui::Slider::new(
-                &mut config_edit.teammate_boost_horizontal_offset,
-                0.0..=max_horizontal_offset,
-            ))
-            .changed()
-        {
-            *changed = true;
-        }
 
-        ui.add_space(5.0);
-        ui.label("Vertical Offset");
-        if ui
-            .add(egui::Slider::new(
-                &mut config_edit.teammate_boost_offset,
-                50.0..=600.0,
-            ))
-            .changed()
-        {
-            *changed = true;
-        }
     });
 
     ui.add_space(10.0);

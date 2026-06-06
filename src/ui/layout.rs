@@ -1,4 +1,4 @@
-use crate::state::{AnchorPos, AppState};
+use crate::state::AppState;
 use eframe::egui;
 use std::sync::Arc;
 
@@ -34,16 +34,6 @@ pub(super) fn render_drag_position_handle(
         egui::Color32::from_rgb(245, 220, 130),
     );
     Some(response)
-}
-
-pub(super) fn anchor_offset(anchor: AnchorPos, offset: egui::Vec2) -> (egui::Align2, egui::Vec2) {
-    match anchor {
-        AnchorPos::TopLeft => (egui::Align2::LEFT_TOP, offset),
-        AnchorPos::TopRight => (egui::Align2::RIGHT_TOP, offset),
-        AnchorPos::BottomLeft => (egui::Align2::LEFT_BOTTOM, offset),
-        AnchorPos::BottomRight => (egui::Align2::RIGHT_BOTTOM, offset),
-        AnchorPos::CenterRight => (egui::Align2::RIGHT_CENTER, offset),
-    }
 }
 
 pub(super) fn normalized_to_pos(ctx: &egui::Context, position: [f32; 2]) -> egui::Pos2 {
