@@ -174,7 +174,7 @@ pub(super) fn render_overlay_settings_tab(
         ui.heading("Lobby Overlay Settings");
         ui.add_space(6.0);
 
-        ui.columns(3, |columns| {
+        ui.columns(2, |columns| {
             columns[0].vertical(|ui| {
                 ui.label("Transparency");
                 if ui
@@ -243,8 +243,6 @@ pub(super) fn render_overlay_settings_tab(
                     }
                 });
 
-
-
                 ui.add_space(8.0);
                 if ui
                     .checkbox(&mut config_edit.show_bots, "Show Bots")
@@ -260,11 +258,10 @@ pub(super) fn render_overlay_settings_tab(
                     *changed = true;
                 }
             });
-
-            columns[2].vertical(|ui| {
-                render_hotkey_settings_section(ui, ctx, state, config_edit, changed);
-            });
         });
+
+        ui.add_space(10.0);
+        render_hotkey_settings_section(ui, ctx, state, config_edit, changed);
     });
 
     ui.add_space(10.0);
