@@ -410,6 +410,145 @@ async fn run_folder_fix(state: Arc<AppState>) {
     );
 }
 
+/// Spawns a background task to restore original replays from backup (.replay.bak) files.
+pub fn start_restore_backups_task(state: Arc<AppState>) {
+    tokio::spawn(async move {
+        run_restore_backups(state).await;
+    });
+}
+
+async fn run_restore_backups(state: Arc<AppState>) {
+    let folder_str = {
+        let config = state.config.load();
+        config.replays_folder.trim().to_string()
+    };
+
+    if folder_str.is_empty() {
+        set_status(&state, "Error: Replays folder unconfigured");
+        return;
+    }
+
+    let replays_dir = PathBuf::from(&folder_str);
+    if !replays_dir.exists() || !replays_dir.is_dir() {
+        set_status(&state, "Error: Replays folder does not exist");
+        return;
+    }
+
+    set_status(&state, "Restoring backups...");
+    clear_logs(&state);
+
+    let entries = match fs::read_dir(&replays_dir) {
+        Ok(read) => read,
+        Err(e) => {
+            set_status(&state, &format!("Error: Could not read folder: {e}"));
+            return;
+        }
+    };
+
+    let mut restored_count = 0;
+    let mut err_count = 0;
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("bak") {
+            let filename = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+            if filename.ends_with(".replay.bak")
+                && let Some(original_name) = filename.strip_suffix(".bak")
+            {
+                let mut original_path = path.clone();
+                original_path.set_file_name(original_name);
+
+                if let Err(e) = fs::copy(&path, &original_path) {
+                    append_log(&state, format!("❌ Failed to restore {original_name}: {e}"));
+                    err_count += 1;
+                } else {
+                    restored_count += 1;
+                    append_log(&state, format!("✔ Restored {original_name} from backup"));
+                }
+            }
+        }
+    }
+
+    if err_count > 0 {
+        set_status(
+            &state,
+            &format!("Restored {restored_count} files with {err_count} errors."),
+        );
+    } else {
+        set_status(
+            &state,
+            &format!("Success: Restored {restored_count} replays from backups."),
+        );
+    }
+}
+
+/// Spawns a background task to clean up and delete all backup (.replay.bak) files.
+pub fn start_delete_backups_task(state: Arc<AppState>) {
+    tokio::spawn(async move {
+        run_delete_backups(state).await;
+    });
+}
+
+async fn run_delete_backups(state: Arc<AppState>) {
+    let folder_str = {
+        let config = state.config.load();
+        config.replays_folder.trim().to_string()
+    };
+
+    if folder_str.is_empty() {
+        set_status(&state, "Error: Replays folder unconfigured");
+        return;
+    }
+
+    let replays_dir = PathBuf::from(&folder_str);
+    if !replays_dir.exists() || !replays_dir.is_dir() {
+        set_status(&state, "Error: Replays folder does not exist");
+        return;
+    }
+
+    set_status(&state, "Deleting backups...");
+    clear_logs(&state);
+
+    let entries = match fs::read_dir(&replays_dir) {
+        Ok(read) => read,
+        Err(e) => {
+            set_status(&state, &format!("Error: Could not read folder: {e}"));
+            return;
+        }
+    };
+
+    let mut deleted_count = 0;
+    let mut err_count = 0;
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("bak") {
+            let filename = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+            if filename.ends_with(".replay.bak") {
+                if let Err(e) = fs::remove_file(&path) {
+                    append_log(&state, format!("❌ Failed to delete {filename}: {e}"));
+                    err_count += 1;
+                } else {
+                    deleted_count += 1;
+                    append_log(&state, format!("✔ Deleted backup: {filename}"));
+                }
+            }
+        }
+    }
+
+    if err_count > 0 {
+        set_status(
+            &state,
+            &format!("Deleted {deleted_count} files with {err_count} errors."),
+        );
+    } else {
+        set_status(
+            &state,
+            &format!("Success: Deleted {deleted_count} backup files."),
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

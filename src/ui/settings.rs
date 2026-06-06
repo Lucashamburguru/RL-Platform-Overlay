@@ -1070,6 +1070,22 @@ pub(super) fn render_replays_settings_tab(
             if scan_btn.clicked() {
                 crate::hoops_fixer::start_folder_fix_task(state.clone());
             }
+
+            let restore_btn = ui.add_enabled(
+                path_valid == Some(true),
+                egui::Button::new("Restore Backups")
+            );
+            if restore_btn.clicked() {
+                crate::hoops_fixer::start_restore_backups_task(state.clone());
+            }
+
+            let delete_btn = ui.add_enabled(
+                path_valid == Some(true),
+                egui::Button::new("Delete Backups")
+            );
+            if delete_btn.clicked() {
+                crate::hoops_fixer::start_delete_backups_task(state.clone());
+            }
         });
 
         // Status Indicator
