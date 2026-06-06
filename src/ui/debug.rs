@@ -127,6 +127,48 @@ pub(super) fn render_debug_settings_tab(
 
     ui.add_space(10.0);
     ui.group(|ui| {
+        ui.heading("In-Game Tracker Logs");
+        ui.add_space(6.0);
+
+        let logs = if let Ok(lock) = state.debug_tracker_logs.lock() {
+            lock.clone()
+        } else {
+            Vec::new()
+        };
+
+        if ui.button("Clear Tracker Logs").clicked()
+            && let Ok(mut lock) = state.debug_tracker_logs.lock()
+        {
+            lock.clear();
+        }
+        ui.add_space(6.0);
+
+        if logs.is_empty() {
+            ui.label("No profiles scraped yet in this session.");
+        } else {
+            egui::ScrollArea::vertical()
+                .max_height(120.0)
+                .show(ui, |ui| {
+                    for log_line in logs.iter().rev() {
+                        let color = if log_line.contains("Success") {
+                            egui::Color32::from_rgb(100, 220, 100)
+                        } else if log_line.contains("Error") {
+                            egui::Color32::from_rgb(230, 80, 80)
+                        } else {
+                            egui::Color32::from_gray(160)
+                        };
+                        ui.label(
+                            egui::RichText::new(log_line)
+                                .font(egui::FontId::monospace(10.0))
+                                .color(color),
+                        );
+                    }
+                });
+        }
+    });
+
+    ui.add_space(10.0);
+    ui.group(|ui| {
         ui.heading("Stats API Capture");
         let capture = state.debug_capture_status.load();
         if capture.running {
@@ -139,6 +181,170 @@ pub(super) fn render_debug_settings_tab(
         }
 
         render_capture_status(ui, &capture);
+    });
+
+    ui.add_space(10.0);
+    ui.group(|ui| {
+        ui.heading("Tracker Scraper Debugger");
+        ui.add_space(6.0);
+
+        // Platform selection persistent state
+        let platform_id = ui.make_persistent_id("debug_scrape_platform");
+        let mut platform = ui.data(|d| {
+            d.get_temp::<String>(platform_id)
+                .unwrap_or_else(|| "epic".to_string())
+        });
+
+        // Name input persistent state
+        let name_id = ui.make_persistent_id("debug_scrape_name");
+        let mut name = ui.data(|d| {
+            d.get_temp::<String>(name_id)
+                .unwrap_or_else(|| "".to_string())
+        });
+
+        ui.horizontal(|ui| {
+            ui.label("Platform:");
+            egui::ComboBox::new("debug_platform_combo", "")
+                .selected_text(match platform.as_str() {
+                    "steam" => "Steam",
+                    "psn" => "PlayStation",
+                    "xbl" => "Xbox",
+                    "switch" => "Switch",
+                    _ => "Epic",
+                })
+                .show_ui(ui, |ui| {
+                    if ui
+                        .selectable_value(&mut platform, "epic".to_string(), "Epic")
+                        .changed()
+                    {
+                        ui.data_mut(|d| d.insert_temp(platform_id, platform.clone()));
+                    }
+                    if ui
+                        .selectable_value(&mut platform, "steam".to_string(), "Steam")
+                        .changed()
+                    {
+                        ui.data_mut(|d| d.insert_temp(platform_id, platform.clone()));
+                    }
+                    if ui
+                        .selectable_value(&mut platform, "psn".to_string(), "PlayStation")
+                        .changed()
+                    {
+                        ui.data_mut(|d| d.insert_temp(platform_id, platform.clone()));
+                    }
+                    if ui
+                        .selectable_value(&mut platform, "xbl".to_string(), "Xbox")
+                        .changed()
+                    {
+                        ui.data_mut(|d| d.insert_temp(platform_id, platform.clone()));
+                    }
+                    if ui
+                        .selectable_value(&mut platform, "switch".to_string(), "Switch")
+                        .changed()
+                    {
+                        ui.data_mut(|d| d.insert_temp(platform_id, platform.clone()));
+                    }
+                });
+        });
+
+        ui.horizontal(|ui| {
+            ui.label("Name/ID:");
+            if ui.text_edit_singleline(&mut name).changed() {
+                ui.data_mut(|d| d.insert_temp(name_id, name.clone()));
+            }
+        });
+
+        ui.add_space(6.0);
+
+        let status = if let Ok(lock) = state.debug_scrape_status.lock() {
+            lock.clone()
+        } else {
+            "Idle".to_string()
+        };
+
+        let is_fetching = status == "Fetching...";
+
+        ui.horizontal(|ui| {
+            let scrape_btn = ui.add_enabled(
+                !is_fetching && !name.trim().is_empty(),
+                egui::Button::new("Scrape Tracker Profile"),
+            );
+            if scrape_btn.clicked() {
+                run_tracker_scrape_debug(state.clone(), platform, name);
+            }
+
+            if is_fetching {
+                ui.add(egui::Spinner::new());
+            }
+        });
+
+        if status != "Idle" && !is_fetching {
+            ui.add_space(8.0);
+            ui.label("Result:");
+            egui::ScrollArea::vertical()
+                .max_height(150.0)
+                .show(ui, |ui| {
+                    ui.label(
+                        egui::RichText::new(&status)
+                            .font(egui::FontId::monospace(10.0))
+                            .color(if status.starts_with("Success") {
+                                egui::Color32::from_rgb(120, 220, 120)
+                            } else {
+                                egui::Color32::from_rgb(220, 120, 120)
+                            }),
+                    );
+                });
+        }
+    });
+}
+
+fn run_tracker_scrape_debug(state: Arc<AppState>, platform: String, player_name_or_id: String) {
+    if let Ok(mut status) = state.debug_scrape_status.lock() {
+        *status = "Fetching...".to_string();
+    }
+
+    tokio::spawn(async move {
+        let player = crate::mmr::TrackerPlayer {
+            platform: platform.clone(),
+            player_name: player_name_or_id.clone(),
+            player_id: player_name_or_id.clone(),
+        };
+
+        let result = crate::mmr::fetch_tracker_snapshot(&state.mmr_client, &player).await;
+
+        let status_msg = match result {
+            Ok(snapshot) => {
+                let mut lines = Vec::new();
+                lines.push(format!(
+                    "Success! Fetched Profile for {}/{}",
+                    platform, player_name_or_id
+                ));
+                if let Some(season) = snapshot.current_season {
+                    lines.push(format!("Current Season: {}", season));
+                }
+                if let Some(updated) = snapshot.last_updated {
+                    lines.push(format!("Last Updated: {}", updated));
+                }
+                lines.push(String::new());
+                lines.push("Playlists:".to_string());
+                for (id, playlist) in snapshot.playlists {
+                    lines.push(format!(
+                        "  * {} (ID {}): {} MMR | Tier: {} | Matches: {}",
+                        playlist.name, id, playlist.rating, playlist.tier_name, playlist.matches
+                    ));
+                }
+                lines.join("\n")
+            }
+            Err(e) => {
+                format!(
+                    "Error fetching profile for {}/{}: {}",
+                    platform, player_name_or_id, e
+                )
+            }
+        };
+
+        if let Ok(mut status) = state.debug_scrape_status.lock() {
+            *status = status_msg;
+        }
     });
 }
 

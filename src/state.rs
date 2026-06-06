@@ -455,6 +455,8 @@ pub struct AppState {
     pub ballchasing_cloud_count: std::sync::atomic::AtomicU32,
     pub hoops_fixer_status: Arc<std::sync::Mutex<String>>,
     pub hoops_fixer_logs: Arc<std::sync::Mutex<Vec<String>>>,
+    pub debug_scrape_status: Arc<std::sync::Mutex<String>>,
+    pub debug_tracker_logs: Arc<std::sync::Mutex<Vec<String>>>,
 }
 
 impl AppState {
@@ -501,6 +503,8 @@ impl AppState {
             ballchasing_cloud_count: std::sync::atomic::AtomicU32::new(0),
             hoops_fixer_status: Arc::new(std::sync::Mutex::new("Idle".to_string())),
             hoops_fixer_logs: Arc::new(std::sync::Mutex::new(Vec::new())),
+            debug_scrape_status: Arc::new(std::sync::Mutex::new("Idle".to_string())),
+            debug_tracker_logs: Arc::new(std::sync::Mutex::new(Vec::new())),
         })
     }
 

@@ -265,8 +265,21 @@ pub fn start_mmr_fetch_task(state: Arc<AppState>) {
 
             if let Some((name, cache_key, tracker_player)) = target_player {
                 fetching_players.insert(cache_key.clone());
+                append_tracker_log(
+                    &state,
+                    format!("Fetching MMR for {} ({})", name, tracker_player.platform),
+                );
                 match fetch_tracker_snapshot(&state.mmr_client, &tracker_player).await {
                     Ok(snapshot) => {
+                        append_tracker_log(
+                            &state,
+                            format!(
+                                "Success: Fetched {} ({}). Playlists: {}",
+                                name,
+                                tracker_player.platform,
+                                snapshot.playlists.len()
+                            ),
+                        );
                         mmr_cache.insert(
                             cache_key.clone(),
                             MmrCacheEntry {
@@ -285,6 +298,13 @@ pub fn start_mmr_fetch_task(state: Arc<AppState>) {
                         if e.contains("404") {
                             // Profile not found or private on tracker.gg.
                             // Cache an empty MMR snapshot so we don't query this player again.
+                            append_tracker_log(
+                                &state,
+                                format!(
+                                    "Cached empty MMR (404/not found) for {} ({})",
+                                    name, tracker_player.platform
+                                ),
+                            );
                             let snapshot = TrackerSnapshot::default();
                             mmr_cache.insert(
                                 cache_key.clone(),
@@ -301,6 +321,13 @@ pub fn start_mmr_fetch_task(state: Arc<AppState>) {
                             fetching_players.remove(&cache_key);
                         } else {
                             // Temporary error (rate limit, timeout, 403, etc.).
+                            append_tracker_log(
+                                &state,
+                                format!(
+                                    "Error fetching {} ({}): {}",
+                                    name, tracker_player.platform, e
+                                ),
+                            );
                             if e.contains("429") || e.contains("403") {
                                 eprintln!(
                                     "MMR fetching rate limited or blocked: {e}. Cooling down for 60 seconds."
@@ -388,18 +415,41 @@ pub fn start_local_mmr_refresh(state: Arc<AppState>) {
     state.local_mmr.store(Arc::new(local_mmr));
 
     runtime.spawn(async move {
+        append_tracker_log(
+            &state,
+            format!(
+                "Fetching local player MMR for {} ({})",
+                identity.name, identity.platform
+            ),
+        );
         let result = fetch_tracker_snapshot(&state.mmr_client, &tracker_player).await;
 
         let mut local_mmr = (**state.local_mmr.load()).clone();
         local_mmr.fetching = false;
         match result {
             Ok(snapshot) => {
+                append_tracker_log(
+                    &state,
+                    format!(
+                        "Success: Fetched local player {} ({}). Playlists: {}",
+                        identity.name,
+                        identity.platform,
+                        snapshot.playlists.len()
+                    ),
+                );
                 local_mmr.previous = local_mmr.current.take();
                 local_mmr.current = Some(snapshot);
                 local_mmr.last_updated_unix_ms = crate::stats_api::now_ms();
                 local_mmr.error.clear();
             }
             Err(error) => {
+                append_tracker_log(
+                    &state,
+                    format!(
+                        "Error fetching local player {} ({}): {}",
+                        identity.name, identity.platform, error
+                    ),
+                );
                 local_mmr.error = error;
             }
         }
@@ -417,6 +467,25 @@ fn tracker_player_from_identity(
         ..Default::default()
     };
     tracker_player_from_info(&identity.name, &info)
+}
+
+fn append_tracker_log(state: &AppState, message: String) {
+    if let Ok(mut logs) = state.debug_tracker_logs.lock() {
+        let time_str =
+            if let Ok(now) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+                let secs = now.as_secs();
+                let h = (secs / 3600) % 24;
+                let m = (secs / 60) % 60;
+                let s = secs % 60;
+                format!("{:02}:{:02}:{:02}", h, m, s)
+            } else {
+                "00:00:00".to_string()
+            };
+        logs.push(format!("[{time_str}] {message}"));
+        if logs.len() > 100 {
+            logs.remove(0);
+        }
+    }
 }
 
 #[cfg(test)]
