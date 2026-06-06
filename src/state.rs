@@ -29,6 +29,22 @@ pub enum TeammateBoostDisplay {
     Numbers,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub enum LobbyTheme {
+    #[default]
+    Glass,
+    Solid,
+    Modern,
+    Minimalist,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub enum LobbyDisplayMode {
+    Compact,
+    #[default]
+    Expanded,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -37,6 +53,9 @@ pub struct Config {
     pub show_bots: bool,
     pub window_size: [f32; 2],
     pub anchor: AnchorPos,
+    pub lobby_theme: LobbyTheme,
+    pub lobby_offset: [f32; 2],
+    pub lobby_display_mode: LobbyDisplayMode,
     pub monitor_index: usize,
     pub hotkey_kb: String,
     pub hotkey_ctrl: String,
@@ -178,6 +197,9 @@ impl Default for Config {
             show_bots: true,
             window_size: [1920.0, 1080.0],
             anchor: AnchorPos::CenterRight,
+            lobby_theme: LobbyTheme::default(),
+            lobby_offset: [0.0, 0.0],
+            lobby_display_mode: LobbyDisplayMode::default(),
             monitor_index: 0,
             hotkey_kb: "Backspace".to_string(),
             hotkey_ctrl: "Select".to_string(),
@@ -290,6 +312,7 @@ mod tests {
         assert_eq!(config.transparency, 150);
         assert_eq!(config.ui_scale, 2.2);
         assert!(config.show_bots);
+        assert_eq!(config.lobby_display_mode, LobbyDisplayMode::Expanded);
         assert_eq!(config.anchor, AnchorPos::CenterRight);
         assert!(!config.cached_local_player_identity.is_known());
     }
@@ -335,6 +358,16 @@ mod tests {
     #[test]
     fn test_detect_replays_path_runs_without_panic() {
         let _ = detect_replays_path();
+    }
+
+    #[test]
+    fn test_config_compatibility_missing_lobby_display_mode() {
+        let toml_str = r#"
+            transparency = 150
+            ui_scale = 2.2
+        "#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.lobby_display_mode, LobbyDisplayMode::Expanded);
     }
 }
 
@@ -470,7 +503,7 @@ impl AppState {
         let cached_local_player_identity = config.cached_local_player_identity.clone();
 
         let mmr_client = wreq::Client::builder()
-            .timeout(std::time::Duration::from_secs(10))
+            .timeout(std::time::Duration::from_secs(7))
             .emulation(wreq_util::Emulation::Chrome128)
             .build()
             .expect("Failed to build MMR HTTP client with Chrome emulation");

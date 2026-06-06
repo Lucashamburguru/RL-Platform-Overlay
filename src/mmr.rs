@@ -6,7 +6,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::time::sleep;
 
-const MMR_TRACKER_WARMUP_HOST: &str = "https://rocketleague.tracker.network";
 const MMR_TRACKER_API_HOST: &str = "https://api.tracker.gg";
 const MMR_RANKED_PLAYLIST_IDS: [i32; 10] = [10, 11, 12, 13, 27, 28, 29, 30, 34, 63];
 const MMR_CACHE_TTL: Duration = Duration::from_secs(60 * 60);
@@ -63,44 +62,16 @@ fn tracker_api_url(player: &TrackerPlayer) -> String {
     )
 }
 
-fn tracker_warmup_url(player: &TrackerPlayer) -> String {
-    let (tracker_platform, use_id) = match player.platform.to_lowercase().as_str() {
-        "steam" => ("steam", true),
-        "ps4" | "ps5" | "psn" | "playstation" => ("psn", false),
-        "xbox" | "xbl" | "xboxone" | "xboxseries" => ("xbl", false),
-        "switch" | "nintendo" => ("switch", false),
-        _ => ("epic", false),
-    };
-
-    let search_term = if use_id {
-        &player.player_id
-    } else {
-        &player.player_name
-    };
-    let encoded = urlencoding::encode(search_term);
-    format!("{MMR_TRACKER_WARMUP_HOST}/rocket-league/profile/{tracker_platform}/{encoded}/overview")
-}
-
 pub async fn fetch_tracker_snapshot(
     client: &wreq::Client,
     player: &TrackerPlayer,
 ) -> Result<TrackerSnapshot, String> {
-    let warmup_url = tracker_warmup_url(player);
-    // Warmup request to bypass some basic checks or establish cookies
-    let _ = client.get(&warmup_url)
-        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36")
-        .header("Accept-Language", "en-US,en;q=0.9")
-        .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8")
-        .header("Referer", "https://rocketleague.tracker.network/")
-        .send()
-        .await;
-
     let api_url = tracker_api_url(player);
     let response = client.get(&api_url)
         .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36")
         .header("Accept-Language", "en-US,en;q=0.9")
         .header("Accept", "application/json, text/plain, */*")
-        .header("Referer", &warmup_url)
+        .header("Referer", "https://rocketleague.tracker.network/")
         .send()
         .await
         .map_err(|e| format!("api request error: {}", e))?;
@@ -198,15 +169,63 @@ fn extract_tracker_stats(payload: &Value) -> Option<TrackerSnapshot> {
     Some(snapshot)
 }
 
+fn select_next_player(
+    players: &HashMap<String, PlayerInfo>,
+    mmr_cache: &mut HashMap<String, MmrCacheEntry>,
+    fetching_players: &mut std::collections::HashSet<String>,
+    failed_fetches: &HashMap<String, Instant>,
+) -> (Option<(String, TrackerSnapshot)>, Option<(String, String, TrackerPlayer)>) {
+    let mut target_player = None;
+    let mut cached_player = None;
+    for (name, info) in players.iter() {
+        // Only fetch for supported platforms and non-bots
+        if info.is_local || info.is_bot {
+            continue;
+        }
+
+        let Some((cache_key, tracker_player)) = tracker_player_from_info(name, info)
+        else {
+            continue;
+        };
+
+        if let Some(cache_entry) = mmr_cache.get(&cache_key) {
+            if cache_entry.fetched_at.elapsed() < MMR_CACHE_TTL {
+                cached_player = Some((name.clone(), cache_entry.snapshot.clone()));
+                break;
+            }
+            mmr_cache.remove(&cache_key);
+            fetching_players.remove(&cache_key);
+        } else if info.mmr.is_some() {
+            continue;
+        }
+
+        if fetching_players.contains(&cache_key) {
+            continue;
+        }
+
+        if failed_fetches.contains_key(&cache_key) {
+            continue;
+        }
+
+        target_player = Some((name.clone(), cache_key, tracker_player));
+        break;
+    }
+    (cached_player, target_player)
+}
+
 pub fn start_mmr_fetch_task(state: Arc<AppState>) {
     tokio::spawn(async move {
         let mut fetching_players = std::collections::HashSet::new();
         let mut mmr_cache: HashMap<String, MmrCacheEntry> = HashMap::new();
+        let mut failed_fetches: HashMap<String, Instant> = HashMap::new();
         let mut cooldown_until = None;
 
         loop {
-            // Sleep 5 seconds between fetches to be gentler on tracker.gg rate limits
-            sleep(Duration::from_secs(5)).await;
+            // Sleep 2 seconds between fetches to be gentler on tracker.gg rate limits
+            sleep(Duration::from_secs(2)).await;
+
+            // Clean up expired entries in failed_fetches
+            failed_fetches.retain(|_, &mut instant| Instant::now() < instant);
 
             if let Some(until) = cooldown_until {
                 if Instant::now() < until {
@@ -216,40 +235,15 @@ pub fn start_mmr_fetch_task(state: Arc<AppState>) {
             }
 
             // Find a player that needs their MMR fetched
-            let mut target_player = None;
-            let mut cached_player = None;
-            {
+            let (cached_player, target_player) = {
                 let players = state.players.load();
-                for (name, info) in players.iter() {
-                    // Only fetch for supported platforms and non-bots
-                    if info.is_local || info.is_bot {
-                        continue;
-                    }
-
-                    let Some((cache_key, tracker_player)) = tracker_player_from_info(name, info)
-                    else {
-                        continue;
-                    };
-
-                    if let Some(cache_entry) = mmr_cache.get(&cache_key) {
-                        if cache_entry.fetched_at.elapsed() < MMR_CACHE_TTL {
-                            cached_player = Some((name.clone(), cache_entry.snapshot.clone()));
-                            break;
-                        }
-                        mmr_cache.remove(&cache_key);
-                        fetching_players.remove(&cache_key);
-                    } else if info.mmr.is_some() {
-                        continue;
-                    }
-
-                    if fetching_players.contains(&cache_key) {
-                        continue;
-                    }
-
-                    target_player = Some((name.clone(), cache_key, tracker_player));
-                    break;
-                }
-            }
+                select_next_player(
+                    &players,
+                    &mut mmr_cache,
+                    &mut fetching_players,
+                    &failed_fetches,
+                )
+            };
 
             if let Some((name, snapshot)) = cached_player {
                 let mut players_map = (**state.players.load()).clone();
@@ -333,9 +327,11 @@ pub fn start_mmr_fetch_task(state: Arc<AppState>) {
                                     "MMR fetching rate limited or blocked: {e}. Cooling down for 60 seconds."
                                 );
                                 cooldown_until = Some(Instant::now() + Duration::from_secs(60));
+                                failed_fetches.insert(cache_key.clone(), Instant::now() + Duration::from_secs(300));
                             } else {
-                                // For other errors (like timeouts), back off for 15 seconds.
-                                cooldown_until = Some(Instant::now() + Duration::from_secs(15));
+                                // For other errors (like timeouts), back off for 5 seconds globally.
+                                cooldown_until = Some(Instant::now() + Duration::from_secs(5));
+                                failed_fetches.insert(cache_key.clone(), Instant::now() + Duration::from_secs(120));
                             }
                             fetching_players.remove(&cache_key);
                         }
@@ -621,5 +617,51 @@ mod tests {
         assert_eq!(cache_key, "steam|76561198000000000|0");
         assert_eq!(player.player_id, "76561198000000000");
         assert_eq!(player.player_name, "Opponent");
+    }
+
+    #[test]
+    fn test_select_next_player_cooldown() {
+        let mut players = HashMap::new();
+        players.insert(
+            "Player1".to_string(),
+            PlayerInfo {
+                name: "Player1".to_string(),
+                primary_id: "Epic|player1|0".to_string(),
+                platform: "Epic".to_string(),
+                ..Default::default()
+            },
+        );
+        players.insert(
+            "Player2".to_string(),
+            PlayerInfo {
+                name: "Player2".to_string(),
+                primary_id: "Epic|player2|0".to_string(),
+                platform: "Epic".to_string(),
+                ..Default::default()
+            },
+        );
+
+        let mut mmr_cache = HashMap::new();
+        let mut fetching_players = std::collections::HashSet::new();
+        let mut failed_fetches = HashMap::new();
+
+        // 1. Select when no cooldowns are active.
+        let (_, target) = select_next_player(&players, &mut mmr_cache, &mut fetching_players, &failed_fetches);
+        let selected_name = target.unwrap().0;
+        assert!(selected_name == "Player1" || selected_name == "Player2");
+
+        // 2. Put the selected player on cooldown in failed_fetches.
+        let cache_key = if selected_name == "Player1" {
+            "epic|player1|0".to_string()
+        } else {
+            "epic|player2|0".to_string()
+        };
+        failed_fetches.insert(cache_key, Instant::now() + Duration::from_secs(60));
+
+        // 3. Select again, the other player must be chosen because the first one is on cooldown.
+        let (_, target2) = select_next_player(&players, &mut mmr_cache, &mut fetching_players, &failed_fetches);
+        let second_selected_name = target2.unwrap().0;
+        assert_ne!(selected_name, second_selected_name);
+        assert!(second_selected_name == "Player1" || second_selected_name == "Player2");
     }
 }

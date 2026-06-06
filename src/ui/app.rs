@@ -10,9 +10,9 @@ use super::hotkeys::egui_to_rdev_key;
 use super::lobby_overlay::render_overlay;
 use super::session_hud::render_session_overlay;
 use super::settings::{
-    render_boost_settings_tab, render_overlay_settings_tab, render_replays_settings_tab,
-    render_session_settings_tab, render_settings_tabs, render_setup_settings_tab,
-    render_update_notice,
+    render_boost_settings_tab, render_launch_controls, render_overlay_settings_tab,
+    render_replays_settings_tab, render_session_settings_tab, render_settings_tabs,
+    render_setup_settings_tab, render_update_notice,
 };
 
 pub struct MainApp {
@@ -27,6 +27,7 @@ pub struct MainApp {
     #[allow(dead_code)]
     hwnd: Option<isize>,
     rocket_league_process_watcher: crate::assets::RocketLeagueProcessWatcher,
+    launched_by_layout_mode: bool,
 }
 
 impl MainApp {
@@ -43,6 +44,7 @@ impl MainApp {
             last_viewport_state: None,
             hwnd,
             rocket_league_process_watcher: crate::assets::RocketLeagueProcessWatcher::new(),
+            launched_by_layout_mode: false,
         }
     }
 
@@ -86,13 +88,17 @@ impl eframe::App for MainApp {
             || self.state.is_recording_ctrl.load(Ordering::SeqCst)
             || self.state.is_recording_settings.load(Ordering::SeqCst);
 
-        // Auto-disable drag positioning when settings are closed to ensure click-through is restored
+        // Auto-disable drag positioning when settings are closed or overlay is stopped to ensure click-through is restored
         let mut config = self.state.config.load();
-        if !show_settings && config.layout_mode {
+        if (!show_settings || !is_launched) && config.layout_mode {
             let mut config_edit = (**config).clone();
             config_edit.layout_mode = false;
             self.state.save_config(config_edit);
             config = self.state.config.load();
+            if self.launched_by_layout_mode {
+                self.state.is_launched.store(false, Ordering::SeqCst);
+                self.launched_by_layout_mode = false;
+            }
         }
 
         let show_hud =
@@ -309,14 +315,6 @@ impl eframe::App for MainApp {
                         .inner_margin(8.0),
                 )
                 .show(ctx, |ui| {
-                    let title_bar_rect = ui.max_rect();
-                    let drag_id = ui.id().with("title_bar_drag");
-                    let drag_response = ui.interact(title_bar_rect, drag_id, egui::Sense::drag());
-
-                    if drag_response.is_pointer_button_down_on() {
-                        ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
-                    }
-
                     ui.horizontal(|ui| {
                         ui.label(
                             egui::RichText::new("⚙  RL Platform Overlay")
@@ -325,30 +323,65 @@ impl eframe::App for MainApp {
                                 .size(13.0),
                         );
 
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            let close_resp = ui.add(
-                                egui::Button::new(
-                                    egui::RichText::new("🗙")
-                                        .color(egui::Color32::from_rgb(180, 180, 190)),
-                                )
-                                .frame(false),
-                            );
-                            if close_resp.clicked() {
-                                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
-                            }
+                        let mut close_clicked = false;
+                        let mut min_clicked = false;
 
-                            let min_resp = ui.add(
-                                egui::Button::new(
-                                    egui::RichText::new("🗕")
-                                        .color(egui::Color32::from_rgb(180, 180, 190)),
-                                )
-                                .frame(false),
-                            );
-                            if min_resp.clicked() {
-                                ui.ctx()
-                                    .send_viewport_cmd(egui::ViewportCommand::Minimized(true));
-                            }
-                        });
+                        let button_rects = ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let button_style = |ui: &mut egui::Ui, text: &str, hover_color: egui::Color32| -> egui::Response {
+                                let (rect, response) = ui.allocate_exact_size(egui::vec2(28.0, 24.0), egui::Sense::click());
+                                
+                                let bg_color = if response.is_pointer_button_down_on() {
+                                    hover_color.linear_multiply(0.8)
+                                } else if response.hovered() {
+                                    hover_color
+                                } else {
+                                    egui::Color32::TRANSPARENT
+                                };
+                                
+                                ui.painter().rect_filled(rect, 3.0, bg_color);
+                                ui.painter().text(
+                                    rect.center(),
+                                    egui::Align2::CENTER_CENTER,
+                                    text,
+                                    egui::FontId::proportional(11.0),
+                                    if response.hovered() { egui::Color32::WHITE } else { egui::Color32::from_rgb(180, 180, 190) },
+                                );
+                                response
+                            };
+
+                            let close_resp = button_style(ui, "🗙", egui::Color32::from_rgb(200, 50, 50));
+                            let min_resp = button_style(ui, "🗕", egui::Color32::from_rgb(60, 60, 70));
+                            
+                            (close_resp, min_resp)
+                        }).inner;
+
+                        if button_rects.0.clicked() {
+                            close_clicked = true;
+                        }
+                        if button_rects.1.clicked() {
+                            min_clicked = true;
+                        }
+
+                        if close_clicked {
+                            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                        }
+                        if min_clicked {
+                            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                        }
+
+                        // Drag region covers everything except the buttons
+                        let title_bar_rect = ui.max_rect();
+                        let buttons_left_x = button_rects.1.rect.left();
+                        let drag_rect = egui::Rect::from_min_max(
+                            title_bar_rect.left_top(),
+                            egui::pos2(buttons_left_x - 4.0, title_bar_rect.bottom()),
+                        );
+
+                        let drag_id = ui.id().with("title_bar_drag");
+                        let drag_response = ui.interact(drag_rect, drag_id, egui::Sense::drag());
+                        if drag_response.is_pointer_button_down_on() {
+                            ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                        }
                     });
                 });
 
@@ -563,46 +596,68 @@ impl MainApp {
         render_settings_tabs(ui, &mut self.settings_tab, self.state.debug_enabled);
         self.refresh_rocket_league_process_detection();
 
-        egui::ScrollArea::vertical().show(ui, |ui| match self.settings_tab {
-            SettingsTab::Setup => render_setup_settings_tab(
-                ui,
-                &self.state,
-                &mut config_edit,
-                &mut changed,
-                self.is_rl_running,
-            ),
-            SettingsTab::Overlay => render_overlay_settings_tab(
-                ui,
-                ctx,
-                &self.state,
-                &config,
-                &mut config_edit,
-                &mut changed,
-                is_launched,
-            ),
-            SettingsTab::Session => {
-                render_session_settings_tab(ui, &self.state, &mut config_edit, &mut changed)
-            }
-            SettingsTab::Boost => render_boost_settings_tab(
-                ui,
-                &self.state,
-                &mut config_edit,
-                &mut changed,
-                self.is_rl_running,
-            ),
-            SettingsTab::Replays => {
-                render_replays_settings_tab(ui, &self.state, &mut config_edit, &mut changed)
-            }
-            SettingsTab::Debug => render_debug_settings_tab(
-                ui,
-                &self.state,
-                is_launched,
-                self.is_rl_running,
-                &self.rl_process_detection_detail,
-            ),
-        });
+        egui::ScrollArea::vertical()
+            .max_height(ui.available_height() - 40.0 * ui.ctx().pixels_per_point().min(1.2))
+            .show(ui, |ui| match self.settings_tab {
+                SettingsTab::Setup => render_setup_settings_tab(
+                    ui,
+                    ctx,
+                    &self.state,
+                    &mut config_edit,
+                    &mut changed,
+                    self.is_rl_running,
+                ),
+                SettingsTab::Overlay => render_overlay_settings_tab(
+                    ui,
+                    ctx,
+                    &self.state,
+                    &config,
+                    &mut config_edit,
+                    &mut changed,
+                    is_launched,
+                ),
+                SettingsTab::Session => {
+                    render_session_settings_tab(ui, &self.state, &mut config_edit, &mut changed)
+                }
+                SettingsTab::Boost => render_boost_settings_tab(
+                    ui,
+                    &self.state,
+                    &mut config_edit,
+                    &mut changed,
+                    self.is_rl_running,
+                ),
+                SettingsTab::Replays => {
+                    render_replays_settings_tab(ui, &self.state, &mut config_edit, &mut changed)
+                }
+                SettingsTab::Debug => render_debug_settings_tab(
+                    ui,
+                    &self.state,
+                    is_launched,
+                    self.is_rl_running,
+                    &self.rl_process_detection_detail,
+                ),
+            });
+
+        ui.add_space(8.0);
+        ui.separator();
+        ui.add_space(4.0);
+        render_launch_controls(ui, ctx, &self.state, is_launched, &mut config_edit, &mut changed);
 
         if changed {
+            // Auto-enable launch when drag positioning is turned on
+            if config_edit.layout_mode && !config.layout_mode {
+                if !is_launched {
+                    self.state.is_launched.store(true, Ordering::SeqCst);
+                    self.launched_by_layout_mode = true;
+                }
+            }
+            // Auto-disable launch when drag positioning is turned off, if it was launched by layout mode
+            else if !config_edit.layout_mode && config.layout_mode {
+                if is_launched && self.launched_by_layout_mode {
+                    self.state.is_launched.store(false, Ordering::SeqCst);
+                    self.launched_by_layout_mode = false;
+                }
+            }
             self.state.save_config(config_edit);
         }
     }

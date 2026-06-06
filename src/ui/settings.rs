@@ -20,7 +20,7 @@ pub(super) fn render_settings_tabs(
 ) {
     ui.horizontal_wrapped(|ui| {
         ui.selectable_value(selected, SettingsTab::Setup, "Setup");
-        ui.selectable_value(selected, SettingsTab::Overlay, "Overlay");
+        ui.selectable_value(selected, SettingsTab::Overlay, "Lobby Overlay");
         ui.selectable_value(selected, SettingsTab::Session, "Session");
         ui.selectable_value(selected, SettingsTab::Boost, "Boost");
         ui.selectable_value(selected, SettingsTab::Replays, "Replays");
@@ -62,6 +62,7 @@ pub(super) fn render_update_notice(ui: &mut egui::Ui, state: &Arc<AppState>) {
 
 pub(super) fn render_setup_settings_tab(
     ui: &mut egui::Ui,
+    ctx: &egui::Context,
     state: &Arc<AppState>,
     config_edit: &mut crate::state::Config,
     changed: &mut bool,
@@ -155,121 +156,177 @@ pub(super) fn render_setup_settings_tab(
             }
         }
     });
-}
-
-pub(super) fn render_overlay_settings_tab(
-    ui: &mut egui::Ui,
-    ctx: &egui::Context,
-    state: &Arc<AppState>,
-    config: &crate::state::Config,
-    config_edit: &mut crate::state::Config,
-    changed: &mut bool,
-    is_launched: bool,
-) {
-    ui.group(|ui| {
-        ui.label("Transparency");
-        if ui
-            .add(egui::Slider::new(&mut config_edit.transparency, 0..=255))
-            .changed()
-        {
-            *changed = true;
-        }
-
-        ui.label("HUD Scale");
-        if ui
-            .add(egui::Slider::new(&mut config_edit.ui_scale, 0.5..=2.5))
-            .changed()
-        {
-            *changed = true;
-        }
-
-        ui.horizontal(|ui| {
-            ui.label("Resolution:");
-            let res_text = format!(
-                "{}x{}",
-                config_edit.window_size[0], config_edit.window_size[1]
-            );
-            egui::ComboBox::new("res_presets", "")
-                .selected_text(res_text)
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut config_edit.window_size, [1920.0, 1080.0], "1080p");
-                    ui.selectable_value(&mut config_edit.window_size, [2560.0, 1440.0], "1440p");
-                    ui.selectable_value(&mut config_edit.window_size, [3840.0, 2160.0], "4K");
-                });
-            if config_edit.window_size != config.window_size {
-                *changed = true;
-            }
-        });
-
-        ui.horizontal(|ui| {
-            ui.label("Monitor:");
-            egui::ComboBox::new("monitor_select", "")
-                .selected_text(format!("Monitor {}", config_edit.monitor_index))
-                .show_ui(ui, |ui| {
-                    for i in 0..4 {
-                        ui.selectable_value(
-                            &mut config_edit.monitor_index,
-                            i,
-                            format!("Monitor {}", i),
-                        );
-                    }
-                });
-            if config_edit.monitor_index != config.monitor_index {
-                *changed = true;
-            }
-        });
-
-        if ui
-            .checkbox(&mut config_edit.show_bots, "Show Bots")
-            .changed()
-        {
-            *changed = true;
-        }
-
-        if ui
-            .checkbox(&mut config_edit.show_stats, "Show Player Stats")
-            .changed()
-        {
-            *changed = true;
-        }
-
-        ui.horizontal(|ui| {
-            ui.label("Anchor:");
-            egui::ComboBox::new("anchor_pos", "")
-                .selected_text(format!("{:?}", config_edit.anchor))
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut config_edit.anchor, AnchorPos::TopLeft, "Top Left");
-                    ui.selectable_value(&mut config_edit.anchor, AnchorPos::TopRight, "Top Right");
-                    ui.selectable_value(
-                        &mut config_edit.anchor,
-                        AnchorPos::BottomLeft,
-                        "Bottom Left",
-                    );
-                    ui.selectable_value(
-                        &mut config_edit.anchor,
-                        AnchorPos::BottomRight,
-                        "Bottom Right",
-                    );
-                    ui.selectable_value(
-                        &mut config_edit.anchor,
-                        AnchorPos::CenterRight,
-                        "Center Right",
-                    );
-                });
-            if config_edit.anchor != config.anchor {
-                *changed = true;
-            }
-        });
-    });
 
     ui.add_space(10.0);
     render_hotkey_settings_section(ui, ctx, state, config_edit, changed);
 
     ui.add_space(10.0);
     render_positioning_settings_section(ui, config_edit, changed);
+}
+
+pub(super) fn render_overlay_settings_tab(
+    ui: &mut egui::Ui,
+    _ctx: &egui::Context,
+    state: &Arc<AppState>,
+    config: &crate::state::Config,
+    config_edit: &mut crate::state::Config,
+    changed: &mut bool,
+    _is_launched: bool,
+) {
+    ui.group(|ui| {
+        ui.heading("Lobby Overlay Settings");
+        ui.add_space(6.0);
+
+        ui.columns(2, |columns| {
+            columns[0].vertical(|ui| {
+                ui.label("Transparency");
+                if ui
+                    .add(egui::Slider::new(&mut config_edit.transparency, 0..=255))
+                    .changed()
+                {
+                    *changed = true;
+                }
+
+                ui.add_space(8.0);
+                ui.label("HUD Scale");
+                if ui
+                    .add(egui::Slider::new(&mut config_edit.ui_scale, 0.5..=2.5))
+                    .changed()
+                {
+                    *changed = true;
+                }
+
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.label("Resolution:");
+                    let res_text = format!(
+                        "{}x{}",
+                        config_edit.window_size[0], config_edit.window_size[1]
+                    );
+                    egui::ComboBox::new("res_presets", "")
+                        .selected_text(res_text)
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut config_edit.window_size, [1920.0, 1080.0], "1080p");
+                            ui.selectable_value(&mut config_edit.window_size, [2560.0, 1440.0], "1440p");
+                            ui.selectable_value(&mut config_edit.window_size, [3840.0, 2160.0], "4K");
+                        });
+                    if config_edit.window_size != config.window_size {
+                        *changed = true;
+                    }
+                });
+
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.label("Anchor:");
+                    egui::ComboBox::new("anchor_pos", "")
+                        .selected_text(format!("{:?}", config_edit.anchor))
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut config_edit.anchor, AnchorPos::TopLeft, "Top Left");
+                            ui.selectable_value(&mut config_edit.anchor, AnchorPos::TopRight, "Top Right");
+                            ui.selectable_value(
+                                &mut config_edit.anchor,
+                                AnchorPos::BottomLeft,
+                                "Bottom Left",
+                            );
+                            ui.selectable_value(
+                                &mut config_edit.anchor,
+                                AnchorPos::BottomRight,
+                                "Bottom Right",
+                            );
+                            ui.selectable_value(
+                                &mut config_edit.anchor,
+                                AnchorPos::CenterRight,
+                                "Center Right",
+                            );
+                        });
+                    if config_edit.anchor != config.anchor {
+                        *changed = true;
+                    }
+                });
+            });
+
+            columns[1].vertical(|ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Theme:");
+                    egui::ComboBox::new("lobby_theme", "")
+                        .selected_text(super::lobby_overlay::lobby_theme_label(config_edit.lobby_theme))
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut config_edit.lobby_theme, crate::state::LobbyTheme::Glass, "Glassmorphism");
+                            ui.selectable_value(&mut config_edit.lobby_theme, crate::state::LobbyTheme::Solid, "High-Contrast Solid");
+                            ui.selectable_value(&mut config_edit.lobby_theme, crate::state::LobbyTheme::Modern, "Modern Cyber");
+                            ui.selectable_value(&mut config_edit.lobby_theme, crate::state::LobbyTheme::Minimalist, "Minimalist Floating");
+                        });
+                    if config_edit.lobby_theme != config.lobby_theme {
+                        *changed = true;
+                    }
+                });
+
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.label("Display Mode:");
+                    egui::ComboBox::new("lobby_display_mode", "")
+                        .selected_text(super::lobby_overlay::lobby_display_mode_label(config_edit.lobby_display_mode))
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut config_edit.lobby_display_mode, crate::state::LobbyDisplayMode::Compact, "Compact");
+                            ui.selectable_value(&mut config_edit.lobby_display_mode, crate::state::LobbyDisplayMode::Expanded, "Expanded");
+                        });
+                    if config_edit.lobby_display_mode != config.lobby_display_mode {
+                        *changed = true;
+                    }
+                });
+
+                ui.add_space(8.0);
+                ui.label("X Offset");
+                if ui
+                    .add(egui::Slider::new(&mut config_edit.lobby_offset[0], -800.0..=800.0))
+                    .changed()
+                {
+                    *changed = true;
+                }
+
+                ui.add_space(8.0);
+                ui.label("Y Offset");
+                if ui
+                    .add(egui::Slider::new(&mut config_edit.lobby_offset[1], -800.0..=800.0))
+                    .changed()
+                {
+                    *changed = true;
+                }
+
+                ui.add_space(8.0);
+                if ui
+                    .checkbox(&mut config_edit.show_bots, "Show Bots")
+                    .changed()
+                {
+                    *changed = true;
+                }
+
+                if ui
+                    .checkbox(&mut config_edit.show_stats, "Show Player Stats")
+                    .changed()
+                {
+                    *changed = true;
+                }
+            });
+        });
+    });
 
     ui.add_space(10.0);
-    render_launch_controls(ui, ctx, state, is_launched);
+    ui.group(|ui| {
+        egui::CollapsingHeader::new("Live Preview")
+            .default_open(true)
+            .show(ui, |ui| {
+                ui.add_space(4.0);
+                let preview = super::lobby_overlay::preview_lobby_players(state);
+                super::lobby_overlay::draw_lobby_panel(
+                    ui,
+                    &preview,
+                    config_edit,
+                    true,
+                    Some(config_edit.ui_scale.min(1.4)),
+                );
+            });
+    });
 }
 
 pub(super) fn render_session_settings_tab(
@@ -402,14 +459,18 @@ pub(super) fn render_session_settings_tab(
 
     ui.add_space(10.0);
     ui.group(|ui| {
-        ui.label(egui::RichText::new("Preview").strong());
-        draw_session_panel(
-            ui,
-            &state.session.load(),
-            config_edit.session_overlay_scale.min(1.4),
-            config_edit.session_overlay_display,
-            config_edit.session_overlay_opacity,
-        );
+        egui::CollapsingHeader::new("Preview")
+            .default_open(true)
+            .show(ui, |ui| {
+                ui.add_space(4.0);
+                draw_session_panel(
+                    ui,
+                    &state.session.load(),
+                    config_edit.session_overlay_scale.min(1.4),
+                    config_edit.session_overlay_display,
+                    config_edit.session_overlay_opacity,
+                );
+            });
     });
 }
 
@@ -506,24 +567,27 @@ pub(super) fn render_boost_settings_tab(
 
     ui.add_space(10.0);
     ui.group(|ui| {
-        ui.label(egui::RichText::new("Live Preview").strong());
-        ui.add_space(4.0);
-        let preview = preview_teammates(state);
-        draw_teammate_boost_panel(
-            ui,
-            &preview,
-            0,
-            config_edit.teammate_hud_scale.min(1.4),
-            config_edit.teammate_boost_display,
-        );
-        ui.add_space(6.0);
-        ui.label(
-            egui::RichText::new(
-                "Placement preview is only accurate while the overlay is launched.",
-            )
-            .size(10.0)
-            .color(egui::Color32::from_gray(150)),
-        );
+        egui::CollapsingHeader::new("Live Preview")
+            .default_open(true)
+            .show(ui, |ui| {
+                ui.add_space(4.0);
+                let preview = preview_teammates(state);
+                draw_teammate_boost_panel(
+                    ui,
+                    &preview,
+                    0,
+                    config_edit.teammate_hud_scale.min(1.4),
+                    config_edit.teammate_boost_display,
+                );
+                ui.add_space(6.0);
+                ui.label(
+                    egui::RichText::new(
+                        "Placement preview is only accurate while the overlay is launched.",
+                    )
+                    .size(10.0)
+                    .color(egui::Color32::from_gray(150)),
+                );
+            });
     });
 
     ui.add_space(12.0);
@@ -746,49 +810,62 @@ fn render_positioning_settings_section(
     });
 }
 
-fn render_launch_controls(
+pub(super) fn render_launch_controls(
     ui: &mut egui::Ui,
     ctx: &egui::Context,
     state: &Arc<AppState>,
     is_launched: bool,
+    config_edit: &mut crate::state::Config,
+    changed: &mut bool,
 ) {
-    let btn_text = if is_launched {
-        "Stop Overlay (HUD Active)"
-    } else {
-        "Launch Overlay"
-    };
-    if ui.button(egui::RichText::new(btn_text).heading()).clicked() {
-        let new_val = !is_launched;
-        state.is_launched.store(new_val, Ordering::SeqCst);
-        if new_val {
-            state.is_settings_visible.store(false, Ordering::SeqCst);
-        }
-    }
-
-    ui.add_space(10.0);
-    let is_visible = state.is_visible.load(Ordering::SeqCst);
     ui.horizontal(|ui| {
-        ui.label("HUD Visibility:");
-        if is_visible || is_launched {
-            ui.colored_label(egui::Color32::GREEN, "ACTIVE");
+        let btn_text = if is_launched {
+            "Stop Overlay"
         } else {
-            ui.colored_label(egui::Color32::RED, "HIDDEN (Hold Hotkey)");
+            "Launch Overlay"
+        };
+        if ui.button(egui::RichText::new(btn_text).strong()).clicked() {
+            let new_val = !is_launched;
+            state.is_launched.store(new_val, Ordering::SeqCst);
+            if new_val {
+                state.is_settings_visible.store(false, Ordering::SeqCst);
+            }
         }
-    });
 
-    ui.separator();
-    if ui.button("Reset to Defaults").clicked() {
-        let default_config = crate::state::Config::default();
-        state.save_config(default_config);
-    }
-    if ui.button("Quit").clicked() {
-        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-    }
-    ui.label(
-        egui::RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
-            .size(9.0)
-            .color(egui::Color32::from_gray(100)),
-    );
+        ui.add_space(6.0);
+        let is_visible = state.is_visible.load(Ordering::SeqCst);
+        ui.horizontal(|ui| {
+            ui.label("HUD:");
+            if is_visible || is_launched {
+                ui.colored_label(egui::Color32::GREEN, "ACTIVE");
+            } else {
+                ui.colored_label(egui::Color32::RED, "HIDDEN");
+            }
+        });
+
+        ui.add_space(8.0);
+        if ui
+            .checkbox(&mut config_edit.layout_mode, "Drag Position")
+            .changed()
+        {
+            *changed = true;
+        }
+
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.button("Quit").clicked() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            if ui.button("Reset Config").clicked() {
+                let default_config = crate::state::Config::default();
+                state.save_config(default_config);
+            }
+            ui.label(
+                egui::RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
+                    .size(9.0)
+                    .color(egui::Color32::from_gray(100)),
+            );
+        });
+    });
 }
 
 pub(super) fn render_replays_settings_tab(
