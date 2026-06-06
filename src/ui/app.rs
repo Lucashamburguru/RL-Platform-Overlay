@@ -10,8 +10,9 @@ use super::hotkeys::egui_to_rdev_key;
 use super::lobby_overlay::render_overlay;
 use super::session_hud::render_session_overlay;
 use super::settings::{
-    render_boost_settings_tab, render_overlay_settings_tab, render_session_settings_tab,
-    render_settings_tabs, render_setup_settings_tab, render_update_notice,
+    render_boost_settings_tab, render_overlay_settings_tab, render_replays_settings_tab,
+    render_session_settings_tab, render_settings_tabs, render_setup_settings_tab,
+    render_update_notice,
 };
 
 pub struct MainApp {
@@ -64,6 +65,7 @@ pub(super) enum SettingsTab {
     Overlay,
     Session,
     Boost,
+    Replays,
     Debug,
 }
 
@@ -588,6 +590,9 @@ impl MainApp {
                 &mut changed,
                 self.is_rl_running,
             ),
+            SettingsTab::Replays => {
+                render_replays_settings_tab(ui, &self.state, &mut config_edit, &mut changed)
+            }
             SettingsTab::Debug => render_debug_settings_tab(
                 ui,
                 &self.state,

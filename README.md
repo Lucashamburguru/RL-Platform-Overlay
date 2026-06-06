@@ -27,6 +27,8 @@ You can get the overlay running in less than 2 minutes:
 ## 🎮 Features
 
 * **See Ranks & MMR Instantly**: View the Matchmaking Rating (MMR) and rank brackets for everyone in your lobby (Steam, Epic, PlayStation, Xbox, Switch) directly on your screen—no Alt-Tabbing required.
+* **Ballchasing.com Replay Auto-Uploader**: Automatically uploads your replays to Ballchasing.com immediately after each match ends. Supports bulk uploading of historical files, cloud syncing, cache clearing, and custom visibility preferences (Public, Unlisted, Private).
+* **Hoops Replay Fixer**: Repairs legacy/broken hoops replays by patching old mutator, stadium, and goal volume tags in-place. Automatically saves a `.replay.bak` backup copy before writing.
 * **Teammate Boost HUD**: Keep track of your teammate's boost level in real time with multiple HUD styles, sizes, and layout scale options.
 * **Dynamic Session Tracker**: View your session wins, losses, win rate, win streak, and session age overlaid directly onto your screen.
 * **Free Gold Rush (Alpha Boost)**: Swap Standard Boost for the visual and audio assets of the legendary Gold Rush boost locally with a single click. Includes automated cache verification and safe original asset restoration.

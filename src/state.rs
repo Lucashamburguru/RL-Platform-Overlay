@@ -61,6 +61,11 @@ pub struct Config {
     pub session_manual_position: Option<[f32; 2]>,
     pub layout_mode: bool,
     pub cached_local_player_identity: LocalPlayerIdentity,
+    pub ballchasing_enabled: bool,
+    pub ballchasing_api_key: String,
+    pub ballchasing_visibility: String,
+    pub replays_folder: String,
+    pub uploaded_replays: Vec<String>,
 }
 
 pub fn detect_rocket_league_path() -> Option<String> {
@@ -91,6 +96,70 @@ pub fn detect_rocket_league_path() -> Option<String> {
             ];
             for candidate in candidates {
                 if candidate.join("TAGame").join("CookedPCConsole").exists() {
+                    return Some(candidate.to_string_lossy().into_owned());
+                }
+            }
+        }
+    }
+
+    None
+}
+
+pub fn detect_replays_path() -> Option<String> {
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(user_profile) = env::var_os("USERPROFILE").map(PathBuf::from) {
+            let candidates = [
+                user_profile
+                    .join("Documents")
+                    .join("My Games")
+                    .join("Rocket League")
+                    .join("TAGame")
+                    .join("Demos"),
+                user_profile
+                    .join("Documents")
+                    .join("My Games")
+                    .join("Rocket League")
+                    .join("TAGame")
+                    .join("DemosEpic"),
+                user_profile
+                    .join("OneDrive")
+                    .join("Documents")
+                    .join("My Games")
+                    .join("Rocket League")
+                    .join("TAGame")
+                    .join("Demos"),
+                user_profile
+                    .join("OneDrive")
+                    .join("Documents")
+                    .join("My Games")
+                    .join("Rocket League")
+                    .join("TAGame")
+                    .join("DemosEpic"),
+            ];
+            for candidate in candidates {
+                if candidate.exists() {
+                    return Some(candidate.to_string_lossy().into_owned());
+                }
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        if let Some(home) = env::var_os("HOME").map(PathBuf::from) {
+            let candidates = [
+                home.join(".local/share/Steam/steamapps/compatdata/252950/pfx/drive_c/users/steamuser/Documents/My Games/Rocket League/TAGame/Demos"),
+                home.join(".local/share/Steam/steamapps/compatdata/252950/pfx/drive_c/users/steamuser/Documents/My Games/Rocket League/TAGame/DemosEpic"),
+                home.join(".steam/steam/steamapps/compatdata/252950/pfx/drive_c/users/steamuser/Documents/My Games/Rocket League/TAGame/Demos"),
+                home.join(".steam/steam/steamapps/compatdata/252950/pfx/drive_c/users/steamuser/Documents/My Games/Rocket League/TAGame/DemosEpic"),
+                home.join(".steam/root/steamapps/compatdata/252950/pfx/drive_c/users/steamuser/Documents/My Games/Rocket League/TAGame/Demos"),
+                home.join(".steam/root/steamapps/compatdata/252950/pfx/drive_c/users/steamuser/Documents/My Games/Rocket League/TAGame/DemosEpic"),
+                home.join(".var/app/com.valvesoftware.Steam/data/Steam/steamapps/compatdata/252950/pfx/drive_c/users/steamuser/Documents/My Games/Rocket League/TAGame/Demos"),
+                home.join(".var/app/com.valvesoftware.Steam/data/Steam/steamapps/compatdata/252950/pfx/drive_c/users/steamuser/Documents/My Games/Rocket League/TAGame/DemosEpic"),
+            ];
+            for candidate in candidates {
+                if candidate.exists() {
                     return Some(candidate.to_string_lossy().into_owned());
                 }
             }
@@ -133,6 +202,11 @@ impl Default for Config {
             session_manual_position: None,
             layout_mode: false,
             cached_local_player_identity: LocalPlayerIdentity::default(),
+            ballchasing_enabled: false,
+            ballchasing_api_key: "".to_string(),
+            ballchasing_visibility: "public".to_string(),
+            replays_folder: detect_replays_path().unwrap_or_default(),
+            uploaded_replays: Vec::new(),
         }
     }
 }
@@ -257,6 +331,11 @@ mod tests {
         assert!(!state.update_local_player_identity(first));
         assert!(!state.update_local_player_identity(renamed));
     }
+
+    #[test]
+    fn test_detect_replays_path_runs_without_panic() {
+        let _ = detect_replays_path();
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -372,6 +451,10 @@ pub struct AppState {
     pub session: ArcSwap<SessionState>,
     pub boost_swap_status: Arc<std::sync::Mutex<String>>,
     pub mmr_client: Arc<wreq::Client>,
+    pub ballchasing_status: Arc<std::sync::Mutex<String>>,
+    pub ballchasing_cloud_count: std::sync::atomic::AtomicU32,
+    pub hoops_fixer_status: Arc<std::sync::Mutex<String>>,
+    pub hoops_fixer_logs: Arc<std::sync::Mutex<Vec<String>>>,
 }
 
 impl AppState {
@@ -414,6 +497,10 @@ impl AppState {
             session: ArcSwap::from_pointee(SessionState::default()),
             boost_swap_status: Arc::new(std::sync::Mutex::new("Idle".to_string())),
             mmr_client: Arc::new(mmr_client),
+            ballchasing_status: Arc::new(std::sync::Mutex::new("Idle".to_string())),
+            ballchasing_cloud_count: std::sync::atomic::AtomicU32::new(0),
+            hoops_fixer_status: Arc::new(std::sync::Mutex::new("Idle".to_string())),
+            hoops_fixer_logs: Arc::new(std::sync::Mutex::new(Vec::new())),
         })
     }
 

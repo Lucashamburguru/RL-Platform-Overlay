@@ -1,4 +1,6 @@
+pub mod hoops_fixer;
 pub mod json_utils;
+pub mod replays;
 pub mod stats_api;
 
 mod assets;
@@ -34,6 +36,7 @@ pub async fn run(debug_enabled: bool) -> eframe::Result<()> {
     mmr::start_mmr_fetch_task(state.clone());
     input::start_input_tasks(state.clone());
     update::start_version_check(state.clone());
+    replays::trigger_replay_upload(state.clone(), true);
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()

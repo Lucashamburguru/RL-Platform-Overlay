@@ -2568,6 +2568,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6877bb514081ee2a7ff5ef9de3281f14a4dd4bceac4c09388074a6b5df8a139a"
 
 [[package]]
+name = "mime_guess"
+version = "2.0.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f7c44f8e672c00fe5308fa235f821cb4198414e1c77935c1ab6948d3fd78550e"
+dependencies = [
+ "mime",
+ "unicase",
+]
+
+[[package]]
 name = "mime_guess2"
 version = "2.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3689,7 +3699,7 @@ checksum = "47b34b781b31e5d73e9fbc8689c70551fd1ade9a19e3e28cfec8580a79290cc4"
 
 [[package]]
 name = "rl-platform-overlay"
-version = "0.1.17"
+version = "0.1.18"
 dependencies = [
  "arc-swap",
  "eframe",
@@ -5773,6 +5783,7 @@ dependencies = [
  "log",
  "lru",
  "mime",
+ "mime_guess",
  "percent-encoding",
  "pin-project-lite",
  "serde",

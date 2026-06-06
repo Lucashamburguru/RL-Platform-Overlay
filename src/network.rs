@@ -97,6 +97,14 @@ fn handle_event(state: &Arc<AppState>, json: &Value) {
             session.handle_reset_event();
             state.session.store(Arc::new(session));
             println!("Match ended, clearing player list.");
+
+            if state.config.load().ballchasing_enabled {
+                let state_clone = state.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    crate::replays::trigger_replay_upload(state_clone, false);
+                });
+            }
         }
         _ => println!("Received event: {}", event),
     }
