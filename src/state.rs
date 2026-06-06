@@ -174,10 +174,17 @@ fn load_config_file(path: &PathBuf) -> Result<Config, String> {
 }
 
 fn config_path() -> PathBuf {
-    config_dir().map_or_else(
-        || PathBuf::from("config.toml"),
-        |dir| dir.join("config.toml"),
-    )
+    #[cfg(test)]
+    {
+        std::env::temp_dir().join("rl_platform_overlay_config_test.toml")
+    }
+    #[cfg(not(test))]
+    {
+        config_dir().map_or_else(
+            || PathBuf::from("config.toml"),
+            |dir| dir.join("config.toml"),
+        )
+    }
 }
 
 pub fn config_dir() -> Option<PathBuf> {
@@ -364,6 +371,7 @@ pub struct AppState {
     pub stats_api_setup_result: ArcSwap<StatsApiSetupResult>,
     pub session: ArcSwap<SessionState>,
     pub boost_swap_status: Arc<std::sync::Mutex<String>>,
+    pub mmr_client: Arc<wreq::Client>,
 }
 
 impl AppState {
@@ -375,6 +383,13 @@ impl AppState {
     pub fn new_with_debug(debug_enabled: bool) -> Arc<Self> {
         let (config, config_status) = Config::load();
         let cached_local_player_identity = config.cached_local_player_identity.clone();
+
+        let mmr_client = wreq::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .emulation(wreq_util::Emulation::Chrome128)
+            .build()
+            .expect("Failed to build MMR HTTP client with Chrome emulation");
+
         Arc::new(Self {
             debug_enabled,
             is_visible: AtomicBool::new(false),
@@ -398,6 +413,7 @@ impl AppState {
             stats_api_setup_result: ArcSwap::from_pointee(StatsApiSetupResult::default()),
             session: ArcSwap::from_pointee(SessionState::default()),
             boost_swap_status: Arc::new(std::sync::Mutex::new("Idle".to_string())),
+            mmr_client: Arc::new(mmr_client),
         })
     }
 

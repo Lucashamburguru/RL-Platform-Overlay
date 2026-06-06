@@ -88,16 +88,18 @@ pub async fn fetch_tracker_snapshot(
     let warmup_url = tracker_warmup_url(player);
     // Warmup request to bypass some basic checks or establish cookies
     let _ = client.get(&warmup_url)
-        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
-        .header("Accept-Language", "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7")
+        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36")
+        .header("Accept-Language", "en-US,en;q=0.9")
+        .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8")
         .header("Referer", "https://rocketleague.tracker.network/")
         .send()
         .await;
 
     let api_url = tracker_api_url(player);
     let response = client.get(&api_url)
-        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
-        .header("Accept-Language", "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7")
+        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36")
+        .header("Accept-Language", "en-US,en;q=0.9")
+        .header("Accept", "application/json, text/plain, */*")
         .header("Referer", &warmup_url)
         .send()
         .await
@@ -198,27 +200,20 @@ fn extract_tracker_stats(payload: &Value) -> Option<TrackerSnapshot> {
 
 pub fn start_mmr_fetch_task(state: Arc<AppState>) {
     tokio::spawn(async move {
-        let client = match wreq::Client::builder()
-            .timeout(Duration::from_secs(10))
-            .build()
-        {
-            Ok(c) => c,
-            Err(e) => {
-                let message = format!("Failed to build HTTP client for background MMR: {e}");
-                eprintln!("{message}");
-                let mut local_mmr = (**state.local_mmr.load()).clone();
-                local_mmr.fetching = false;
-                local_mmr.error = message;
-                state.local_mmr.store(Arc::new(local_mmr));
-                return;
-            }
-        };
-
         let mut fetching_players = std::collections::HashSet::new();
         let mut mmr_cache: HashMap<String, MmrCacheEntry> = HashMap::new();
+        let mut cooldown_until = None;
+
         loop {
             // Sleep 5 seconds between fetches to be gentler on tracker.gg rate limits
             sleep(Duration::from_secs(5)).await;
+
+            if let Some(until) = cooldown_until {
+                if Instant::now() < until {
+                    continue;
+                }
+                cooldown_until = None;
+            }
 
             // Find a player that needs their MMR fetched
             let mut target_player = None;
@@ -270,7 +265,7 @@ pub fn start_mmr_fetch_task(state: Arc<AppState>) {
 
             if let Some((name, cache_key, tracker_player)) = target_player {
                 fetching_players.insert(cache_key.clone());
-                match fetch_tracker_snapshot(&client, &tracker_player).await {
+                match fetch_tracker_snapshot(&state.mmr_client, &tracker_player).await {
                     Ok(snapshot) => {
                         mmr_cache.insert(
                             cache_key.clone(),
@@ -305,7 +300,14 @@ pub fn start_mmr_fetch_task(state: Arc<AppState>) {
                             }
                             fetching_players.remove(&cache_key);
                         } else {
-                            // Temporary error (rate limit, timeout). Remove from fetching set to retry later.
+                            // Temporary error (rate limit, timeout, 403, etc.).
+                            if e.contains("429") || e.contains("403") {
+                                eprintln!("MMR fetching rate limited or blocked: {e}. Cooling down for 60 seconds.");
+                                cooldown_until = Some(Instant::now() + Duration::from_secs(60));
+                            } else {
+                                // For other errors (like timeouts), back off for 15 seconds.
+                                cooldown_until = Some(Instant::now() + Duration::from_secs(15));
+                            }
                             fetching_players.remove(&cache_key);
                         }
                     }
@@ -384,14 +386,7 @@ pub fn start_local_mmr_refresh(state: Arc<AppState>) {
     state.local_mmr.store(Arc::new(local_mmr));
 
     runtime.spawn(async move {
-        let result = async {
-            let client = wreq::Client::builder()
-                .timeout(Duration::from_secs(10))
-                .build()
-                .map_err(|e| format!("Failed to build HTTP client: {e}"))?;
-            fetch_tracker_snapshot(&client, &tracker_player).await
-        }
-        .await;
+        let result = fetch_tracker_snapshot(&state.mmr_client, &tracker_player).await;
 
         let mut local_mmr = (**state.local_mmr.load()).clone();
         local_mmr.fetching = false;
@@ -436,7 +431,10 @@ mod tests {
             player_id: "PengiWin".to_string(),
         };
         println!("Fetching MMR for Steam/PengiWin...");
-        let client = wreq::Client::builder().build().unwrap();
+        let client = wreq::Client::builder()
+            .emulation(wreq_util::Emulation::Chrome128)
+            .build()
+            .unwrap();
         match fetch_tracker_snapshot(&client, &player).await {
             Ok(snapshot) => {
                 println!("Got snapshot with {} playlists", snapshot.playlists.len());
@@ -475,7 +473,10 @@ mod tests {
                 player_id: "pengiwin".to_string(),
             },
         ];
-        let client = wreq::Client::builder().build().unwrap();
+        let client = wreq::Client::builder()
+            .emulation(wreq_util::Emulation::Chrome128)
+            .build()
+            .unwrap();
         for player in players {
             println!(
                 "Fetching MMR for {}/{}...",
