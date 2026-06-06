@@ -302,7 +302,9 @@ pub fn start_mmr_fetch_task(state: Arc<AppState>) {
                         } else {
                             // Temporary error (rate limit, timeout, 403, etc.).
                             if e.contains("429") || e.contains("403") {
-                                eprintln!("MMR fetching rate limited or blocked: {e}. Cooling down for 60 seconds.");
+                                eprintln!(
+                                    "MMR fetching rate limited or blocked: {e}. Cooling down for 60 seconds."
+                                );
                                 cooldown_until = Some(Instant::now() + Duration::from_secs(60));
                             } else {
                                 // For other errors (like timeouts), back off for 15 seconds.
