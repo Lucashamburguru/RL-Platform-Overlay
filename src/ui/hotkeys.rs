@@ -3,6 +3,8 @@ use eframe::egui;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
+use super::common::{helper_text, setting_row, settings_section};
+
 pub(super) fn render_hotkey_settings_section(
     ui: &mut egui::Ui,
     ctx: &egui::Context,
@@ -10,13 +12,10 @@ pub(super) fn render_hotkey_settings_section(
     config_edit: &mut crate::state::Config,
     changed: &mut bool,
 ) {
-    ui.group(|ui| {
-        ui.heading("Hotkeys");
-        ui.label(
-            egui::RichText::new("Configure shortcuts to show/hide the HUD overlay in-game or toggle this settings panel.")
-                .size(10.5)
-                .color(egui::Color32::from_gray(160)),
-        );
+    settings_section(ui, "Hotkeys", |ui| {
+        ui.label(helper_text(
+            "Configure shortcuts for showing the lobby overlay in-game and opening this settings panel.",
+        ));
         ui.add_space(6.0);
 
         render_keyboard_hotkey_row(ui, ctx, state, config_edit);
@@ -24,15 +23,14 @@ pub(super) fn render_hotkey_settings_section(
         render_settings_hotkey_row(ui, ctx, state, config_edit);
 
         ui.add_space(4.0);
-        if ui
-            .checkbox(
-                &mut config_edit.hotkey_toggle,
-                "Toggle HUD Visibility (instead of holding key)",
-            )
-            .changed()
-        {
-            *changed = true;
-        }
+        setting_row(ui, "Visibility Mode", |ui| {
+            if ui
+                .checkbox(&mut config_edit.hotkey_toggle, "Toggle instead of hold.")
+                .changed()
+            {
+                *changed = true;
+            }
+        });
     });
 }
 
@@ -42,8 +40,7 @@ fn render_keyboard_hotkey_row(
     state: &Arc<AppState>,
     config_edit: &mut crate::state::Config,
 ) {
-    ui.horizontal(|ui| {
-        ui.label("Show/Hide HUD (Keyboard):");
+    setting_row(ui, "Lobby Overlay Key", |ui| {
         if state.is_recording_kb.load(Ordering::SeqCst) {
             ui.colored_label(egui::Color32::YELLOW, "Listening...");
             if ui.button("Cancel").clicked() {
@@ -70,8 +67,7 @@ fn render_controller_hotkey_row(
     state: &Arc<AppState>,
     config_edit: &crate::state::Config,
 ) {
-    ui.horizontal(|ui| {
-        ui.label("Show/Hide HUD (Controller):");
+    setting_row(ui, "Lobby Overlay Controller", |ui| {
         if state.is_recording_ctrl.load(Ordering::SeqCst) {
             ui.colored_label(egui::Color32::YELLOW, "Listening...");
             if ui.button("Cancel").clicked() {
@@ -94,8 +90,7 @@ fn render_settings_hotkey_row(
     state: &Arc<AppState>,
     config_edit: &mut crate::state::Config,
 ) {
-    ui.horizontal(|ui| {
-        ui.label("Open/Close Settings (Keyboard):");
+    setting_row(ui, "Settings Panel Key", |ui| {
         if state.is_recording_settings.load(Ordering::SeqCst) {
             ui.colored_label(egui::Color32::YELLOW, "Listening...");
             if ui.button("Cancel").clicked() {

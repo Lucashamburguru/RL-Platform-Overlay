@@ -21,7 +21,10 @@ pub(super) fn render_session_overlay(ctx: &egui::Context, state: &Arc<AppState>)
         area.fixed_pos(position)
     } else {
         // Fallback default: Top Left
-        area.anchor(egui::Align2::LEFT_TOP, egui::vec2(24.0, 150.0) * config.session_overlay_scale)
+        area.anchor(
+            egui::Align2::LEFT_TOP,
+            egui::vec2(24.0, 150.0) * config.session_overlay_scale,
+        )
     };
 
     let response = area.show(ctx, |ui| {

@@ -116,7 +116,7 @@ impl eframe::App for MainApp {
         let mut target_size = if is_launched {
             config.window_size
         } else {
-            [720.0, 820.0]
+            [760.0, 820.0]
         };
 
         #[allow(unused_mut)]
@@ -287,8 +287,8 @@ impl eframe::App for MainApp {
                             .resizable(true)
                             .movable(true)
                             .default_pos([16.0, 16.0])
-                            .default_size([450.0, 600.0])
-                            .min_width(420.0)
+                            .default_size([760.0, 720.0])
+                            .min_width(640.0)
                             .min_height(520.0)
                             .constrain_to(ctx.screen_rect().shrink(8.0))
                             .open(&mut settings_open)
@@ -326,34 +326,49 @@ impl eframe::App for MainApp {
                         let mut close_clicked = false;
                         let mut min_clicked = false;
 
-                        let button_rects = ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            let button_style = |ui: &mut egui::Ui, text: &str, hover_color: egui::Color32| -> egui::Response {
-                                let (rect, response) = ui.allocate_exact_size(egui::vec2(28.0, 24.0), egui::Sense::click());
-                                
-                                let bg_color = if response.is_pointer_button_down_on() {
-                                    hover_color.linear_multiply(0.8)
-                                } else if response.hovered() {
-                                    hover_color
-                                } else {
-                                    egui::Color32::TRANSPARENT
-                                };
-                                
-                                ui.painter().rect_filled(rect, 3.0, bg_color);
-                                ui.painter().text(
-                                    rect.center(),
-                                    egui::Align2::CENTER_CENTER,
-                                    text,
-                                    egui::FontId::proportional(11.0),
-                                    if response.hovered() { egui::Color32::WHITE } else { egui::Color32::from_rgb(180, 180, 190) },
-                                );
-                                response
-                            };
+                        let button_rects = ui
+                            .with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                let button_style =
+                                    |ui: &mut egui::Ui,
+                                     text: &str,
+                                     hover_color: egui::Color32|
+                                     -> egui::Response {
+                                        let (rect, response) = ui.allocate_exact_size(
+                                            egui::vec2(28.0, 24.0),
+                                            egui::Sense::click(),
+                                        );
 
-                            let close_resp = button_style(ui, "🗙", egui::Color32::from_rgb(200, 50, 50));
-                            let min_resp = button_style(ui, "🗕", egui::Color32::from_rgb(60, 60, 70));
-                            
-                            (close_resp, min_resp)
-                        }).inner;
+                                        let bg_color = if response.is_pointer_button_down_on() {
+                                            hover_color.linear_multiply(0.8)
+                                        } else if response.hovered() {
+                                            hover_color
+                                        } else {
+                                            egui::Color32::TRANSPARENT
+                                        };
+
+                                        ui.painter().rect_filled(rect, 3.0, bg_color);
+                                        ui.painter().text(
+                                            rect.center(),
+                                            egui::Align2::CENTER_CENTER,
+                                            text,
+                                            egui::FontId::proportional(11.0),
+                                            if response.hovered() {
+                                                egui::Color32::WHITE
+                                            } else {
+                                                egui::Color32::from_rgb(180, 180, 190)
+                                            },
+                                        );
+                                        response
+                                    };
+
+                                let close_resp =
+                                    button_style(ui, "🗙", egui::Color32::from_rgb(200, 50, 50));
+                                let min_resp =
+                                    button_style(ui, "🗕", egui::Color32::from_rgb(60, 60, 70));
+
+                                (close_resp, min_resp)
+                            })
+                            .inner;
 
                         if button_rects.0.clicked() {
                             close_clicked = true;
@@ -366,7 +381,8 @@ impl eframe::App for MainApp {
                             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
                         }
                         if min_clicked {
-                            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                            ui.ctx()
+                                .send_viewport_cmd(egui::ViewportCommand::Minimized(true));
                         }
 
                         // Drag region covers everything except the buttons
@@ -641,7 +657,14 @@ impl MainApp {
         ui.add_space(8.0);
         ui.separator();
         ui.add_space(4.0);
-        render_launch_controls(ui, ctx, &self.state, is_launched, &mut config_edit, &mut changed);
+        render_launch_controls(
+            ui,
+            ctx,
+            &self.state,
+            is_launched,
+            &mut config_edit,
+            &mut changed,
+        );
 
         if changed {
             // Auto-enable launch when drag positioning is turned on
@@ -652,11 +675,13 @@ impl MainApp {
                 }
             }
             // Auto-disable launch when drag positioning is turned off, if it was launched by layout mode
-            else if !config_edit.layout_mode && config.layout_mode {
-                if is_launched && self.launched_by_layout_mode {
-                    self.state.is_launched.store(false, Ordering::SeqCst);
-                    self.launched_by_layout_mode = false;
-                }
+            else if !config_edit.layout_mode
+                && config.layout_mode
+                && is_launched
+                && self.launched_by_layout_mode
+            {
+                self.state.is_launched.store(false, Ordering::SeqCst);
+                self.launched_by_layout_mode = false;
             }
             self.state.save_config(config_edit);
         }

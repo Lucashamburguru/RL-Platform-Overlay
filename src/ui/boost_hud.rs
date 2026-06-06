@@ -109,11 +109,8 @@ pub(super) fn render_teammate_boost(ctx: &egui::Context, state: &Arc<AppState>) 
     );
     let default_offset_x = 110.0;
     let default_offset_y = 180.0;
-    let base_x = screen_rect.max.x
-        - default_offset_x * config.teammate_hud_scale
-        - width;
-    let base_y =
-        screen_rect.max.y - default_offset_y * config.teammate_hud_scale - height;
+    let base_x = screen_rect.max.x - default_offset_x * config.teammate_hud_scale - width;
+    let base_y = screen_rect.max.y - default_offset_y * config.teammate_hud_scale - height;
 
     let position = active_layout_drag_position(ctx, "boost")
         .or_else(|| {

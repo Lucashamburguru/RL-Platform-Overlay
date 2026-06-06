@@ -40,7 +40,7 @@ pub async fn run(debug_enabled: bool) -> eframe::Result<()> {
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([720.0, 820.0])
+            .with_inner_size([760.0, 820.0])
             .with_transparent(true)
             .with_decorations(false)
             .with_title("RL Overlay Settings"),

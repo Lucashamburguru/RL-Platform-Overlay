@@ -8,7 +8,10 @@ use super::app::SettingsTab;
 use super::boost_hud::{
     draw_teammate_boost_panel, preview_teammates, teammate_boost_display_label,
 };
-use super::common::debug_status_row;
+use super::common::{
+    StatusTone, debug_status_row, helper_text, setting_row, settings_section, settings_two_column,
+    status_color, status_text,
+};
 use super::hotkeys::render_hotkey_settings_section;
 use super::mmr_panel::render_local_mmr_panel;
 use super::session_hud::{draw_session_panel, session_display_label};
@@ -19,8 +22,9 @@ pub(super) fn render_settings_tabs(
     debug_enabled: bool,
 ) {
     ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
         ui.selectable_value(selected, SettingsTab::Setup, "Setup");
-        ui.selectable_value(selected, SettingsTab::Overlay, "Lobby Overlay");
+        ui.selectable_value(selected, SettingsTab::Overlay, "Lobby");
         ui.selectable_value(selected, SettingsTab::Session, "Session");
         ui.selectable_value(selected, SettingsTab::Boost, "Boost");
         ui.selectable_value(selected, SettingsTab::Replays, "Replays");
@@ -28,7 +32,7 @@ pub(super) fn render_settings_tabs(
             ui.selectable_value(selected, SettingsTab::Debug, "Debug");
         }
     });
-    ui.separator();
+    ui.add_space(8.0);
 }
 
 pub(super) fn render_update_notice(ui: &mut egui::Ui, state: &Arc<AppState>) {
@@ -68,28 +72,30 @@ pub(super) fn render_setup_settings_tab(
     changed: &mut bool,
     is_rl_running: bool,
 ) {
-    ui.group(|ui| {
-        ui.heading("Stats API Setup");
-        ui.add_space(6.0);
-
-        ui.horizontal(|ui| {
-            ui.label("Rocket League Folder:");
-            if ui
-                .text_edit_singleline(&mut config_edit.rocket_league_path)
-                .changed()
-            {
-                *changed = true;
-            }
-            if ui.button("Auto-detect").clicked()
-                && let Some(path) = crate::state::detect_rocket_league_path()
-            {
-                config_edit.rocket_league_path = path;
-                *changed = true;
-            }
+    settings_section(ui, "Stats API Setup", |ui| {
+        setting_row(ui, "Rocket League Folder", |ui| {
+            ui.horizontal(|ui| {
+                let input_width = (ui.available_width() - 96.0).max(160.0);
+                if ui
+                    .add_sized(
+                        [input_width, 22.0],
+                        egui::TextEdit::singleline(&mut config_edit.rocket_league_path),
+                    )
+                    .changed()
+                {
+                    *changed = true;
+                }
+                if ui.button("Auto-detect").clicked()
+                    && let Some(path) = crate::state::detect_rocket_league_path()
+                {
+                    config_edit.rocket_league_path = path;
+                    *changed = true;
+                }
+            });
         });
 
         let status = crate::setup::inspect_stats_api_setup(&config_edit.rocket_league_path);
-        ui.add_space(6.0);
+        ui.add_space(8.0);
         debug_status_row(ui, "Config File", &status.ini_path);
         debug_status_row(
             ui,
@@ -109,22 +115,26 @@ pub(super) fn render_setup_settings_tab(
         );
 
         if status.configured {
-            ui.colored_label(egui::Color32::from_rgb(100, 220, 100), status.message);
+            status_text(ui, StatusTone::Success, status.message);
         } else if status.exists {
-            ui.colored_label(egui::Color32::from_rgb(220, 190, 90), status.message);
+            status_text(ui, StatusTone::Warning, status.message);
         } else {
-            ui.colored_label(egui::Color32::from_rgb(230, 120, 80), status.message);
+            status_text(ui, StatusTone::Error, status.message);
         }
 
         if is_rl_running {
-            ui.colored_label(
-                egui::Color32::from_rgb(220, 200, 100),
+            status_text(
+                ui,
+                StatusTone::Warning,
                 "Rocket League is running. Restart the game after changing this config.",
             );
         }
 
         ui.add_space(8.0);
-        if ui.button("Enable Stats API").clicked() {
+        if ui
+            .add_sized([140.0, 24.0], egui::Button::new("Enable Stats API"))
+            .clicked()
+        {
             match crate::setup::ensure_stats_api_setup(&config_edit.rocket_league_path) {
                 Ok(result) => state.stats_api_setup_result.store(Arc::new(result)),
                 Err(error) => state.stats_api_setup_result.store(Arc::new(
@@ -139,18 +149,19 @@ pub(super) fn render_setup_settings_tab(
         let result = state.stats_api_setup_result.load();
         if !result.message.is_empty() {
             ui.add_space(6.0);
-            let color = if result.changed {
-                egui::Color32::from_rgb(100, 220, 100)
+            let tone = if result.changed {
+                StatusTone::Success
             } else {
-                egui::Color32::from_gray(180)
+                StatusTone::Neutral
             };
-            ui.colored_label(color, &result.message);
+            status_text(ui, tone, &result.message);
             if let Some(path) = &result.backup_path {
                 debug_status_row(ui, "Backup", path);
             }
             if result.restart_required {
-                ui.colored_label(
-                    egui::Color32::from_rgb(220, 200, 100),
+                status_text(
+                    ui,
+                    StatusTone::Warning,
                     "Restart Rocket League once before expecting the overlay to connect.",
                 );
             }
@@ -170,87 +181,126 @@ pub(super) fn render_overlay_settings_tab(
     changed: &mut bool,
     _is_launched: bool,
 ) {
-    ui.group(|ui| {
-        ui.heading("Lobby Overlay Settings");
-        ui.add_space(6.0);
-
-        ui.columns(2, |columns| {
-            columns[0].vertical(|ui| {
-                ui.label("Transparency");
+    settings_section(ui, "Lobby Overlay Settings", |ui| {
+        settings_two_column(ui, |left, right| {
+            setting_row(left, "Transparency", |ui| {
                 if ui
-                    .add(egui::Slider::new(&mut config_edit.transparency, 0..=255))
+                    .add_sized(
+                        [ui.available_width(), 20.0],
+                        egui::Slider::new(&mut config_edit.transparency, 0..=255),
+                    )
                     .changed()
                 {
                     *changed = true;
                 }
-
-                ui.add_space(8.0);
-                ui.label("HUD Scale");
-                if ui
-                    .add(egui::Slider::new(&mut config_edit.ui_scale, 0.5..=2.5))
-                    .changed()
-                {
-                    *changed = true;
-                }
-
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    ui.label("Resolution:");
-                    let res_text = format!(
-                        "{}x{}",
-                        config_edit.window_size[0], config_edit.window_size[1]
-                    );
-                    egui::ComboBox::new("res_presets", "")
-                        .selected_text(res_text)
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut config_edit.window_size, [1920.0, 1080.0], "1080p");
-                            ui.selectable_value(&mut config_edit.window_size, [2560.0, 1440.0], "1440p");
-                            ui.selectable_value(&mut config_edit.window_size, [3840.0, 2160.0], "4K");
-                        });
-                    if config_edit.window_size != config.window_size {
-                        *changed = true;
-                    }
-                });
             });
 
-            columns[1].vertical(|ui| {
-                ui.horizontal(|ui| {
-                    ui.label("Theme:");
-                    egui::ComboBox::new("lobby_theme", "")
-                        .selected_text(super::lobby_overlay::lobby_theme_label(config_edit.lobby_theme))
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut config_edit.lobby_theme, crate::state::LobbyTheme::Glass, "Glassmorphism");
-                            ui.selectable_value(&mut config_edit.lobby_theme, crate::state::LobbyTheme::Solid, "High-Contrast Solid");
-                            ui.selectable_value(&mut config_edit.lobby_theme, crate::state::LobbyTheme::Modern, "Modern Cyber");
-                            ui.selectable_value(&mut config_edit.lobby_theme, crate::state::LobbyTheme::Minimalist, "Minimalist Floating");
-                        });
-                    if config_edit.lobby_theme != config.lobby_theme {
-                        *changed = true;
-                    }
-                });
+            left.add_space(8.0);
+            setting_row(left, "HUD Scale", |ui| {
+                if ui
+                    .add_sized(
+                        [ui.available_width(), 20.0],
+                        egui::Slider::new(&mut config_edit.ui_scale, 0.5..=2.5),
+                    )
+                    .changed()
+                {
+                    *changed = true;
+                }
+            });
 
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    ui.label("Display Mode:");
-                    egui::ComboBox::new("lobby_display_mode", "")
-                        .selected_text(super::lobby_overlay::lobby_display_mode_label(config_edit.lobby_display_mode))
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut config_edit.lobby_display_mode, crate::state::LobbyDisplayMode::Compact, "Compact");
-                            ui.selectable_value(&mut config_edit.lobby_display_mode, crate::state::LobbyDisplayMode::Expanded, "Expanded");
-                        });
-                    if config_edit.lobby_display_mode != config.lobby_display_mode {
-                        *changed = true;
-                    }
-                });
+            left.add_space(8.0);
+            setting_row(left, "Resolution", |ui| {
+                let res_text = format!(
+                    "{}x{}",
+                    config_edit.window_size[0], config_edit.window_size[1]
+                );
+                egui::ComboBox::new("res_presets", "")
+                    .selected_text(res_text)
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut config_edit.window_size,
+                            [1920.0, 1080.0],
+                            "1080p",
+                        );
+                        ui.selectable_value(
+                            &mut config_edit.window_size,
+                            [2560.0, 1440.0],
+                            "1440p",
+                        );
+                        ui.selectable_value(&mut config_edit.window_size, [3840.0, 2160.0], "4K");
+                    });
+                if config_edit.window_size != config.window_size {
+                    *changed = true;
+                }
+            });
 
-                ui.add_space(8.0);
+            setting_row(right, "Theme", |ui| {
+                egui::ComboBox::new("lobby_theme", "")
+                    .selected_text(super::lobby_overlay::lobby_theme_label(
+                        config_edit.lobby_theme,
+                    ))
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut config_edit.lobby_theme,
+                            crate::state::LobbyTheme::Glass,
+                            "Glassmorphism",
+                        );
+                        ui.selectable_value(
+                            &mut config_edit.lobby_theme,
+                            crate::state::LobbyTheme::Solid,
+                            "High-Contrast Solid",
+                        );
+                        ui.selectable_value(
+                            &mut config_edit.lobby_theme,
+                            crate::state::LobbyTheme::Modern,
+                            "Modern Cyber",
+                        );
+                        ui.selectable_value(
+                            &mut config_edit.lobby_theme,
+                            crate::state::LobbyTheme::Minimalist,
+                            "Minimalist Floating",
+                        );
+                    });
+                if config_edit.lobby_theme != config.lobby_theme {
+                    *changed = true;
+                }
+            });
+
+            right.add_space(8.0);
+            setting_row(right, "Display Mode", |ui| {
+                egui::ComboBox::new("lobby_display_mode", "")
+                    .selected_text(super::lobby_overlay::lobby_display_mode_label(
+                        config_edit.lobby_display_mode,
+                    ))
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut config_edit.lobby_display_mode,
+                            crate::state::LobbyDisplayMode::Compact,
+                            "Compact",
+                        );
+                        ui.selectable_value(
+                            &mut config_edit.lobby_display_mode,
+                            crate::state::LobbyDisplayMode::Expanded,
+                            "Expanded",
+                        );
+                    });
+                if config_edit.lobby_display_mode != config.lobby_display_mode {
+                    *changed = true;
+                }
+            });
+
+            right.add_space(8.0);
+            setting_row(right, "Players", |ui| {
                 if ui
                     .checkbox(&mut config_edit.show_bots, "Show Bots")
                     .changed()
                 {
                     *changed = true;
                 }
+            });
 
+            right.add_space(8.0);
+            setting_row(right, "Stats", |ui| {
                 if ui
                     .checkbox(&mut config_edit.show_stats, "Show Player Stats")
                     .changed()
@@ -259,26 +309,21 @@ pub(super) fn render_overlay_settings_tab(
                 }
             });
         });
-
-        ui.add_space(10.0);
-        render_hotkey_settings_section(ui, ctx, state, config_edit, changed);
     });
 
     ui.add_space(10.0);
-    ui.group(|ui| {
-        egui::CollapsingHeader::new("Live Preview")
-            .default_open(true)
-            .show(ui, |ui| {
-                ui.add_space(4.0);
-                let preview = super::lobby_overlay::preview_lobby_players(state);
-                super::lobby_overlay::draw_lobby_panel(
-                    ui,
-                    &preview,
-                    config_edit,
-                    true,
-                    Some(config_edit.ui_scale.min(1.4)),
-                );
-            });
+    render_hotkey_settings_section(ui, ctx, state, config_edit, changed);
+
+    ui.add_space(10.0);
+    settings_section(ui, "Live Preview", |ui| {
+        let preview = super::lobby_overlay::preview_lobby_players(state);
+        super::lobby_overlay::draw_lobby_panel(
+            ui,
+            &preview,
+            config_edit,
+            true,
+            Some(config_edit.ui_scale.min(1.4)),
+        );
     });
 }
 
@@ -288,9 +333,8 @@ pub(super) fn render_session_settings_tab(
     config_edit: &mut crate::state::Config,
     changed: &mut bool,
 ) {
-    ui.columns(2, |columns| {
-        columns[0].group(|ui| {
-            ui.heading("Session Overlay");
+    settings_two_column(ui, |left, right| {
+        settings_section(left, "Session Overlay", |ui| {
             if ui
                 .checkbox(
                     &mut config_edit.session_overlay_enabled,
@@ -301,8 +345,8 @@ pub(super) fn render_session_settings_tab(
                 *changed = true;
             }
 
-            ui.horizontal(|ui| {
-                ui.label("Display:");
+            ui.add_space(8.0);
+            setting_row(ui, "Display", |ui| {
                 egui::ComboBox::new("session_display", "")
                     .selected_text(session_display_label(config_edit.session_overlay_display))
                     .show_ui(ui, |ui| {
@@ -324,50 +368,46 @@ pub(super) fn render_session_settings_tab(
                 }
             });
 
-            ui.label("Scale");
-            if ui
-                .add(egui::Slider::new(
-                    &mut config_edit.session_overlay_scale,
-                    0.6..=2.5,
-                ))
-                .changed()
-            {
-                *changed = true;
-            }
+            ui.add_space(8.0);
+            setting_row(ui, "Scale", |ui| {
+                if ui
+                    .add_sized(
+                        [ui.available_width(), 20.0],
+                        egui::Slider::new(&mut config_edit.session_overlay_scale, 0.6..=2.5),
+                    )
+                    .changed()
+                {
+                    *changed = true;
+                }
+            });
 
-            ui.label("Opacity");
-            if ui
-                .add(egui::Slider::new(
-                    &mut config_edit.session_overlay_opacity,
-                    40..=255,
-                ))
-                .changed()
-            {
-                *changed = true;
-            }
-
-
+            ui.add_space(8.0);
+            setting_row(ui, "Opacity", |ui| {
+                if ui
+                    .add_sized(
+                        [ui.available_width(), 20.0],
+                        egui::Slider::new(&mut config_edit.session_overlay_opacity, 40..=255),
+                    )
+                    .changed()
+                {
+                    *changed = true;
+                }
+            });
         });
-
-        columns[1].group(|ui| {
+        settings_section(right, "Local MMR", |ui| {
             render_local_mmr_panel(ui, state);
         });
     });
 
     ui.add_space(10.0);
-    ui.group(|ui| {
-        egui::CollapsingHeader::new("Preview")
-            .default_open(true)
-            .show(ui, |ui| {
-                ui.add_space(4.0);
-                draw_session_panel(
-                    ui,
-                    &state.session.load(),
-                    config_edit.session_overlay_scale.min(1.4),
-                    config_edit.session_overlay_display,
-                    config_edit.session_overlay_opacity,
-                );
-            });
+    settings_section(ui, "Preview", |ui| {
+        draw_session_panel(
+            ui,
+            &state.session.load(),
+            config_edit.session_overlay_scale.min(1.4),
+            config_edit.session_overlay_display,
+            config_edit.session_overlay_opacity,
+        );
     });
 }
 
@@ -378,7 +418,7 @@ pub(super) fn render_boost_settings_tab(
     changed: &mut bool,
     is_rl_running: bool,
 ) {
-    ui.group(|ui| {
+    settings_section(ui, "Teammate Boost HUD", |ui| {
         if ui
             .checkbox(
                 &mut config_edit.show_teammate_boost,
@@ -389,9 +429,8 @@ pub(super) fn render_boost_settings_tab(
             *changed = true;
         }
 
-        ui.add_space(5.0);
-        ui.horizontal(|ui| {
-            ui.label("Display:");
+        ui.add_space(8.0);
+        setting_row(ui, "Display", |ui| {
             egui::ComboBox::new("teammate_boost_display", "")
                 .selected_text(teammate_boost_display_label(
                     config_edit.teammate_boost_display,
@@ -423,66 +462,58 @@ pub(super) fn render_boost_settings_tab(
             }
         });
 
-        ui.add_space(5.0);
-        ui.label("Teammate HUD Scale");
-        if ui
-            .add(egui::Slider::new(
-                &mut config_edit.teammate_hud_scale,
-                0.5..=2.5,
-            ))
-            .changed()
-        {
-            *changed = true;
-        }
-
-
+        ui.add_space(8.0);
+        setting_row(ui, "HUD Scale", |ui| {
+            if ui
+                .add_sized(
+                    [ui.available_width(), 20.0],
+                    egui::Slider::new(&mut config_edit.teammate_hud_scale, 0.5..=2.5),
+                )
+                .changed()
+            {
+                *changed = true;
+            }
+        });
     });
 
     ui.add_space(10.0);
-    ui.group(|ui| {
-        egui::CollapsingHeader::new("Live Preview")
-            .default_open(true)
-            .show(ui, |ui| {
-                ui.add_space(4.0);
-                let preview = preview_teammates(state);
-                draw_teammate_boost_panel(
-                    ui,
-                    &preview,
-                    0,
-                    config_edit.teammate_hud_scale.min(1.4),
-                    config_edit.teammate_boost_display,
-                );
-                ui.add_space(6.0);
-                ui.label(
-                    egui::RichText::new(
-                        "Placement preview is only accurate while the overlay is launched.",
-                    )
-                    .size(10.0)
-                    .color(egui::Color32::from_gray(150)),
-                );
-            });
+    settings_section(ui, "Live Preview", |ui| {
+        let preview = preview_teammates(state);
+        draw_teammate_boost_panel(
+            ui,
+            &preview,
+            0,
+            config_edit.teammate_hud_scale.min(1.4),
+            config_edit.teammate_boost_display,
+        );
+        ui.add_space(6.0);
+        ui.label(helper_text(
+            "Placement preview is only accurate while the overlay is launched.",
+        ));
     });
 
     ui.add_space(12.0);
-    ui.group(|ui| {
-        ui.heading("Alpha Boost (Gold Rush) Swap");
-        ui.add_space(6.0);
-
+    settings_section(ui, "Alpha Boost (Gold Rush) Swap", |ui| {
         // 1. Rocket League Folder Path Input
-        ui.horizontal(|ui| {
-            ui.label("Rocket League Folder:");
-            let path_edit = ui.text_edit_singleline(&mut config_edit.rocket_league_path);
-            if path_edit.changed() {
-                *changed = true;
-            }
-            if ui.button("Auto-detect").clicked()
-                && let Some(detected) = crate::state::detect_rocket_league_path()
-            {
-                config_edit.rocket_league_path = detected;
-                *changed = true;
-                let mut status = state.boost_swap_status.lock().unwrap();
-                *status = "Idle".to_string();
-            }
+        setting_row(ui, "Rocket League Folder", |ui| {
+            ui.horizontal(|ui| {
+                let input_width = (ui.available_width() - 96.0).max(160.0);
+                let path_edit = ui.add_sized(
+                    [input_width, 22.0],
+                    egui::TextEdit::singleline(&mut config_edit.rocket_league_path),
+                );
+                if path_edit.changed() {
+                    *changed = true;
+                }
+                if ui.button("Auto-detect").clicked()
+                    && let Some(detected) = crate::state::detect_rocket_league_path()
+                {
+                    config_edit.rocket_league_path = detected;
+                    *changed = true;
+                    let mut status = state.boost_swap_status.lock().unwrap();
+                    *status = "Idle".to_string();
+                }
+            });
         });
 
         // Path validation feedback
@@ -495,13 +526,25 @@ pub(super) fn render_boost_settings_tab(
 
         match path_valid {
             Some(true) => {
-                ui.colored_label(egui::Color32::from_rgb(100, 220, 100), "✔ Valid Rocket League installation found.");
+                status_text(
+                    ui,
+                    StatusTone::Success,
+                    "✔ Valid Rocket League installation found.",
+                );
             }
             Some(false) => {
-                ui.colored_label(egui::Color32::from_rgb(230, 80, 80), "❌ Invalid folder (TAGame/CookedPCConsole not found).");
+                status_text(
+                    ui,
+                    StatusTone::Error,
+                    "❌ Invalid folder (TAGame/CookedPCConsole not found).",
+                );
             }
             None => {
-                ui.colored_label(egui::Color32::from_rgb(220, 200, 100), "⚠ Path unconfigured. Paste path or click Auto-detect.");
+                status_text(
+                    ui,
+                    StatusTone::Warning,
+                    "⚠ Path unconfigured. Paste path or click Auto-detect.",
+                );
             }
         }
 
@@ -511,7 +554,11 @@ pub(super) fn render_boost_settings_tab(
         debug_status_row(
             ui,
             "Backup Metadata",
-            if inspection.metadata_exists { "yes" } else { "no" },
+            if inspection.metadata_exists {
+                "yes"
+            } else {
+                "no"
+            },
         );
         debug_status_row(
             ui,
@@ -523,27 +570,19 @@ pub(super) fn render_boost_settings_tab(
             },
         );
         debug_status_row(ui, "Game Files", inspection.game_file_state.label());
-        ui.label(
-            egui::RichText::new(&inspection.message)
-                .size(10.0)
-                .color(egui::Color32::from_gray(160)),
-        );
+        ui.label(helper_text(&inspection.message));
         ui.add_space(8.0);
 
         // Warning message required by user
-        ui.group(|ui| {
-            ui.horizontal(|ui| {
-                ui.colored_label(
-                    egui::Color32::from_rgb(255, 140, 0), // Dark Orange
-                    "⚠ Warning: Editing game files can technically be bannable (violates ToS). Use at your own risk.",
-                );
-            });
-        });
+        status_text(
+            ui,
+            StatusTone::Warning,
+            "⚠ Warning: Editing game files can technically be bannable (violates ToS). Use at your own risk.",
+        );
 
         ui.add_space(8.0);
 
-        let mut enabled =
-            inspection.game_file_state == crate::assets::BoostGameFileState::Alpha;
+        let mut enabled = inspection.game_file_state == crate::assets::BoostGameFileState::Alpha;
         let can_toggle = matches!(
             inspection.game_file_state,
             crate::assets::BoostGameFileState::Original
@@ -563,7 +602,8 @@ pub(super) fn render_boost_settings_tab(
                 *status = "Error: Configure your Rocket League path first.".to_string();
             } else if path_valid != Some(true) {
                 let mut status = state.boost_swap_status.lock().unwrap();
-                *status = "Error: Invalid Rocket League directory. Check the path and try again.".to_string();
+                *status = "Error: Invalid Rocket League directory. Check the path and try again."
+                    .to_string();
             } else {
                 if enabled {
                     crate::assets::start_apply_alpha_boost(
@@ -580,13 +620,15 @@ pub(super) fn render_boost_settings_tab(
         }
 
         if inspection.game_file_state == crate::assets::BoostGameFileState::Unbacked {
-            ui.colored_label(
-                egui::Color32::from_rgb(220, 200, 100),
+            status_text(
+                ui,
+                StatusTone::Warning,
                 "No backup metadata yet. First apply will back up the current game files as originals.",
             );
         } else if !can_toggle && path_valid == Some(true) {
-            ui.colored_label(
-                egui::Color32::from_rgb(220, 200, 100),
+            status_text(
+                ui,
+                StatusTone::Warning,
                 "Current boost files are not a clean original/Alpha pair. Restore originals before applying.",
             );
         }
@@ -597,9 +639,8 @@ pub(super) fn render_boost_settings_tab(
                 *status = "Error: Configure your Rocket League path first.".to_string();
             } else if path_valid != Some(true) {
                 let mut status = state.boost_swap_status.lock().unwrap();
-                *status =
-                    "Error: Invalid Rocket League directory. Check the path and try again."
-                        .to_string();
+                *status = "Error: Invalid Rocket League directory. Check the path and try again."
+                    .to_string();
             } else {
                 crate::assets::start_restore_standard_boost(
                     state.clone(),
@@ -620,12 +661,9 @@ pub(super) fn render_boost_settings_tab(
                 || status.starts_with("Failed")
                 || status.starts_with("Blocked")
             {
-                ui.colored_label(egui::Color32::from_rgb(230, 80, 80), format!("❌ {status}"));
+                status_text(ui, StatusTone::Error, format!("❌ {status}"));
             } else if status.starts_with("Success") {
-                ui.colored_label(
-                    egui::Color32::from_rgb(100, 225, 100),
-                    format!("✔ {status}"),
-                );
+                status_text(ui, StatusTone::Success, format!("✔ {status}"));
             } else {
                 ui.horizontal(|ui| {
                     ui.add(egui::Spinner::new());
@@ -637,8 +675,9 @@ pub(super) fn render_boost_settings_tab(
         // Game running warning
         if is_rl_running {
             ui.add_space(6.0);
-            ui.colored_label(
-                egui::Color32::from_rgb(220, 200, 100),
+            status_text(
+                ui,
+                StatusTone::Warning,
                 "ℹ Rocket League is currently running. You must restart the game once to see boost changes.",
             );
         }
@@ -650,8 +689,7 @@ fn render_positioning_settings_section(
     config_edit: &mut crate::state::Config,
     changed: &mut bool,
 ) {
-    ui.group(|ui| {
-        ui.heading("Overlay Positioning");
+    settings_section(ui, "Overlay Positioning", |ui| {
         if ui
             .checkbox(&mut config_edit.layout_mode, "Enable Drag Positioning")
             .changed()
@@ -660,8 +698,9 @@ fn render_positioning_settings_section(
         }
 
         if config_edit.layout_mode {
-            ui.colored_label(
-                egui::Color32::from_rgb(220, 200, 100),
+            status_text(
+                ui,
+                StatusTone::Warning,
                 "Drag the visible panels into place. Drag positioning will automatically turn off when settings are closed to restore game click-through.",
             );
         }
@@ -692,12 +731,19 @@ pub(super) fn render_launch_controls(
     changed: &mut bool,
 ) {
     ui.horizontal(|ui| {
+        ui.set_width(ui.available_width());
         let btn_text = if is_launched {
             "Stop Overlay"
         } else {
             "Launch Overlay"
         };
-        if ui.button(egui::RichText::new(btn_text).strong()).clicked() {
+        if ui
+            .add_sized(
+                [124.0, 26.0],
+                egui::Button::new(egui::RichText::new(btn_text).strong()),
+            )
+            .clicked()
+        {
             let new_val = !is_launched;
             state.is_launched.store(new_val, Ordering::SeqCst);
             if new_val {
@@ -705,14 +751,14 @@ pub(super) fn render_launch_controls(
             }
         }
 
-        ui.add_space(6.0);
+        ui.add_space(10.0);
         let is_visible = state.is_visible.load(Ordering::SeqCst);
         ui.horizontal(|ui| {
             ui.label("HUD:");
             if is_visible || is_launched {
-                ui.colored_label(egui::Color32::GREEN, "ACTIVE");
+                ui.colored_label(status_color(StatusTone::Success), "ACTIVE");
             } else {
-                ui.colored_label(egui::Color32::RED, "HIDDEN");
+                ui.colored_label(status_color(StatusTone::Error), "HIDDEN");
             }
         });
 
@@ -725,10 +771,16 @@ pub(super) fn render_launch_controls(
         }
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.button("Quit").clicked() {
+            if ui
+                .add_sized([70.0, 24.0], egui::Button::new("Quit"))
+                .clicked()
+            {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
-            if ui.button("Reset Config").clicked() {
+            if ui
+                .add_sized([96.0, 24.0], egui::Button::new("Reset Config"))
+                .clicked()
+            {
                 let default_config = crate::state::Config::default();
                 state.save_config(default_config);
             }
@@ -747,10 +799,7 @@ pub(super) fn render_replays_settings_tab(
     config_edit: &mut crate::state::Config,
     changed: &mut bool,
 ) {
-    ui.group(|ui| {
-        ui.heading("Ballchasing.com Replay Uploader");
-        ui.add_space(6.0);
-
+    settings_section(ui, "Ballchasing.com Replay Uploader", |ui| {
         if ui
             .checkbox(&mut config_edit.ballchasing_enabled, "Enable Auto-Upload")
             .changed()
@@ -761,16 +810,21 @@ pub(super) fn render_replays_settings_tab(
         ui.add_space(6.0);
 
         // API Key Section
-        ui.horizontal(|ui| {
-            ui.label("API Key:");
-
+        setting_row(ui, "API Key", |ui| {
             let show_key_id = ui.make_persistent_id("show_bc_api_key");
             let mut show_key = ui.data(|d| d.get_temp::<bool>(show_key_id).unwrap_or(false));
 
+            let input_width = (ui.available_width() - 58.0).max(160.0);
             let response = if show_key {
-                ui.text_edit_singleline(&mut config_edit.ballchasing_api_key)
+                ui.add_sized(
+                    [input_width, 22.0],
+                    egui::TextEdit::singleline(&mut config_edit.ballchasing_api_key),
+                )
             } else {
-                ui.add(egui::TextEdit::singleline(&mut config_edit.ballchasing_api_key).password(true))
+                ui.add_sized(
+                    [input_width, 22.0],
+                    egui::TextEdit::singleline(&mut config_edit.ballchasing_api_key).password(true),
+                )
             };
 
             if response.changed() {
@@ -784,21 +838,15 @@ pub(super) fn render_replays_settings_tab(
 
         ui.add_space(4.0);
         ui.horizontal(|ui| {
-            ui.label(
-                egui::RichText::new("Get your API key at:")
-                    .size(10.0)
-                    .color(egui::Color32::from_gray(160)),
-            );
+            ui.label(helper_text("Get your API key at:"));
             ui.hyperlink_to("ballchasing.com/upload", "https://ballchasing.com/upload");
         });
 
         ui.add_space(2.0);
         ui.horizontal(|ui| {
-            ui.label(
-                egui::RichText::new("Free tier quotas: 20 uploads/day, 70/week. To get higher limits, support them on:")
-                    .size(10.0)
-                    .color(egui::Color32::from_gray(160)),
-            );
+            ui.label(helper_text(
+                "Free tier quotas: 20 uploads/day, 70/week. To get higher limits, support them on:",
+            ));
             ui.hyperlink_to("Patreon", "https://www.patreon.com/ballchasing");
         });
 
@@ -806,7 +854,10 @@ pub(super) fn render_replays_settings_tab(
 
         // Verify key button
         let verify_status_id = ui.make_persistent_id("bc_verify_status");
-        let verify_status = ui.data(|d| d.get_temp::<String>(verify_status_id).unwrap_or_else(|| "".to_string()));
+        let verify_status = ui.data(|d| {
+            d.get_temp::<String>(verify_status_id)
+                .unwrap_or_else(|| "".to_string())
+        });
 
         ui.horizontal(|ui| {
             if ui.button("Verify Token").clicked() {
@@ -840,8 +891,7 @@ pub(super) fn render_replays_settings_tab(
         ui.add_space(10.0);
 
         // Visibility Preference
-        ui.horizontal(|ui| {
-            ui.label("Replay Visibility:");
+        setting_row(ui, "Replay Visibility", |ui| {
             egui::ComboBox::new("bc_visibility", "")
                 .selected_text(match config_edit.ballchasing_visibility.as_str() {
                     "public" => "Public",
@@ -850,13 +900,34 @@ pub(super) fn render_replays_settings_tab(
                     _ => "Public",
                 })
                 .show_ui(ui, |ui| {
-                    if ui.selectable_value(&mut config_edit.ballchasing_visibility, "public".to_string(), "Public").clicked() {
+                    if ui
+                        .selectable_value(
+                            &mut config_edit.ballchasing_visibility,
+                            "public".to_string(),
+                            "Public",
+                        )
+                        .clicked()
+                    {
                         *changed = true;
                     }
-                    if ui.selectable_value(&mut config_edit.ballchasing_visibility, "unlisted".to_string(), "Unlisted").clicked() {
+                    if ui
+                        .selectable_value(
+                            &mut config_edit.ballchasing_visibility,
+                            "unlisted".to_string(),
+                            "Unlisted",
+                        )
+                        .clicked()
+                    {
                         *changed = true;
                     }
-                    if ui.selectable_value(&mut config_edit.ballchasing_visibility, "private".to_string(), "Private").clicked() {
+                    if ui
+                        .selectable_value(
+                            &mut config_edit.ballchasing_visibility,
+                            "private".to_string(),
+                            "Private",
+                        )
+                        .clicked()
+                    {
                         *changed = true;
                     }
                 });
@@ -865,18 +936,25 @@ pub(super) fn render_replays_settings_tab(
         ui.add_space(10.0);
 
         // Replays Directory
-        ui.horizontal(|ui| {
-            ui.label("Replay Folder:");
-            if ui
-                .text_edit_singleline(&mut config_edit.replays_folder)
-                .changed()
-            {
-                *changed = true;
-            }
-            if ui.button("Auto-detect").clicked() && let Some(detected) = crate::state::detect_replays_path() {
-                config_edit.replays_folder = detected;
-                *changed = true;
-            }
+        setting_row(ui, "Replay Folder", |ui| {
+            ui.horizontal(|ui| {
+                let input_width = (ui.available_width() - 96.0).max(160.0);
+                if ui
+                    .add_sized(
+                        [input_width, 22.0],
+                        egui::TextEdit::singleline(&mut config_edit.replays_folder),
+                    )
+                    .changed()
+                {
+                    *changed = true;
+                }
+                if ui.button("Auto-detect").clicked()
+                    && let Some(detected) = crate::state::detect_replays_path()
+                {
+                    config_edit.replays_folder = detected;
+                    *changed = true;
+                }
+            });
         });
 
         // Folder Path Validation
@@ -889,20 +967,25 @@ pub(super) fn render_replays_settings_tab(
 
         match path_valid {
             Some(true) => {
-                ui.colored_label(egui::Color32::from_rgb(100, 220, 100), "✔ Valid replay directory.");
+                status_text(ui, StatusTone::Success, "✔ Valid replay directory.");
             }
             Some(false) => {
-                ui.colored_label(egui::Color32::from_rgb(230, 80, 80), "❌ Directory not found.");
+                status_text(ui, StatusTone::Error, "❌ Directory not found.");
             }
             None => {
-                ui.colored_label(egui::Color32::from_rgb(220, 200, 100), "⚠ Path unconfigured. Click Auto-detect.");
+                status_text(
+                    ui,
+                    StatusTone::Warning,
+                    "⚠ Path unconfigured. Click Auto-detect.",
+                );
             }
         }
 
         ui.add_space(6.0);
-        ui.colored_label(
-            egui::Color32::from_rgb(220, 180, 80),
-            "⚠ Note: Bulk uploading is rate-limited (30s delay per file) to respect Ballchasing.com limits."
+        status_text(
+            ui,
+            StatusTone::Warning,
+            "⚠ Note: Bulk uploading is rate-limited (30s delay per file) to respect Ballchasing.com limits.",
         );
         ui.add_space(6.0);
 
@@ -914,17 +997,14 @@ pub(super) fn render_replays_settings_tab(
             // Upload Existing
             let upload_btn = ui.add_enabled(
                 !api_key_empty && !path_invalid,
-                egui::Button::new("Upload Existing Replays")
+                egui::Button::new("Upload Existing Replays"),
             );
             if upload_btn.clicked() {
                 crate::replays::start_bulk_upload_task(state.clone());
             }
 
             // Sync Cache
-            let sync_btn = ui.add_enabled(
-                !api_key_empty,
-                egui::Button::new("Sync Uploaded Cache")
-            );
+            let sync_btn = ui.add_enabled(!api_key_empty, egui::Button::new("Sync Uploaded Cache"));
             if sync_btn.clicked() {
                 crate::replays::start_sync_replays_task(state.clone());
             }
@@ -943,7 +1023,9 @@ pub(super) fn render_replays_settings_tab(
         ui.add_space(8.0);
 
         // Display Cloud Count & Local Cache
-        let cloud_count = state.ballchasing_cloud_count.load(std::sync::atomic::Ordering::SeqCst);
+        let cloud_count = state
+            .ballchasing_cloud_count
+            .load(std::sync::atomic::Ordering::SeqCst);
         if cloud_count > 0 {
             ui.label(format!("Replays on Ballchasing.com: {}", cloud_count));
             ui.add_space(4.0);
@@ -960,7 +1042,7 @@ pub(super) fn render_replays_settings_tab(
                                 ui.label(
                                     egui::RichText::new(filename)
                                         .font(egui::FontId::monospace(9.0))
-                                        .color(egui::Color32::from_gray(160))
+                                        .color(egui::Color32::from_gray(160)),
                                 );
                             }
                         });
@@ -978,27 +1060,23 @@ pub(super) fn render_replays_settings_tab(
             "Idle".to_string()
         };
 
-        ui.horizontal(|ui| {
-            ui.label("Uploader Status:");
-            let color = if current_status.starts_with("Success") {
-                egui::Color32::from_rgb(100, 220, 100)
+        setting_row(ui, "Uploader Status", |ui| {
+            let tone = if current_status.starts_with("Success") {
+                StatusTone::Success
             } else if current_status.starts_with("Error") {
-                egui::Color32::from_rgb(230, 80, 80)
+                StatusTone::Error
             } else if current_status.contains("Uploading") || current_status.contains("Checking") {
-                egui::Color32::from_rgb(220, 200, 100)
+                StatusTone::Warning
             } else {
-                egui::Color32::from_gray(160)
+                StatusTone::Neutral
             };
-            ui.colored_label(color, &current_status);
+            status_text(ui, tone, &current_status);
         });
     });
 
     ui.add_space(10.0);
 
-    ui.group(|ui| {
-        ui.heading("Hoops Replay Fixer");
-        ui.add_space(6.0);
-
+    settings_section(ui, "Hoops Replay Fixer", |ui| {
         ui.label("Fixes legacy/broken Rocket League Hoops replays in your folder by patching old mutator, stadium, and goal volume tags. Backups (.replay.bak) are automatically saved before patching.");
 
         ui.add_space(8.0);
@@ -1015,7 +1093,7 @@ pub(super) fn render_replays_settings_tab(
         ui.horizontal(|ui| {
             let scan_btn = ui.add_enabled(
                 path_valid == Some(true),
-                egui::Button::new("Scan & Fix Replays Folder")
+                egui::Button::new("Scan & Fix Replays Folder"),
             );
             if scan_btn.clicked() {
                 crate::hoops_fixer::start_folder_fix_task(state.clone());
@@ -1023,7 +1101,7 @@ pub(super) fn render_replays_settings_tab(
 
             let restore_btn = ui.add_enabled(
                 path_valid == Some(true),
-                egui::Button::new("Restore Backups")
+                egui::Button::new("Restore Backups"),
             );
             if restore_btn.clicked() {
                 crate::hoops_fixer::start_restore_backups_task(state.clone());
@@ -1031,7 +1109,7 @@ pub(super) fn render_replays_settings_tab(
 
             let delete_btn = ui.add_enabled(
                 path_valid == Some(true),
-                egui::Button::new("Delete Backups")
+                egui::Button::new("Delete Backups"),
             );
             if delete_btn.clicked() {
                 crate::hoops_fixer::start_delete_backups_task(state.clone());
@@ -1046,18 +1124,17 @@ pub(super) fn render_replays_settings_tab(
         };
 
         ui.add_space(6.0);
-        ui.horizontal(|ui| {
-            ui.label("Fixer Status:");
-            let color = if fixer_status.starts_with("Success") {
-                egui::Color32::from_rgb(100, 220, 100)
+        setting_row(ui, "Fixer Status", |ui| {
+            let tone = if fixer_status.starts_with("Success") {
+                StatusTone::Success
             } else if fixer_status.starts_with("Error") {
-                egui::Color32::from_rgb(230, 80, 80)
+                StatusTone::Error
             } else if fixer_status.contains("Scanning") || fixer_status.contains("Checking") {
-                egui::Color32::from_rgb(220, 200, 100)
+                StatusTone::Warning
             } else {
-                egui::Color32::from_gray(160)
+                StatusTone::Neutral
             };
-            ui.colored_label(color, &fixer_status);
+            status_text(ui, tone, &fixer_status);
         });
 
         // Output Logs Box
@@ -1083,7 +1160,7 @@ pub(super) fn render_replays_settings_tab(
                                     egui::Color32::from_rgb(220, 120, 120)
                                 } else {
                                     egui::Color32::from_gray(170)
-                                })
+                                }),
                         );
                     }
                 });

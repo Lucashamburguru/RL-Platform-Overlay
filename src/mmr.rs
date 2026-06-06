@@ -169,12 +169,15 @@ fn extract_tracker_stats(payload: &Value) -> Option<TrackerSnapshot> {
     Some(snapshot)
 }
 
+type CachedTrackerPlayer = Option<(String, TrackerSnapshot)>;
+type PendingTrackerPlayer = Option<(String, String, TrackerPlayer)>;
+
 fn select_next_player(
     players: &HashMap<String, PlayerInfo>,
     mmr_cache: &mut HashMap<String, MmrCacheEntry>,
     fetching_players: &mut std::collections::HashSet<String>,
     failed_fetches: &HashMap<String, Instant>,
-) -> (Option<(String, TrackerSnapshot)>, Option<(String, String, TrackerPlayer)>) {
+) -> (CachedTrackerPlayer, PendingTrackerPlayer) {
     let mut target_player = None;
     let mut cached_player = None;
     for (name, info) in players.iter() {
@@ -183,8 +186,7 @@ fn select_next_player(
             continue;
         }
 
-        let Some((cache_key, tracker_player)) = tracker_player_from_info(name, info)
-        else {
+        let Some((cache_key, tracker_player)) = tracker_player_from_info(name, info) else {
             continue;
         };
 
@@ -327,11 +329,17 @@ pub fn start_mmr_fetch_task(state: Arc<AppState>) {
                                     "MMR fetching rate limited or blocked: {e}. Cooling down for 60 seconds."
                                 );
                                 cooldown_until = Some(Instant::now() + Duration::from_secs(60));
-                                failed_fetches.insert(cache_key.clone(), Instant::now() + Duration::from_secs(300));
+                                failed_fetches.insert(
+                                    cache_key.clone(),
+                                    Instant::now() + Duration::from_secs(300),
+                                );
                             } else {
                                 // For other errors (like timeouts), back off for 5 seconds globally.
                                 cooldown_until = Some(Instant::now() + Duration::from_secs(5));
-                                failed_fetches.insert(cache_key.clone(), Instant::now() + Duration::from_secs(120));
+                                failed_fetches.insert(
+                                    cache_key.clone(),
+                                    Instant::now() + Duration::from_secs(120),
+                                );
                             }
                             fetching_players.remove(&cache_key);
                         }
@@ -646,7 +654,12 @@ mod tests {
         let mut failed_fetches = HashMap::new();
 
         // 1. Select when no cooldowns are active.
-        let (_, target) = select_next_player(&players, &mut mmr_cache, &mut fetching_players, &failed_fetches);
+        let (_, target) = select_next_player(
+            &players,
+            &mut mmr_cache,
+            &mut fetching_players,
+            &failed_fetches,
+        );
         let selected_name = target.unwrap().0;
         assert!(selected_name == "Player1" || selected_name == "Player2");
 
@@ -659,7 +672,12 @@ mod tests {
         failed_fetches.insert(cache_key, Instant::now() + Duration::from_secs(60));
 
         // 3. Select again, the other player must be chosen because the first one is on cooldown.
-        let (_, target2) = select_next_player(&players, &mut mmr_cache, &mut fetching_players, &failed_fetches);
+        let (_, target2) = select_next_player(
+            &players,
+            &mut mmr_cache,
+            &mut fetching_players,
+            &failed_fetches,
+        );
         let second_selected_name = target2.unwrap().0;
         assert_ne!(selected_name, second_selected_name);
         assert!(second_selected_name == "Player1" || second_selected_name == "Player2");

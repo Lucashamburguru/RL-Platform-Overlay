@@ -15,20 +15,26 @@ pub(super) fn preview_lobby_players(state: &Arc<AppState>) -> Vec<PlayerInfo> {
 
     if lobby_players.is_empty() {
         let mut playlists_local = HashMap::new();
-        playlists_local.insert(11, crate::mmr::TrackerPlaylistSnapshot {
-            name: "Ranked Doubles 2v2".to_string(),
-            rating: 1150,
-            matches: 120,
-            tier_name: "Champion I".to_string(),
-        });
+        playlists_local.insert(
+            11,
+            crate::mmr::TrackerPlaylistSnapshot {
+                name: "Ranked Doubles 2v2".to_string(),
+                rating: 1150,
+                matches: 120,
+                tier_name: "Champion I".to_string(),
+            },
+        );
 
         let mut playlists_opp = HashMap::new();
-        playlists_opp.insert(11, crate::mmr::TrackerPlaylistSnapshot {
-            name: "Ranked Doubles 2v2".to_string(),
-            rating: 1045,
-            matches: 85,
-            tier_name: "Diamond II".to_string(),
-        });
+        playlists_opp.insert(
+            11,
+            crate::mmr::TrackerPlaylistSnapshot {
+                name: "Ranked Doubles 2v2".to_string(),
+                rating: 1045,
+                matches: 85,
+                tier_name: "Diamond II".to_string(),
+            },
+        );
 
         lobby_players = vec![
             PlayerInfo {
@@ -98,7 +104,10 @@ pub(super) fn render_overlay(ctx: &egui::Context, state: &Arc<AppState>) {
         area.fixed_pos(normalized_to_pos(ctx, position))
     } else {
         // Fallback default: Center Right
-        area.anchor(egui::Align2::RIGHT_CENTER, egui::vec2(-20.0, 0.0) * config.ui_scale)
+        area.anchor(
+            egui::Align2::RIGHT_CENTER,
+            egui::vec2(-20.0, 0.0) * config.ui_scale,
+        )
     };
 
     let area_response = area.show(ctx, |ui| {
@@ -135,7 +144,10 @@ pub(super) fn draw_lobby_panel(
     let (fill, stroke) = match config.lobby_theme {
         crate::state::LobbyTheme::Glass => (
             egui::Color32::from_rgba_unmultiplied(20, 20, 25, config.transparency),
-            egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(255, 255, 255, 20)),
+            egui::Stroke::new(
+                1.0,
+                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 20),
+            ),
         ),
         crate::state::LobbyTheme::Solid => (
             egui::Color32::from_rgba_unmultiplied(10, 10, 12, 255),
@@ -145,10 +157,7 @@ pub(super) fn draw_lobby_panel(
             egui::Color32::from_rgba_unmultiplied(12, 14, 18, config.transparency.max(220)),
             egui::Stroke::new(1.2, egui::Color32::from_rgba_unmultiplied(0, 176, 255, 140)),
         ),
-        crate::state::LobbyTheme::Minimalist => (
-            egui::Color32::TRANSPARENT,
-            egui::Stroke::NONE,
-        ),
+        crate::state::LobbyTheme::Minimalist => (egui::Color32::TRANSPARENT, egui::Stroke::NONE),
     };
 
     let frame = egui::Frame::default()
@@ -158,6 +167,12 @@ pub(super) fn draw_lobby_panel(
         .inner_margin(8.0 * scale);
 
     frame.show(ui, |ui| {
+        let min_content_width = match config.lobby_display_mode {
+            crate::state::LobbyDisplayMode::Compact => 190.0 * scale,
+            crate::state::LobbyDisplayMode::Expanded => 230.0 * scale,
+        };
+        ui.set_min_width(min_content_width);
+
         ui.vertical(|ui| {
             ui.horizontal(|ui| {
                 ui.label(
@@ -186,8 +201,7 @@ pub(super) fn draw_lobby_panel(
                 .iter()
                 .filter(|p| config.show_bots || !p.is_bot)
                 .collect();
-            sorted_players
-                .sort_by(|a, b| a.team.cmp(&b.team).then_with(|| a.name.cmp(&b.name)));
+            sorted_players.sort_by(|a, b| a.team.cmp(&b.team).then_with(|| a.name.cmp(&b.name)));
 
             if sorted_players.is_empty() {
                 ui.label(
@@ -200,9 +214,9 @@ pub(super) fn draw_lobby_panel(
                 for p in sorted_players {
                     let team_color = if p.team == 0 {
                         egui::Color32::from_rgb(0, 212, 255)
-                      } else {
+                    } else {
                         egui::Color32::from_rgb(255, 140, 0)
-                      };
+                    };
 
                     ui.horizontal(|ui| {
                         // Vertical Team Accent
@@ -214,8 +228,7 @@ pub(super) fn draw_lobby_panel(
                             egui::vec2(2.5 * scale, accent_height),
                             egui::Sense::hover(),
                         );
-                        ui.painter()
-                            .rect_filled(rect, 1.5 * scale, team_color);
+                        ui.painter().rect_filled(rect, 1.5 * scale, team_color);
 
                         ui.add_space(4.0 * scale);
 
@@ -300,52 +313,60 @@ pub(super) fn draw_lobby_panel(
                             });
                         }
 
-                        ui.with_layout(
-                            egui::Layout::right_to_left(egui::Align::Center),
-                            |ui| {
-                                // Platform Icon on the right
-                                let icon_source = if p.is_bot {
-                                    egui::include_image!("../../assets/bot.png")
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            // Platform Icon on the right
+                            let icon_source = if p.is_bot {
+                                egui::include_image!("../../assets/bot.png")
+                            } else {
+                                let plat = p.platform.to_lowercase();
+                                if plat.contains("steam") {
+                                    egui::include_image!("../../assets/steam.png")
+                                } else if plat.contains("epic") {
+                                    egui::include_image!("../../assets/epic.png")
+                                } else if plat.contains("xbox") || plat.contains("xbl") {
+                                    egui::include_image!("../../assets/xbox.png")
+                                } else if plat.contains("playstation") || plat.contains("ps") {
+                                    egui::include_image!("../../assets/ps.png")
+                                } else if plat.contains("switch") || plat.contains("nintendo") {
+                                    egui::include_image!("../../assets/switch.png")
                                 } else {
-                                    let plat = p.platform.to_lowercase();
-                                    if plat.contains("steam") {
-                                        egui::include_image!("../../assets/steam.png")
-                                    } else if plat.contains("epic") {
-                                        egui::include_image!("../../assets/epic.png")
-                                    } else if plat.contains("xbox") || plat.contains("xbl")
-                                    {
-                                        egui::include_image!("../../assets/xbox.png")
-                                    } else if plat.contains("playstation")
-                                        || plat.contains("ps")
-                                    {
-                                        egui::include_image!("../../assets/ps.png")
-                                    } else if plat.contains("switch")
-                                        || plat.contains("nintendo")
-                                    {
-                                        egui::include_image!("../../assets/switch.png")
-                                    } else {
-                                        egui::include_image!("../../assets/bot.png")
-                                    }
-                                };
-
-                                ui.add(
-                                    egui::Image::new(icon_source)
-                                        .max_width(10.0 * scale)
-                                        .maintain_aspect_ratio(true),
-                                );
-
-                                if config.lobby_display_mode == crate::state::LobbyDisplayMode::Expanded {
-                                    ui.add_space(4.0 * scale);
-                                    ui.label(
-                                        egui::RichText::new(&p.platform)
-                                            .size(8.5 * scale)
-                                            .color(egui::Color32::from_gray(160)),
-                                    );
+                                    egui::include_image!("../../assets/bot.png")
                                 }
+                            };
 
-                                if config.show_stats {
-                                    ui.add_space(6.0 * scale);
-                                    if config.lobby_display_mode == crate::state::LobbyDisplayMode::Compact {
+                            ui.add(
+                                egui::Image::new(icon_source)
+                                    .max_width(10.0 * scale)
+                                    .maintain_aspect_ratio(true),
+                            );
+
+                            if config.lobby_display_mode == crate::state::LobbyDisplayMode::Expanded
+                            {
+                                ui.add_space(4.0 * scale);
+                                ui.label(
+                                    egui::RichText::new(&p.platform)
+                                        .size(8.5 * scale)
+                                        .color(egui::Color32::from_gray(160)),
+                                );
+                            }
+
+                            if config.show_stats {
+                                ui.add_space(6.0 * scale);
+                                if config.lobby_display_mode
+                                    == crate::state::LobbyDisplayMode::Compact
+                                {
+                                    ui.label(
+                                        egui::RichText::new(format!("{}%", p.boost))
+                                            .size(10.0 * scale)
+                                            .color(if p.boost > 50 {
+                                                egui::Color32::from_rgb(255, 255, 100)
+                                            } else {
+                                                egui::Color32::from_rgb(255, 150, 50)
+                                            })
+                                            .strong(),
+                                    );
+                                } else {
+                                    ui.vertical(|ui| {
                                         ui.label(
                                             egui::RichText::new(format!("{}%", p.boost))
                                                 .size(10.0 * scale)
@@ -356,31 +377,18 @@ pub(super) fn draw_lobby_panel(
                                                 })
                                                 .strong(),
                                         );
-                                    } else {
-                                        ui.vertical(|ui| {
-                                            ui.label(
-                                                egui::RichText::new(format!("{}%", p.boost))
-                                                    .size(10.0 * scale)
-                                                    .color(if p.boost > 50 {
-                                                        egui::Color32::from_rgb(255, 255, 100)
-                                                    } else {
-                                                        egui::Color32::from_rgb(255, 150, 50)
-                                                    })
-                                                    .strong(),
-                                            );
-                                            ui.label(
-                                                egui::RichText::new(format!(
-                                                    "S:{} G:{} Sv:{}",
-                                                    p.score, p.goals, p.saves
-                                                ))
-                                                .size(7.0 * scale)
-                                                .color(egui::Color32::from_gray(120)),
-                                            );
-                                        });
-                                    }
+                                        ui.label(
+                                            egui::RichText::new(format!(
+                                                "S:{} G:{} Sv:{}",
+                                                p.score, p.goals, p.saves
+                                            ))
+                                            .size(7.0 * scale)
+                                            .color(egui::Color32::from_gray(120)),
+                                        );
+                                    });
                                 }
-                            },
-                        );
+                            }
+                        });
                     });
                     ui.add_space(1.0 * scale);
                 }
