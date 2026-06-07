@@ -236,6 +236,10 @@ pub fn start_mmr_fetch_task(state: Arc<AppState>) {
                 cooldown_until = None;
             }
 
+            if !state.config.load().show_lobby_ranks {
+                continue;
+            }
+
             // Find a player that needs their MMR fetched
             let (cached_player, target_player) = {
                 let players = state.players.load();
@@ -380,6 +384,9 @@ fn tracker_player_from_info(name: &str, info: &PlayerInfo) -> Option<(String, Tr
 }
 
 pub fn start_local_mmr_refresh(state: Arc<AppState>) {
+    if !state.config.load().show_lobby_ranks {
+        return;
+    }
     let current_state = state.local_mmr.load();
     if current_state.fetching {
         return;
@@ -681,5 +688,27 @@ mod tests {
         let second_selected_name = target2.unwrap().0;
         assert_ne!(selected_name, second_selected_name);
         assert!(second_selected_name == "Player1" || second_selected_name == "Player2");
+    }
+
+    #[test]
+    fn local_mmr_refresh_skips_when_show_lobby_ranks_is_false() {
+        let state = AppState::new();
+        let mut config = (**state.config.load()).clone();
+        config.show_lobby_ranks = false;
+        state.config.store(Arc::new(config));
+
+        state
+            .local_player_identity
+            .store(Arc::new(LocalPlayerIdentity {
+                name: "Me".to_string(),
+                primary_id: "Steam|76561198000000000|0".to_string(),
+                platform: "Steam".to_string(),
+            }));
+
+        start_local_mmr_refresh(state.clone());
+
+        let local_mmr = state.local_mmr.load();
+        assert!(!local_mmr.fetching);
+        assert!(local_mmr.error.is_empty());
     }
 }

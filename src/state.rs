@@ -51,6 +51,8 @@ pub struct Config {
     pub hotkey_toggle: bool,
     pub show_stats: bool,
     pub show_teammate_boost: bool,
+    pub show_lobby_matches: bool,
+    pub show_lobby_ranks: bool,
     pub teammate_hud_scale: f32,
     pub teammate_boost_display: TeammateBoostDisplay,
     pub rocket_league_path: String,
@@ -189,6 +191,8 @@ impl Default for Config {
             hotkey_toggle: false,
             show_stats: true,
             show_teammate_boost: false,
+            show_lobby_matches: false,
+            show_lobby_ranks: true,
             teammate_hud_scale: 2.2,
             teammate_boost_display: TeammateBoostDisplay::Bars,
             rocket_league_path,
@@ -403,6 +407,9 @@ pub struct PlayerInfo {
     pub score: u32,
     pub goals: u32,
     pub saves: u32,
+    pub touches: u32,
+    pub car_touches: u32,
+    pub demos: u32,
     pub mmr: Option<TrackerSnapshot>,
 }
 

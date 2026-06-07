@@ -308,6 +308,26 @@ pub(super) fn render_overlay_settings_tab(
                     *changed = true;
                 }
             });
+
+            right.add_space(8.0);
+            setting_row(right, "Matches", |ui| {
+                if ui
+                    .checkbox(&mut config_edit.show_lobby_matches, "Show Match Counts")
+                    .changed()
+                {
+                    *changed = true;
+                }
+            });
+
+            right.add_space(8.0);
+            setting_row(right, "Ranks", |ui| {
+                if ui
+                    .checkbox(&mut config_edit.show_lobby_ranks, "Show Ranks & MMR")
+                    .changed()
+                {
+                    *changed = true;
+                }
+            });
         });
     });
 
@@ -322,6 +342,8 @@ pub(super) fn render_overlay_settings_tab(
             &preview,
             config_edit,
             true,
+            None,
+            None,
             Some(config_edit.ui_scale.min(1.4)),
         );
     });

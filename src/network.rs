@@ -188,6 +188,10 @@ fn handle_update_state(state: &Arc<AppState>, data: &Value) {
             let score = number_field(p, &["Score", "score"]).unwrap_or(0) as u32;
             let goals = number_field(p, &["Goals", "goals"]).unwrap_or(0) as u32;
             let saves = number_field(p, &["Saves", "saves"]).unwrap_or(0) as u32;
+            let touches = number_field(p, &["Touches", "touches"]).unwrap_or(0) as u32;
+            let car_touches =
+                number_field(p, &["CarTouches", "carTouches", "car_touches"]).unwrap_or(0) as u32;
+            let demos = number_field(p, &["Demos", "demos"]).unwrap_or(0) as u32;
 
             // Preserve MMR if we already have it
             let previous_players = state.players.load();
@@ -208,6 +212,9 @@ fn handle_update_state(state: &Arc<AppState>, data: &Value) {
                     score,
                     goals,
                     saves,
+                    touches,
+                    car_touches,
+                    demos,
                     mmr,
                 },
             );
