@@ -10,6 +10,7 @@ monitor_index = 0
 hotkey_kb = "Backspace"
 hotkey_ctrl = "Select"
 hotkey_settings = "F1"
+hotkey_launch = "F4"
 hotkey_toggle = false
 show_stats = true
 show_teammate_boost = false
@@ -22,6 +23,7 @@ alpha_boost_enabled = false
 session_overlay_enabled = false
 session_overlay_scale = 1.4
 session_overlay_opacity = 170
+session_overlay_follow_lobby_hotkey = false
 session_overlay_anchor = "TopLeft"
 session_overlay_offset = [
     24.0,

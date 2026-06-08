@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 const SETTINGS_TOGGLE_DEBOUNCE_MS: u128 = 200;
+const LAUNCH_TOGGLE_DEBOUNCE_MS: u128 = 200;
 
 pub fn hotkey_debug_log_path() -> PathBuf {
     config_dir()
@@ -49,6 +50,32 @@ pub fn toggle_settings_hotkey(state: &Arc<AppState>, source: &str) {
         !current
     ));
     println!("Settings menu visibility toggled to: {}", !current);
+}
+
+pub fn toggle_launch_hotkey(state: &Arc<AppState>, source: &str) {
+    let event_ms = crate::stats_api::now_ms();
+    let last = state.last_launch_hotkey_unix_ms.load(Ordering::SeqCst) as u128;
+    let elapsed = event_ms.saturating_sub(last);
+    if elapsed < LAUNCH_TOGGLE_DEBOUNCE_MS {
+        append_hotkey_debug_log(format!(
+            "launch_toggle_ignored_duplicate source={source} elapsed_ms={elapsed}"
+        ));
+        return;
+    }
+
+    state
+        .last_launch_hotkey_unix_ms
+        .store(event_ms as u64, Ordering::SeqCst);
+    let current = state.is_launched.load(Ordering::SeqCst);
+    let new = !current;
+    state.is_launched.store(new, Ordering::SeqCst);
+    if new {
+        state.is_settings_visible.store(false, Ordering::SeqCst);
+    }
+    append_hotkey_debug_log(format!(
+        "launch_toggle source={source} current={current} new={new}"
+    ));
+    println!("Overlay launched toggled to: {new}");
 }
 
 pub fn start_input_tasks(state: Arc<AppState>) {
@@ -162,6 +189,13 @@ pub fn start_input_tasks(state: Arc<AppState>) {
                         .store(false, Ordering::SeqCst);
                     println!("Settings hotkey updated to: {:?}", key);
                     append_hotkey_debug_log(format!("record_settings_hotkey key={key_debug}"));
+                } else if state_kb.is_recording_launch.load(Ordering::SeqCst) {
+                    let mut new_config = (**state_kb.config.load()).clone();
+                    new_config.hotkey_launch = key_debug.clone();
+                    state_kb.save_config(new_config);
+                    state_kb.is_recording_launch.store(false, Ordering::SeqCst);
+                    println!("Launch hotkey updated to: {:?}", key);
+                    append_hotkey_debug_log(format!("record_launch_hotkey key={key_debug}"));
                 } else {
                     let config = state_kb.config.load();
                     let key_str = key_debug;
@@ -200,6 +234,10 @@ pub fn start_input_tasks(state: Arc<AppState>) {
                     // Handle Settings Toggle Hotkey
                     if first_press && key_str == config.hotkey_settings {
                         toggle_settings_hotkey(&state_kb, "rdev");
+                    }
+
+                    if first_press && key_str == config.hotkey_launch {
+                        toggle_launch_hotkey(&state_kb, "rdev");
                     }
                 }
             }

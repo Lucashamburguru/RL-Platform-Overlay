@@ -83,10 +83,12 @@ impl eframe::App for MainApp {
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let is_launched = self.state.is_launched.load(Ordering::SeqCst);
-        let show_settings = self.state.is_settings_visible.load(Ordering::SeqCst)
-            || self.state.is_recording_kb.load(Ordering::SeqCst)
+        let is_recording_any = self.state.is_recording_kb.load(Ordering::SeqCst)
             || self.state.is_recording_ctrl.load(Ordering::SeqCst)
-            || self.state.is_recording_settings.load(Ordering::SeqCst);
+            || self.state.is_recording_settings.load(Ordering::SeqCst)
+            || self.state.is_recording_launch.load(Ordering::SeqCst);
+        let show_settings =
+            self.state.is_settings_visible.load(Ordering::SeqCst) || is_recording_any;
 
         // Auto-disable drag positioning when settings are closed or overlay is stopped to ensure click-through is restored
         let mut config = self.state.config.load();
@@ -101,9 +103,13 @@ impl eframe::App for MainApp {
             }
         }
 
-        let show_hud =
-            is_launched && (self.state.is_visible.load(Ordering::SeqCst) || config.layout_mode);
-        let show_session_overlay = is_launched && config.session_overlay_enabled;
+        let lobby_hotkey_visible = self.state.is_visible.load(Ordering::SeqCst);
+        let show_hud = is_launched && (lobby_hotkey_visible || config.layout_mode);
+        let show_session_overlay = is_launched
+            && config.session_overlay_enabled
+            && (!config.session_overlay_follow_lobby_hotkey
+                || lobby_hotkey_visible
+                || config.layout_mode);
         let show_boost_position_preview =
             (is_launched && config.show_teammate_boost && config.layout_mode)
                 || (show_settings
@@ -202,10 +208,11 @@ impl eframe::App for MainApp {
 
                     if self.last_logged_show_settings != Some(show_settings) {
                         crate::input::append_hotkey_debug_log(format!(
-                            "ui_show_settings visible={show_settings} launched={is_launched} recording_kb={} recording_ctrl={} recording_settings={}",
+                            "ui_show_settings visible={show_settings} launched={is_launched} recording_kb={} recording_ctrl={} recording_settings={} recording_launch={}",
                             self.state.is_recording_kb.load(Ordering::SeqCst),
                             self.state.is_recording_ctrl.load(Ordering::SeqCst),
-                            self.state.is_recording_settings.load(Ordering::SeqCst)
+                            self.state.is_recording_settings.load(Ordering::SeqCst),
+                            self.state.is_recording_launch.load(Ordering::SeqCst)
                         ));
                         self.last_logged_show_settings = Some(show_settings);
                     }
@@ -251,33 +258,43 @@ impl eframe::App for MainApp {
                     }
 
                     let settings_hotkey = config.hotkey_settings.clone();
+                    let launch_hotkey = config.hotkey_launch.clone();
                     let hud_hotkey = config.hotkey_kb.clone();
                     let hotkey_toggle = config.hotkey_toggle;
-                    ctx.input(|i| {
-                        for event in &i.events {
-                            if let egui::Event::Key { key, pressed, .. } = event
-                                && let Some(name) = egui_to_rdev_key(*key)
-                            {
-                                if *pressed && name == settings_hotkey {
-                                    crate::input::append_hotkey_debug_log(format!(
-                                        "egui_keypress key={name} settings_match=true"
-                                    ));
-                                    crate::input::toggle_settings_hotkey(&self.state, "egui");
-                                }
+                    if !is_recording_any {
+                        ctx.input(|i| {
+                            for event in &i.events {
+                                if let egui::Event::Key { key, pressed, .. } = event
+                                    && let Some(name) = egui_to_rdev_key(*key)
+                                {
+                                    if *pressed && name == settings_hotkey {
+                                        crate::input::append_hotkey_debug_log(format!(
+                                            "egui_keypress key={name} settings_match=true"
+                                        ));
+                                        crate::input::toggle_settings_hotkey(&self.state, "egui");
+                                    }
 
-                                if show_settings && name == hud_hotkey {
-                                    if hotkey_toggle {
-                                        if *pressed {
-                                            let curr = self.state.is_visible.load(Ordering::SeqCst);
-                                            self.state.is_visible.store(!curr, Ordering::SeqCst);
+                                    if *pressed && name == launch_hotkey {
+                                        crate::input::toggle_launch_hotkey(&self.state, "egui");
+                                    }
+
+                                    if show_settings && name == hud_hotkey {
+                                        if hotkey_toggle {
+                                            if *pressed {
+                                                let curr =
+                                                    self.state.is_visible.load(Ordering::SeqCst);
+                                                self.state
+                                                    .is_visible
+                                                    .store(!curr, Ordering::SeqCst);
+                                            }
+                                        } else {
+                                            self.state.is_visible.store(*pressed, Ordering::SeqCst);
                                         }
-                                    } else {
-                                        self.state.is_visible.store(*pressed, Ordering::SeqCst);
                                     }
                                 }
                             }
-                        }
-                    });
+                        });
+                    }
 
                     // Float settings Window over overlay
                     if show_settings {
@@ -439,6 +456,22 @@ impl eframe::App for MainApp {
                             }
                         });
                     });
+            }
+
+            if !is_recording_any {
+                let launch_hotkey = config.hotkey_launch.clone();
+                ctx.input(|i| {
+                    for event in &i.events {
+                        if let egui::Event::Key {
+                            key, pressed: true, ..
+                        } = event
+                            && let Some(name) = egui_to_rdev_key(*key)
+                            && name == launch_hotkey
+                        {
+                            crate::input::toggle_launch_hotkey(&self.state, "egui");
+                        }
+                    }
+                });
             }
         }
 

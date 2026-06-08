@@ -62,11 +62,64 @@ fn tracker_api_url(player: &TrackerPlayer) -> String {
     )
 }
 
+pub async fn resolve_xuid_to_gamertag(client: &wreq::Client, xuid: &str) -> Result<String, String> {
+    let url = format!("https://api.geysermc.org/v2/xbox/gamertag/{}", xuid);
+    let response = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("XUID resolution request failed: {}", e))?;
+
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!(
+            "XUID resolution returned non-200 status: {}",
+            status
+        ));
+    }
+
+    #[derive(Deserialize)]
+    struct GeyserResponse {
+        gamertag: String,
+    }
+
+    let text = response
+        .text()
+        .await
+        .map_err(|e| format!("decode error: {}", e))?;
+
+    let res: GeyserResponse = serde_json::from_str(&text)
+        .map_err(|e| format!("Failed to parse Geyser response: {}", e))?;
+
+    Ok(res.gamertag)
+}
+
 pub async fn fetch_tracker_snapshot(
     client: &wreq::Client,
     player: &TrackerPlayer,
 ) -> Result<TrackerSnapshot, String> {
-    let api_url = tracker_api_url(player);
+    let mut resolved_player = player.clone();
+    let platform_lower = player.platform.to_lowercase();
+    if (platform_lower == "xbox"
+        || platform_lower == "xbl"
+        || platform_lower == "xboxone"
+        || platform_lower == "xboxseries")
+        && player.player_id.parse::<u64>().is_ok()
+    {
+        match resolve_xuid_to_gamertag(client, &player.player_id).await {
+            Ok(gamertag) => {
+                resolved_player.player_name = gamertag;
+            }
+            Err(err) => {
+                eprintln!(
+                    "Failed to resolve Xbox XUID {} to gamertag: {}. Falling back to display name: {}",
+                    player.player_id, err, player.player_name
+                );
+            }
+        }
+    }
+
+    let api_url = tracker_api_url(&resolved_player);
     let response = client.get(&api_url)
         .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36")
         .header("Accept-Language", "en-US,en;q=0.9")
@@ -710,5 +763,16 @@ mod tests {
         let local_mmr = state.local_mmr.load();
         assert!(!local_mmr.fetching);
         assert!(local_mmr.error.is_empty());
+    }
+
+    #[tokio::test]
+    #[ignore = "hits live geysermc endpoint"]
+    async fn test_resolve_xuid_to_gamertag() {
+        let client = wreq::Client::builder()
+            .emulation(wreq_util::Emulation::Chrome128)
+            .build()
+            .unwrap();
+        let res = resolve_xuid_to_gamertag(&client, "2535432196048835").await;
+        assert_eq!(res.unwrap(), "Tim203");
     }
 }

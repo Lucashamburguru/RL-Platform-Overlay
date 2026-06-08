@@ -14,13 +14,14 @@ pub(super) fn render_hotkey_settings_section(
 ) {
     settings_section(ui, "Hotkeys", |ui| {
         ui.label(helper_text(
-            "Configure shortcuts for showing the lobby overlay in-game and opening this settings panel.",
+            "Configure shortcuts for launching the overlay, showing the lobby overlay in-game, and opening this settings panel.",
         ));
         ui.add_space(6.0);
 
         render_keyboard_hotkey_row(ui, ctx, state, config_edit);
         render_controller_hotkey_row(ui, state, config_edit);
         render_settings_hotkey_row(ui, ctx, state, config_edit);
+        render_launch_hotkey_row(ui, ctx, state, config_edit);
 
         ui.add_space(4.0);
         setting_row(ui, "Visibility Mode", |ui| {
@@ -57,6 +58,7 @@ fn render_keyboard_hotkey_row(
                 state.is_recording_kb.store(true, Ordering::SeqCst);
                 state.is_recording_ctrl.store(false, Ordering::SeqCst);
                 state.is_recording_settings.store(false, Ordering::SeqCst);
+                state.is_recording_launch.store(false, Ordering::SeqCst);
             }
         }
     });
@@ -79,6 +81,7 @@ fn render_controller_hotkey_row(
                 state.is_recording_ctrl.store(true, Ordering::SeqCst);
                 state.is_recording_kb.store(false, Ordering::SeqCst);
                 state.is_recording_settings.store(false, Ordering::SeqCst);
+                state.is_recording_launch.store(false, Ordering::SeqCst);
             }
         }
     });
@@ -110,6 +113,39 @@ fn render_settings_hotkey_row(
                 state.is_recording_settings.store(true, Ordering::SeqCst);
                 state.is_recording_kb.store(false, Ordering::SeqCst);
                 state.is_recording_ctrl.store(false, Ordering::SeqCst);
+                state.is_recording_launch.store(false, Ordering::SeqCst);
+            }
+        }
+    });
+}
+
+fn render_launch_hotkey_row(
+    ui: &mut egui::Ui,
+    ctx: &egui::Context,
+    state: &Arc<AppState>,
+    config_edit: &mut crate::state::Config,
+) {
+    setting_row(ui, "Launch / Stop Key", |ui| {
+        if state.is_recording_launch.load(Ordering::SeqCst) {
+            ui.colored_label(egui::Color32::YELLOW, "Listening...");
+            if ui.button("Cancel").clicked() {
+                state.is_recording_launch.store(false, Ordering::SeqCst);
+            }
+            if let Some(name) = capture_egui_key(ctx) {
+                config_edit.hotkey_launch = name;
+                state.save_config(config_edit.clone());
+                state.is_recording_launch.store(false, Ordering::SeqCst);
+            }
+        } else {
+            ui.label(format!(
+                "[ {} ]",
+                format_key_name(&config_edit.hotkey_launch)
+            ));
+            if ui.button("Record").clicked() {
+                state.is_recording_launch.store(true, Ordering::SeqCst);
+                state.is_recording_kb.store(false, Ordering::SeqCst);
+                state.is_recording_ctrl.store(false, Ordering::SeqCst);
+                state.is_recording_settings.store(false, Ordering::SeqCst);
             }
         }
     });

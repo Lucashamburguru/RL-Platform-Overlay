@@ -231,6 +231,7 @@ pub(super) fn draw_lobby_panel(
 
             ui.add_space(4.0 * scale);
 
+            let human_count = players.iter().filter(|p| !p.is_bot).count();
             let mut sorted_players: Vec<_> = players
                 .iter()
                 .filter(|p| config.show_bots || !p.is_bot)
@@ -271,6 +272,7 @@ pub(super) fn draw_lobby_panel(
                         content_width,
                         local_identity,
                         local_mmr,
+                        human_count,
                     );
                     ui.add_space(2.0 * scale);
                 }
@@ -295,6 +297,7 @@ fn render_team_header(ui: &mut egui::Ui, team: u8, scale: f32) {
     });
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_lobby_player_row(
     ui: &mut egui::Ui,
     player: &PlayerInfo,
@@ -303,6 +306,7 @@ fn render_lobby_player_row(
     content_width: f32,
     local_identity: Option<&LocalPlayerIdentity>,
     local_mmr: Option<&TrackerSnapshot>,
+    human_count: usize,
 ) {
     let team_color = team_color(player.team);
     let is_local = is_local_lobby_player(player, local_identity);
@@ -329,6 +333,7 @@ fn render_lobby_player_row(
             scale,
             content_width,
             team_color,
+            human_count,
         );
     } else {
         render_expanded_row_v2(
@@ -341,6 +346,7 @@ fn render_lobby_player_row(
             scale,
             content_width,
             team_color,
+            human_count,
         );
     }
 }
@@ -356,6 +362,7 @@ fn render_compact_row(
     scale: f32,
     content_width: f32,
     team_color: egui::Color32,
+    human_count: usize,
 ) {
     let accent_width = 3.0 * scale;
     let row_height = 18.0 * scale;
@@ -386,7 +393,10 @@ fn render_compact_row(
                 render_you_badge(ui, scale);
             }
 
-            if let (true, Some(playlist)) = (config.show_lobby_ranks, best_playlist(mmr)) {
+            if let (true, Some(playlist)) = (
+                config.show_lobby_ranks,
+                select_lobby_playlist(mmr, human_count),
+            ) {
                 render_mmr_badge(ui, &playlist.tier_name, playlist.rating, false, scale);
             }
         });
@@ -428,6 +438,7 @@ fn render_expanded_row_v2(
     scale: f32,
     content_width: f32,
     team_color: egui::Color32,
+    human_count: usize,
 ) {
     let accent_width = 3.0 * scale;
     let accent_height = 32.0 * scale;
@@ -474,7 +485,7 @@ fn render_expanded_row_v2(
                 if config.show_lobby_ranks {
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 4.0 * scale;
-                        let playlist = best_playlist(mmr);
+                        let playlist = select_lobby_playlist(mmr, human_count);
                         let show_matches =
                             config.show_lobby_matches && playlist.is_some_and(|p| p.matches > 0);
 
@@ -659,6 +670,36 @@ fn compact_player_text(player: &PlayerInfo) -> String {
     } else {
         player.name.clone()
     }
+}
+
+fn select_lobby_playlist(
+    mmr: Option<&TrackerSnapshot>,
+    human_count: usize,
+) -> Option<&crate::mmr::TrackerPlaylistSnapshot> {
+    let snapshot = mmr?;
+
+    // Determine target playlist ID based on player count
+    // 1-2: 1v1 (10)
+    // 3-4: 2v2 (11)
+    // 5+:  3v3 (13)
+    let target_id = if human_count <= 2 {
+        10
+    } else if human_count <= 4 {
+        11
+    } else {
+        13
+    };
+
+    if let Some(playlist) = snapshot
+        .playlists
+        .get(&target_id)
+        .filter(|p| !p.tier_name.is_empty())
+    {
+        return Some(playlist);
+    }
+
+    // Fallback: highest rating playlist
+    best_playlist(mmr)
 }
 
 fn best_playlist(mmr: Option<&TrackerSnapshot>) -> Option<&crate::mmr::TrackerPlaylistSnapshot> {
@@ -919,5 +960,51 @@ mod tests {
         assert!(rank_icon("Grand Champion III").is_some());
         assert!(rank_icon("Supersonic Legend").is_some());
         assert!(rank_icon("Prospect I").is_none());
+    }
+
+    #[test]
+    fn test_select_lobby_playlist_modes_and_fallbacks() {
+        let mut playlists = HashMap::new();
+        // 1v1
+        playlists.insert(
+            10,
+            crate::mmr::TrackerPlaylistSnapshot {
+                name: "Ranked Duel 1v1".to_string(),
+                rating: 800,
+                matches: 10,
+                tier_name: "Gold III".to_string(),
+            },
+        );
+        // 2v2
+        playlists.insert(
+            11,
+            crate::mmr::TrackerPlaylistSnapshot {
+                name: "Ranked Doubles 2v2".to_string(),
+                rating: 1200,
+                matches: 15,
+                tier_name: "Diamond II".to_string(),
+            },
+        );
+
+        let mmr = TrackerSnapshot {
+            playlists,
+            last_updated: None,
+            current_season: None,
+        };
+
+        // 1. Should select 1v1 for 2 human players
+        let pl_1v1 = select_lobby_playlist(Some(&mmr), 2).unwrap();
+        assert_eq!(pl_1v1.name, "Ranked Duel 1v1");
+        assert_eq!(pl_1v1.rating, 800);
+
+        // 2. Should select 2v2 for 4 human players
+        let pl_2v2 = select_lobby_playlist(Some(&mmr), 4).unwrap();
+        assert_eq!(pl_2v2.name, "Ranked Doubles 2v2");
+        assert_eq!(pl_2v2.rating, 1200);
+
+        // 3. Should fallback to best playlist (2v2 with 1200 rating) for 3v3 (human_count >= 5) because 3v3 is missing
+        let pl_fallback = select_lobby_playlist(Some(&mmr), 6).unwrap();
+        assert_eq!(pl_fallback.name, "Ranked Doubles 2v2");
+        assert_eq!(pl_fallback.rating, 1200);
     }
 }

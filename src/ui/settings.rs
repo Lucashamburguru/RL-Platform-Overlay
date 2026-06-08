@@ -368,6 +368,19 @@ pub(super) fn render_session_settings_tab(
             }
 
             ui.add_space(8.0);
+            setting_row(ui, "Hotkey", |ui| {
+                if ui
+                    .checkbox(
+                        &mut config_edit.session_overlay_follow_lobby_hotkey,
+                        "Show with lobby overlay hotkey.",
+                    )
+                    .changed()
+                {
+                    *changed = true;
+                }
+            });
+
+            ui.add_space(8.0);
             setting_row(ui, "Display", |ui| {
                 egui::ComboBox::new("session_display", "")
                     .selected_text(session_display_label(config_edit.session_overlay_display))
