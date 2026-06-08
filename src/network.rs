@@ -1,4 +1,5 @@
 use crate::json_utils::{decode_json_string_value, number_field, string_field};
+use crate::session::SessionMode;
 use crate::state::{AppState, LocalPlayerIdentity, PlayerInfo};
 use crate::stats_api::{StatsApiTransport, TcpJsonSplitter};
 use futures_util::StreamExt;
@@ -16,6 +17,158 @@ async fn simulate_key_tap(key: rdev::Key) -> Result<(), rdev::SimulateError> {
     rdev::simulate(&rdev::EventType::KeyRelease(key))?;
     tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     Ok(())
+}
+
+async fn simulate_auto_key_tap(key: rdev::Key, action: &str) -> bool {
+    if !rocket_league_accepts_auto_input() {
+        println!("{action} skipped: Rocket League is not the foreground window.");
+        return false;
+    }
+
+    if let Err(error) = simulate_key_tap(key).await {
+        eprintln!("{action} key simulation failed: {error:?}");
+        return false;
+    }
+
+    true
+}
+
+async fn simulate_auto_key_sequence(sequence: &str, action: &str) {
+    let keys = parse_auto_key_sequence(sequence);
+    if keys.is_empty() {
+        eprintln!("{action} skipped: no valid keys in sequence '{sequence}'.");
+        return;
+    }
+
+    for key in keys {
+        if !simulate_auto_key_tap(key, action).await {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(125)).await;
+    }
+}
+
+fn parse_auto_key_sequence(sequence: &str) -> Vec<rdev::Key> {
+    sequence
+        .split([',', ' ', '+'])
+        .filter_map(parse_auto_key)
+        .collect()
+}
+
+fn parse_auto_key(token: &str) -> Option<rdev::Key> {
+    let mut normalized = token
+        .trim()
+        .trim_matches(['[', ']'])
+        .to_ascii_lowercase()
+        .replace(['-', '_'], "");
+    if normalized.is_empty() {
+        return None;
+    }
+    if normalized.starts_with("key") && normalized.len() == 4 {
+        normalized = normalized[3..].to_string();
+    }
+
+    match normalized.as_str() {
+        "enter" | "return" => Some(rdev::Key::Return),
+        "escape" | "esc" => Some(rdev::Key::Escape),
+        "space" => Some(rdev::Key::Space),
+        "tab" => Some(rdev::Key::Tab),
+        "backspace" => Some(rdev::Key::Backspace),
+        "uparrow" | "up" => Some(rdev::Key::UpArrow),
+        "downarrow" | "down" => Some(rdev::Key::DownArrow),
+        "leftarrow" | "left" => Some(rdev::Key::LeftArrow),
+        "rightarrow" | "right" => Some(rdev::Key::RightArrow),
+        "0" | "num0" | "key0" => Some(rdev::Key::Num0),
+        "1" | "num1" | "key1" => Some(rdev::Key::Num1),
+        "2" | "num2" | "key2" => Some(rdev::Key::Num2),
+        "3" | "num3" | "key3" => Some(rdev::Key::Num3),
+        "4" | "num4" | "key4" => Some(rdev::Key::Num4),
+        "5" | "num5" | "key5" => Some(rdev::Key::Num5),
+        "6" | "num6" | "key6" => Some(rdev::Key::Num6),
+        "7" | "num7" | "key7" => Some(rdev::Key::Num7),
+        "8" | "num8" | "key8" => Some(rdev::Key::Num8),
+        "9" | "num9" | "key9" => Some(rdev::Key::Num9),
+        "kp0" | "numpad0" => Some(rdev::Key::Kp0),
+        "kp1" | "numpad1" => Some(rdev::Key::Kp1),
+        "kp2" | "numpad2" => Some(rdev::Key::Kp2),
+        "kp3" | "numpad3" => Some(rdev::Key::Kp3),
+        "kp4" | "numpad4" => Some(rdev::Key::Kp4),
+        "kp5" | "numpad5" => Some(rdev::Key::Kp5),
+        "kp6" | "numpad6" => Some(rdev::Key::Kp6),
+        "kp7" | "numpad7" => Some(rdev::Key::Kp7),
+        "kp8" | "numpad8" => Some(rdev::Key::Kp8),
+        "kp9" | "numpad9" => Some(rdev::Key::Kp9),
+        "kpenter" | "numpadenter" => Some(rdev::Key::KpReturn),
+        letter if letter.len() == 1 => match letter.as_bytes()[0] {
+            b'a' => Some(rdev::Key::KeyA),
+            b'b' => Some(rdev::Key::KeyB),
+            b'c' => Some(rdev::Key::KeyC),
+            b'd' => Some(rdev::Key::KeyD),
+            b'e' => Some(rdev::Key::KeyE),
+            b'f' => Some(rdev::Key::KeyF),
+            b'g' => Some(rdev::Key::KeyG),
+            b'h' => Some(rdev::Key::KeyH),
+            b'i' => Some(rdev::Key::KeyI),
+            b'j' => Some(rdev::Key::KeyJ),
+            b'k' => Some(rdev::Key::KeyK),
+            b'l' => Some(rdev::Key::KeyL),
+            b'm' => Some(rdev::Key::KeyM),
+            b'n' => Some(rdev::Key::KeyN),
+            b'o' => Some(rdev::Key::KeyO),
+            b'p' => Some(rdev::Key::KeyP),
+            b'q' => Some(rdev::Key::KeyQ),
+            b'r' => Some(rdev::Key::KeyR),
+            b's' => Some(rdev::Key::KeyS),
+            b't' => Some(rdev::Key::KeyT),
+            b'u' => Some(rdev::Key::KeyU),
+            b'v' => Some(rdev::Key::KeyV),
+            b'w' => Some(rdev::Key::KeyW),
+            b'x' => Some(rdev::Key::KeyX),
+            b'y' => Some(rdev::Key::KeyY),
+            b'z' => Some(rdev::Key::KeyZ),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn rocket_league_accepts_auto_input() -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        is_rocket_league_foreground_window()
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        true
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn is_rocket_league_foreground_window() -> bool {
+    use sysinfo::{Pid, ProcessesToUpdate, System};
+    use winapi::um::winuser::{GetForegroundWindow, GetWindowThreadProcessId};
+
+    unsafe {
+        let hwnd = GetForegroundWindow();
+        if hwnd.is_null() {
+            return false;
+        }
+
+        let mut process_id = 0;
+        GetWindowThreadProcessId(hwnd, &mut process_id);
+        if process_id == 0 {
+            return false;
+        }
+
+        let pid = Pid::from_u32(process_id);
+        let mut system = System::new();
+        system.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
+
+        system
+            .process(pid)
+            .is_some_and(|process| crate::assets::is_rocket_league_name(process.name()))
+    }
 }
 
 fn handle_match_reset(state: &Arc<AppState>, early_leave: bool) {
@@ -115,6 +268,12 @@ fn handle_event(state: &Arc<AppState>, json: &Value) {
     match event {
         "UpdateState" => handle_update_state(state, &json["Data"]),
         "MatchEnded" => {
+            let local_team = state.local_team.load(Ordering::SeqCst);
+            let local_team_hint = (local_team != 255).then_some(local_team);
+            let mut session = (**state.session.load()).clone();
+            session.handle_match_ended(&json["Data"], local_team_hint);
+            state.session.store(Arc::new(session));
+
             handle_match_reset(state, false);
 
             let state_clone = state.clone();
@@ -122,35 +281,46 @@ fn handle_event(state: &Arc<AppState>, json: &Value) {
                 let config = state_clone.config.load();
                 if config.auto_gg {
                     tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
-                    println!("Auto-GG: sending 'gg'...");
-                    let _ = simulate_key_tap(rdev::Key::KeyT).await;
-                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                    let _ = simulate_key_tap(rdev::Key::KeyG).await;
-                    let _ = simulate_key_tap(rdev::Key::KeyG).await;
-                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                    let _ = simulate_key_tap(rdev::Key::Return).await;
+                    println!("Auto-GG: sending configured key sequence...");
+                    simulate_auto_key_sequence(&config.auto_gg_sequence, "Auto-GG").await;
                 }
 
                 if config.auto_freeplay {
                     tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
                     println!("Auto-Freeplay: Navigating to Free Play...");
-                    let _ = simulate_key_tap(rdev::Key::Escape).await;
+                    if !simulate_auto_key_tap(rdev::Key::Escape, "Auto-Freeplay").await {
+                        return;
+                    }
                     tokio::time::sleep(std::time::Duration::from_millis(400)).await;
-                    let _ = simulate_key_tap(rdev::Key::DownArrow).await;
+                    if !simulate_auto_key_tap(rdev::Key::DownArrow, "Auto-Freeplay").await {
+                        return;
+                    }
                     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                    let _ = simulate_key_tap(rdev::Key::Return).await;
+                    if !simulate_auto_key_tap(rdev::Key::Return, "Auto-Freeplay").await {
+                        return;
+                    }
                     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                    let _ = simulate_key_tap(rdev::Key::DownArrow).await;
+                    if !simulate_auto_key_tap(rdev::Key::DownArrow, "Auto-Freeplay").await {
+                        return;
+                    }
                     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                    let _ = simulate_key_tap(rdev::Key::Return).await;
+                    if !simulate_auto_key_tap(rdev::Key::Return, "Auto-Freeplay").await {
+                        return;
+                    }
                     tokio::time::sleep(std::time::Duration::from_millis(600)).await;
-                    let _ = simulate_key_tap(rdev::Key::Return).await;
+                    if !simulate_auto_key_tap(rdev::Key::Return, "Auto-Freeplay").await {
+                        return;
+                    }
                     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                    let _ = simulate_key_tap(rdev::Key::Return).await;
+                    if !simulate_auto_key_tap(rdev::Key::Return, "Auto-Freeplay").await {
+                        return;
+                    }
                     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                    let _ = simulate_key_tap(rdev::Key::Return).await;
+                    if !simulate_auto_key_tap(rdev::Key::Return, "Auto-Freeplay").await {
+                        return;
+                    }
                     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                    let _ = simulate_key_tap(rdev::Key::Return).await;
+                    let _ = simulate_auto_key_tap(rdev::Key::Return, "Auto-Freeplay").await;
                 }
             });
 
@@ -171,6 +341,8 @@ fn handle_event(state: &Arc<AppState>, json: &Value) {
 
 fn handle_update_state(state: &Arc<AppState>, data: &Value) {
     let real_data = decode_json_string_value(data);
+    let mut target_name_hint = None;
+    let mut target_team_hint = None;
 
     if let Some(_obj) = real_data.as_object() {
         // Extract local player identity from the game block when available.
@@ -181,15 +353,13 @@ fn handle_update_state(state: &Arc<AppState>, data: &Value) {
                 state.local_player_name.store(Arc::new(me.to_string()));
             } else if let Some(target) = game.get("target").or_else(|| game.get("Target")) {
                 if let Some(target_name) = string_field(target, &["Name", "name"]) {
-                    state
-                        .local_player_name
-                        .store(Arc::new(target_name.to_string()));
+                    target_name_hint = Some(target_name.to_string());
                 }
 
                 if let Some(target_team) =
                     number_field(target, &["TeamNum", "teamNum", "Team", "team"])
                 {
-                    state.local_team.store(target_team as u8, Ordering::SeqCst);
+                    target_team_hint = Some(target_team as u8);
                 }
             }
         }
@@ -202,9 +372,20 @@ fn handle_update_state(state: &Arc<AppState>, data: &Value) {
         .unwrap_or(&real_data); // Fallback: maybe Data is the array itself
 
     let mut new_players = HashMap::new();
+    let mut player_count = None;
     let current_local_name = state.local_player_name.load();
     let current_local_name = current_local_name.trim();
+    let has_known_local_name = !current_local_name.is_empty();
+    let target_name_hint_ref = target_name_hint.as_deref().unwrap_or("").trim();
+    let current_local_name = if current_local_name.is_empty() {
+        target_name_hint_ref
+    } else {
+        current_local_name
+    };
+    let mut parsed_local_team = None;
+    let mut parsed_local_name = None;
     if let Some(players) = players_val.as_array() {
+        let mut parsed_players = 0usize;
         for p in players {
             let name = string_field(p, &["Name", "name"])
                 .unwrap_or("")
@@ -213,6 +394,7 @@ fn handle_update_state(state: &Arc<AppState>, data: &Value) {
             if name.is_empty() {
                 continue;
             }
+            parsed_players += 1;
 
             // Check for isLocalPlayer flag
             let is_local = p["IsLocalPlayer"].as_bool().unwrap_or(false)
@@ -223,6 +405,7 @@ fn handle_update_state(state: &Arc<AppState>, data: &Value) {
 
             if is_local {
                 state.local_player_name.store(Arc::new(name.clone()));
+                parsed_local_name = Some(name.clone());
             }
 
             let primary_id =
@@ -232,6 +415,7 @@ fn handle_update_state(state: &Arc<AppState>, data: &Value) {
 
             if is_local {
                 state.local_team.store(team, Ordering::SeqCst);
+                parsed_local_team = Some(team);
                 let first_known_identity =
                     state.update_local_player_identity(LocalPlayerIdentity {
                         name: name.clone(),
@@ -278,6 +462,21 @@ fn handle_update_state(state: &Arc<AppState>, data: &Value) {
                 },
             );
         }
+        player_count = Some(parsed_players);
+    }
+
+    if !has_known_local_name
+        && parsed_local_name.is_none()
+        && let Some(target_name) = target_name_hint
+    {
+        state.local_player_name.store(Arc::new(target_name));
+    }
+
+    if state.local_team.load(Ordering::SeqCst) == 255
+        && parsed_local_team.is_none()
+        && let Some(target_team) = target_team_hint
+    {
+        state.local_team.store(target_team, Ordering::SeqCst);
     }
 
     if !new_players.is_empty() {
@@ -287,9 +486,42 @@ fn handle_update_state(state: &Arc<AppState>, data: &Value) {
 
     let local_team = state.local_team.load(Ordering::SeqCst);
     let local_team_hint = (local_team != 255).then_some(local_team);
+    let mode_hint = real_data
+        .get("Game")
+        .or_else(|| real_data.get("game"))
+        .and_then(session_mode_hint_from_game);
+    let session_mode = SessionMode::infer(mode_hint, player_count);
     let mut session = (**state.session.load()).clone();
-    session.handle_update_state(&real_data, local_team_hint);
+    session.handle_update_state(&real_data, local_team_hint, session_mode);
     state.session.store(Arc::new(session));
+}
+
+fn session_mode_hint_from_game(game: &Value) -> Option<&str> {
+    string_field(
+        game,
+        &[
+            "Arena",
+            "arena",
+            "Map",
+            "map",
+            "MapName",
+            "mapName",
+            "GameMode",
+            "gameMode",
+            "GameInfo",
+            "gameInfo",
+            "Playlist",
+            "playlist",
+            "PlaylistName",
+            "playlistName",
+            "Mutator",
+            "mutator",
+            "MutatorName",
+            "mutatorName",
+            "Rules",
+            "rules",
+        ],
+    )
 }
 
 fn update_transport(state: &Arc<AppState>, transport: StatsApiTransport) {
@@ -369,6 +601,32 @@ mod tests {
             ("Unknown".to_string(), false)
         );
         assert_eq!(parse_platform(""), ("Unknown".to_string(), false));
+    }
+
+    #[test]
+    fn test_parse_auto_gg_key_sequences() {
+        assert_eq!(
+            parse_auto_key_sequence("T,G,G,Enter"),
+            vec![
+                rdev::Key::KeyT,
+                rdev::Key::KeyG,
+                rdev::Key::KeyG,
+                rdev::Key::Return
+            ]
+        );
+        assert_eq!(
+            parse_auto_key_sequence("1,1"),
+            vec![rdev::Key::Num1, rdev::Key::Num1]
+        );
+        assert_eq!(
+            parse_auto_key_sequence("KeyT KeyG KeyG Return"),
+            vec![
+                rdev::Key::KeyT,
+                rdev::Key::KeyG,
+                rdev::Key::KeyG,
+                rdev::Key::Return
+            ]
+        );
     }
 
     #[test]
@@ -576,6 +834,10 @@ mod tests {
         assert_eq!(session.losses, 1);
         assert_eq!(session.matches_played, 1);
         assert_eq!(session.last_result, crate::session::MatchResult::Loss);
+        assert_eq!(
+            session.mode_records[&crate::session::SessionMode::Ones].losses,
+            1
+        );
     }
 
     #[test]
@@ -612,5 +874,263 @@ mod tests {
         let session = state.session.load();
         assert_eq!(session.losses, 0);
         assert_eq!(session.matches_played, 0);
+    }
+
+    #[test]
+    fn test_update_state_infers_session_mode_from_total_players() {
+        let state = AppState::new();
+        handle_update_state(
+            &state,
+            &json!({
+                "MatchGuid": "guid123",
+                "Players": [
+                    {"Name": "Me", "PrimaryId": "Steam|1|0", "TeamNum": 0, "IsLocalPlayer": true},
+                    {"Name": "Mate", "PrimaryId": "Epic|2|0", "TeamNum": 0},
+                    {"Name": "Opp1", "PrimaryId": "Xbox|3|0", "TeamNum": 1},
+                    {"Name": "Bot1", "PrimaryId": "Unknown|0|0", "TeamNum": 1}
+                ]
+            }),
+        );
+
+        assert_eq!(
+            state.session.load().active_mode,
+            crate::session::SessionMode::Twos
+        );
+    }
+
+    #[test]
+    fn test_update_state_without_players_uses_unknown_session_mode() {
+        let state = AppState::new();
+        handle_update_state(
+            &state,
+            &json!({
+                "MatchGuid": "guid123",
+                "Game": {
+                    "Teams": [
+                        {"TeamNum": 0, "Score": 2},
+                        {"TeamNum": 1, "Score": 1}
+                    ],
+                    "bHasWinner": true,
+                    "Winner": "Blue"
+                }
+            }),
+        );
+
+        let session = state.session.load();
+        assert_eq!(session.wins, 0);
+        assert!(session.mode_records.is_empty());
+        assert_eq!(session.active_mode, crate::session::SessionMode::Unknown);
+    }
+
+    #[test]
+    fn test_update_state_prefers_arena_mode_over_player_count() {
+        let state = AppState::new();
+        handle_update_state(
+            &state,
+            &json!({
+                "MatchGuid": "guid123",
+                "Players": [
+                    {"Name": "Me", "PrimaryId": "Steam|1|0", "TeamNum": 0, "IsLocalPlayer": true},
+                    {"Name": "Mate", "PrimaryId": "Epic|2|0", "TeamNum": 0},
+                    {"Name": "Opp1", "PrimaryId": "Xbox|3|0", "TeamNum": 1},
+                    {"Name": "Opp2", "PrimaryId": "Ps4|4|0", "TeamNum": 1}
+                ],
+                "Game": {
+                    "Arena": "HoopsStadium_P",
+                    "Teams": [
+                        {"TeamNum": 0, "Score": 4},
+                        {"TeamNum": 1, "Score": 2}
+                    ],
+                    "bHasWinner": true,
+                    "Winner": "Blue"
+                }
+            }),
+        );
+
+        let session = state.session.load();
+        assert_eq!(session.active_mode, crate::session::SessionMode::Hoops);
+        assert_eq!(
+            session.mode_records[&crate::session::SessionMode::Hoops].wins,
+            1
+        );
+    }
+
+    #[test]
+    fn test_offline_extra_mode_does_not_fall_back_to_ones() {
+        let state = AppState::new();
+        handle_update_state(
+            &state,
+            &json!({
+                "MatchGuid": "guid123",
+                "Players": [
+                    {"Name": "Me", "PrimaryId": "Steam|1|0", "TeamNum": 0, "IsLocalPlayer": true},
+                    {"Name": "BotA", "PrimaryId": "Unknown|0|0", "TeamNum": 0},
+                    {"Name": "BotB", "PrimaryId": "Unknown|0|0", "TeamNum": 1},
+                    {"Name": "BotC", "PrimaryId": "Unknown|0|0", "TeamNum": 1}
+                ],
+                "Game": {
+                    "GameInfo": "GameInfo_Basketball.GameInfo.GameInfo_Basketball:Archetype"
+                }
+            }),
+        );
+
+        assert_eq!(
+            state.session.load().active_mode,
+            crate::session::SessionMode::Hoops
+        );
+    }
+
+    #[test]
+    fn test_standard_offline_uses_total_player_count_for_mode() {
+        let state = AppState::new();
+        handle_update_state(
+            &state,
+            &json!({
+                "MatchGuid": "guid123",
+                "Players": [
+                    {"Name": "Me", "PrimaryId": "Steam|1|0", "TeamNum": 0, "IsLocalPlayer": true},
+                    {"Name": "BotA", "PrimaryId": "Unknown|0|0", "TeamNum": 1}
+                ],
+                "Game": {
+                    "Arena": "Stadium_P"
+                }
+            }),
+        );
+
+        assert_eq!(
+            state.session.load().active_mode,
+            crate::session::SessionMode::Ones
+        );
+
+        handle_update_state(
+            &state,
+            &json!({
+                "MatchGuid": "guid456",
+                "Players": [
+                    {"Name": "Me", "PrimaryId": "Steam|1|0", "TeamNum": 0, "IsLocalPlayer": true},
+                    {"Name": "BotA", "PrimaryId": "Unknown|0|0", "TeamNum": 0},
+                    {"Name": "BotB", "PrimaryId": "Unknown|0|0", "TeamNum": 1},
+                    {"Name": "BotC", "PrimaryId": "Unknown|0|0", "TeamNum": 1}
+                ],
+                "Game": {
+                    "Arena": "Stadium_P"
+                }
+            }),
+        );
+
+        assert_eq!(
+            state.session.load().active_mode,
+            crate::session::SessionMode::Twos
+        );
+    }
+
+    #[test]
+    fn test_targeted_opponent_at_match_end_does_not_turn_hoops_loss_into_win() {
+        let state = AppState::new();
+        handle_update_state(
+            &state,
+            &json!({
+                "MatchGuid": "guid123",
+                "Players": [
+                    {"Name": "Me", "PrimaryId": "Steam|1|0", "TeamNum": 0, "IsLocalPlayer": true},
+                    {"Name": "Mate", "PrimaryId": "Epic|2|0", "TeamNum": 0},
+                    {"Name": "Opp1", "PrimaryId": "Xbox|3|0", "TeamNum": 1},
+                    {"Name": "Opp2", "PrimaryId": "Ps4|4|0", "TeamNum": 1}
+                ],
+                "Game": {
+                    "Arena": "HoopsStadium_P",
+                    "Teams": [
+                        {"TeamNum": 0, "Score": 1},
+                        {"TeamNum": 1, "Score": 1}
+                    ],
+                    "Target": {
+                        "Name": "Me",
+                        "TeamNum": 0
+                    }
+                }
+            }),
+        );
+
+        handle_update_state(
+            &state,
+            &json!({
+                "MatchGuid": "guid123",
+                "Players": [
+                    {"Name": "Me", "PrimaryId": "Steam|1|0", "TeamNum": 0},
+                    {"Name": "Mate", "PrimaryId": "Epic|2|0", "TeamNum": 0},
+                    {"Name": "Opp1", "PrimaryId": "Xbox|3|0", "TeamNum": 1},
+                    {"Name": "Opp2", "PrimaryId": "Ps4|4|0", "TeamNum": 1}
+                ],
+                "Game": {
+                    "Arena": "HoopsStadium_P",
+                    "Teams": [
+                        {"TeamNum": 0, "Score": 1},
+                        {"TeamNum": 1, "Score": 2}
+                    ],
+                    "bHasWinner": true,
+                    "Winner": "Orange",
+                    "Target": {
+                        "Name": "Opp1",
+                        "TeamNum": 1
+                    }
+                }
+            }),
+        );
+
+        let session = state.session.load();
+        assert_eq!(session.wins, 0);
+        assert_eq!(session.losses, 1);
+        assert_eq!(session.last_result, crate::session::MatchResult::Loss);
+        assert_eq!(
+            session.mode_records[&crate::session::SessionMode::Hoops].losses,
+            1
+        );
+    }
+
+    #[test]
+    fn test_match_ended_event_records_hoops_loss_from_winner_team_num() {
+        let state = AppState::new();
+        handle_update_state(
+            &state,
+            &json!({
+                "MatchGuid": "guid123",
+                "Players": [
+                    {"Name": "Me", "PrimaryId": "Steam|1|0", "TeamNum": 0, "IsLocalPlayer": true},
+                    {"Name": "Mate", "PrimaryId": "Epic|2|0", "TeamNum": 0},
+                    {"Name": "Opp1", "PrimaryId": "Xbox|3|0", "TeamNum": 1},
+                    {"Name": "Opp2", "PrimaryId": "Ps4|4|0", "TeamNum": 1}
+                ],
+                "Game": {
+                    "Arena": "HoopsStadium_P",
+                    "Teams": [
+                        {"TeamNum": 0, "Score": 1},
+                        {"TeamNum": 1, "Score": 2}
+                    ]
+                }
+            }),
+        );
+
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let _guard = runtime.enter();
+        handle_event(
+            &state,
+            &json!({
+                "Event": "MatchEnded",
+                "Data": {
+                    "MatchGuid": "guid123",
+                    "WinnerTeamNum": 1
+                }
+            }),
+        );
+
+        let session = state.session.load();
+        assert_eq!(session.wins, 0);
+        assert_eq!(session.losses, 1);
+        assert_eq!(session.matches_played, 1);
+        assert_eq!(
+            session.mode_records[&crate::session::SessionMode::Hoops].losses,
+            1
+        );
+        assert!(session.active_match_id.is_empty());
     }
 }

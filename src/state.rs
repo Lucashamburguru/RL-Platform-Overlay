@@ -63,6 +63,9 @@ pub struct Config {
     pub session_overlay_opacity: u8,
     pub session_overlay_display: SessionOverlayDisplay,
     pub session_overlay_follow_lobby_hotkey: bool,
+    pub session_expanded_show_streaks: bool,
+    pub session_expanded_show_breakdown: bool,
+    pub session_expanded_show_mmr_delta: bool,
     pub lobby_manual_position: Option<[f32; 2]>,
     pub teammate_boost_manual_position: Option<[f32; 2]>,
     pub session_manual_position: Option<[f32; 2]>,
@@ -74,6 +77,7 @@ pub struct Config {
     pub replays_folder: String,
     pub uploaded_replays: Vec<String>,
     pub auto_gg: bool,
+    pub auto_gg_sequence: String,
     pub auto_freeplay: bool,
 }
 
@@ -207,6 +211,9 @@ impl Default for Config {
             session_overlay_opacity: 170,
             session_overlay_display: SessionOverlayDisplay::Compact,
             session_overlay_follow_lobby_hotkey: false,
+            session_expanded_show_streaks: true,
+            session_expanded_show_breakdown: true,
+            session_expanded_show_mmr_delta: false,
             lobby_manual_position: None,
             teammate_boost_manual_position: None,
             session_manual_position: None,
@@ -218,6 +225,7 @@ impl Default for Config {
             replays_folder: detect_replays_path().unwrap_or_default(),
             uploaded_replays: Vec::new(),
             auto_gg: false,
+            auto_gg_sequence: "T,G,G,Enter".to_string(),
             auto_freeplay: false,
         }
     }
@@ -381,6 +389,15 @@ pub struct VersionCheck {
     pub update_available: bool,
     pub latest_tag: String,
     pub release_url: String,
+    pub windows_download_url: String,
+    pub windows_checksum_url: String,
+    pub error: String,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct AutoUpdateStatus {
+    pub running: bool,
+    pub message: String,
     pub error: String,
 }
 
@@ -472,6 +489,7 @@ pub struct AppState {
     pub config: ArcSwap<Config>,
     pub config_status: ArcSwap<ConfigStatus>,
     pub version_check: ArcSwap<VersionCheck>,
+    pub auto_update_status: ArcSwap<AutoUpdateStatus>,
     pub network_diagnostics: ArcSwap<NetworkDiagnostics>,
     pub debug_capture_status: ArcSwap<DebugCaptureStatus>,
     pub stats_api_setup_result: ArcSwap<StatsApiSetupResult>,
@@ -522,6 +540,7 @@ impl AppState {
             config: ArcSwap::from_pointee(config),
             config_status: ArcSwap::from_pointee(config_status),
             version_check: ArcSwap::from_pointee(VersionCheck::default()),
+            auto_update_status: ArcSwap::from_pointee(AutoUpdateStatus::default()),
             network_diagnostics: ArcSwap::from_pointee(NetworkDiagnostics::default()),
             debug_capture_status: ArcSwap::from_pointee(DebugCaptureStatus::default()),
             stats_api_setup_result: ArcSwap::from_pointee(StatsApiSetupResult::default()),

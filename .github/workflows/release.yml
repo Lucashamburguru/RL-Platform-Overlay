@@ -60,16 +60,32 @@ jobs:
     - name: Build
       run: cargo build --release
 
+    - name: Generate checksum (Linux)
+      if: matrix.os == 'ubuntu-latest'
+      run: sha256sum "${{ matrix.binary_path }}" > "${{ matrix.binary_path }}.sha256"
+
+    - name: Generate checksum (Windows)
+      if: matrix.os == 'windows-latest'
+      shell: pwsh
+      run: |
+        $hash = (Get-FileHash "${{ matrix.binary_path }}" -Algorithm SHA256).Hash.ToLower()
+        $name = Split-Path "${{ matrix.binary_path }}" -Leaf
+        "$hash  $name" | Out-File -FilePath "${{ matrix.binary_path }}.sha256" -Encoding ascii
+
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
         name: ${{ matrix.artifact_name }}
-        path: ${{ matrix.binary_path }}
+        path: |
+          ${{ matrix.binary_path }}
+          ${{ matrix.binary_path }}.sha256
 
     - name: Create Release
       if: startsWith(github.ref, 'refs/tags/v')
       uses: softprops/action-gh-release@v2
       with:
-        files: ${{ matrix.binary_path }}
+        files: |
+          ${{ matrix.binary_path }}
+          ${{ matrix.binary_path }}.sha256
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,4 +1,5 @@
 use crate::mmr::TrackerSnapshot;
+use crate::session::SessionMode;
 use crate::state::{AppState, LocalPlayerIdentity, PlayerInfo};
 use eframe::egui;
 use std::collections::HashMap;
@@ -93,6 +94,24 @@ fn preview_mmr(rating: i32, tier_name: &str) -> TrackerSnapshot {
             tier_name: tier_name.to_string(),
         },
     );
+    playlists.insert(
+        27,
+        crate::mmr::TrackerPlaylistSnapshot {
+            name: "Ranked Hoops".to_string(),
+            rating: rating - 35,
+            matches: 40,
+            tier_name: tier_name.to_string(),
+        },
+    );
+    playlists.insert(
+        29,
+        crate::mmr::TrackerPlaylistSnapshot {
+            name: "Ranked Dropshot".to_string(),
+            rating: rating - 55,
+            matches: 25,
+            tier_name: tier_name.to_string(),
+        },
+    );
     TrackerSnapshot {
         playlists,
         last_updated: None,
@@ -141,6 +160,7 @@ pub(super) fn render_overlay(ctx: &egui::Context, state: &Arc<AppState>) {
         };
         let local_identity = state.local_player_identity.load();
         let local_mmr = state.local_mmr.load();
+        let session = state.session.load();
         draw_lobby_panel(
             ui,
             &players_vec,
@@ -148,6 +168,7 @@ pub(super) fn render_overlay(ctx: &egui::Context, state: &Arc<AppState>) {
             state.is_connected.load(Ordering::SeqCst),
             Some(&local_identity),
             local_mmr.current.as_ref(),
+            session.active_mode,
             None,
         );
         render_drag_position_handle(ui, config.layout_mode, config.ui_scale)
@@ -164,6 +185,7 @@ pub(super) fn render_overlay(ctx: &egui::Context, state: &Arc<AppState>) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn draw_lobby_panel(
     ui: &mut egui::Ui,
     players: &[PlayerInfo],
@@ -171,6 +193,7 @@ pub(super) fn draw_lobby_panel(
     is_connected: bool,
     local_identity: Option<&LocalPlayerIdentity>,
     local_mmr: Option<&TrackerSnapshot>,
+    session_mode: SessionMode,
     scale_override: Option<f32>,
 ) {
     let scale = scale_override.unwrap_or(config.ui_scale);
@@ -231,7 +254,7 @@ pub(super) fn draw_lobby_panel(
 
             ui.add_space(4.0 * scale);
 
-            let human_count = players.iter().filter(|p| !p.is_bot).count();
+            let player_count = players.len();
             let mut sorted_players: Vec<_> = players
                 .iter()
                 .filter(|p| config.show_bots || !p.is_bot)
@@ -272,7 +295,8 @@ pub(super) fn draw_lobby_panel(
                         content_width,
                         local_identity,
                         local_mmr,
-                        human_count,
+                        player_count,
+                        session_mode,
                     );
                     ui.add_space(2.0 * scale);
                 }
@@ -306,7 +330,8 @@ fn render_lobby_player_row(
     content_width: f32,
     local_identity: Option<&LocalPlayerIdentity>,
     local_mmr: Option<&TrackerSnapshot>,
-    human_count: usize,
+    player_count: usize,
+    session_mode: SessionMode,
 ) {
     let team_color = team_color(player.team);
     let is_local = is_local_lobby_player(player, local_identity);
@@ -333,7 +358,8 @@ fn render_lobby_player_row(
             scale,
             content_width,
             team_color,
-            human_count,
+            player_count,
+            session_mode,
         );
     } else {
         render_expanded_row_v2(
@@ -346,7 +372,8 @@ fn render_lobby_player_row(
             scale,
             content_width,
             team_color,
-            human_count,
+            player_count,
+            session_mode,
         );
     }
 }
@@ -362,7 +389,8 @@ fn render_compact_row(
     scale: f32,
     content_width: f32,
     team_color: egui::Color32,
-    human_count: usize,
+    player_count: usize,
+    session_mode: SessionMode,
 ) {
     let accent_width = 3.0 * scale;
     let row_height = 18.0 * scale;
@@ -395,7 +423,7 @@ fn render_compact_row(
 
             if let (true, Some(playlist)) = (
                 config.show_lobby_ranks,
-                select_lobby_playlist(mmr, human_count),
+                select_lobby_playlist(mmr, session_mode, player_count),
             ) {
                 render_mmr_badge(ui, &playlist.tier_name, playlist.rating, false, scale);
             }
@@ -438,7 +466,8 @@ fn render_expanded_row_v2(
     scale: f32,
     content_width: f32,
     team_color: egui::Color32,
-    human_count: usize,
+    player_count: usize,
+    session_mode: SessionMode,
 ) {
     let accent_width = 3.0 * scale;
     let accent_height = 32.0 * scale;
@@ -485,7 +514,7 @@ fn render_expanded_row_v2(
                 if config.show_lobby_ranks {
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 4.0 * scale;
-                        let playlist = select_lobby_playlist(mmr, human_count);
+                        let playlist = select_lobby_playlist(mmr, session_mode, player_count);
                         let show_matches =
                             config.show_lobby_matches && playlist.is_some_and(|p| p.matches > 0);
 
@@ -674,32 +703,43 @@ fn compact_player_text(player: &PlayerInfo) -> String {
 
 fn select_lobby_playlist(
     mmr: Option<&TrackerSnapshot>,
-    human_count: usize,
+    session_mode: SessionMode,
+    player_count: usize,
 ) -> Option<&crate::mmr::TrackerPlaylistSnapshot> {
     let snapshot = mmr?;
 
-    // Determine target playlist ID based on player count
-    // 1-2: 1v1 (10)
-    // 3-4: 2v2 (11)
-    // 5+:  3v3 (13)
-    let target_id = if human_count <= 2 {
-        10
-    } else if human_count <= 4 {
-        11
-    } else {
-        13
-    };
-
-    if let Some(playlist) = snapshot
-        .playlists
-        .get(&target_id)
-        .filter(|p| !p.tier_name.is_empty())
+    if let Some(target_id) =
+        lobby_playlist_id(session_mode).or_else(|| playlist_id_from_player_count(player_count))
+        && let Some(playlist) = snapshot
+            .playlists
+            .get(&target_id)
+            .filter(|p| !p.tier_name.is_empty())
     {
         return Some(playlist);
     }
 
     // Fallback: highest rating playlist
     best_playlist(mmr)
+}
+
+fn lobby_playlist_id(session_mode: SessionMode) -> Option<i32> {
+    match session_mode {
+        SessionMode::Ones => Some(10),
+        SessionMode::Twos => Some(11),
+        SessionMode::Threes => Some(13),
+        SessionMode::Hoops => Some(27),
+        SessionMode::Dropshot => Some(29),
+        SessionMode::Knockout | SessionMode::Unknown => None,
+    }
+}
+
+fn playlist_id_from_player_count(player_count: usize) -> Option<i32> {
+    match player_count {
+        0 | 1 => None,
+        2 => Some(10),
+        3 | 4 => Some(11),
+        _ => Some(13),
+    }
 }
 
 fn best_playlist(mmr: Option<&TrackerSnapshot>) -> Option<&crate::mmr::TrackerPlaylistSnapshot> {
@@ -986,6 +1026,26 @@ mod tests {
                 tier_name: "Diamond II".to_string(),
             },
         );
+        // Hoops
+        playlists.insert(
+            27,
+            crate::mmr::TrackerPlaylistSnapshot {
+                name: "Ranked Hoops".to_string(),
+                rating: 950,
+                matches: 20,
+                tier_name: "Platinum III".to_string(),
+            },
+        );
+        // Dropshot
+        playlists.insert(
+            29,
+            crate::mmr::TrackerPlaylistSnapshot {
+                name: "Ranked Dropshot".to_string(),
+                rating: 875,
+                matches: 8,
+                tier_name: "Platinum I".to_string(),
+            },
+        );
         // Casual (ID 0) with a higher rating
         playlists.insert(
             0,
@@ -1003,20 +1063,35 @@ mod tests {
             current_season: None,
         };
 
-        // 1. Should select 1v1 for 2 human players
-        let pl_1v1 = select_lobby_playlist(Some(&mmr), 2).unwrap();
+        // 1. Should select 1v1 for 2 total players.
+        let pl_1v1 = select_lobby_playlist(Some(&mmr), SessionMode::Unknown, 2).unwrap();
         assert_eq!(pl_1v1.name, "Ranked Duel 1v1");
         assert_eq!(pl_1v1.rating, 800);
 
-        // 2. Should select 2v2 for 4 human players
-        let pl_2v2 = select_lobby_playlist(Some(&mmr), 4).unwrap();
+        // 2. Should select 2v2 for 4 total players, including bot exhibitions.
+        let pl_2v2 = select_lobby_playlist(Some(&mmr), SessionMode::Unknown, 4).unwrap();
         assert_eq!(pl_2v2.name, "Ranked Doubles 2v2");
         assert_eq!(pl_2v2.rating, 1200);
 
-        // 3. Should fallback to best playlist (2v2 with 1200 rating) for 3v3 (human_count >= 5) because 3v3 is missing
+        // 3. Should select Hoops from inferred map mode even though 4 humans would normally mean 2v2.
+        let pl_hoops = select_lobby_playlist(Some(&mmr), SessionMode::Hoops, 4).unwrap();
+        assert_eq!(pl_hoops.name, "Ranked Hoops");
+        assert_eq!(pl_hoops.rating, 950);
+
+        // 4. Should select Dropshot from inferred map mode.
+        let pl_dropshot = select_lobby_playlist(Some(&mmr), SessionMode::Dropshot, 6).unwrap();
+        assert_eq!(pl_dropshot.name, "Ranked Dropshot");
+        assert_eq!(pl_dropshot.rating, 875);
+
+        // 5. Should fallback to best playlist (2v2 with 1200 rating) for 3v3 (player_count >= 5) because 3v3 is missing
         // (Even though Casual playlist 0 has a higher rating of 2000, it must be ignored as a fallback for lobby badges)
-        let pl_fallback = select_lobby_playlist(Some(&mmr), 6).unwrap();
+        let pl_fallback = select_lobby_playlist(Some(&mmr), SessionMode::Unknown, 6).unwrap();
         assert_eq!(pl_fallback.name, "Ranked Doubles 2v2");
         assert_eq!(pl_fallback.rating, 1200);
+
+        // 6. One total player is not enough to infer a current match playlist.
+        let pl_single_player = select_lobby_playlist(Some(&mmr), SessionMode::Unknown, 1).unwrap();
+        assert_eq!(pl_single_player.name, "Ranked Doubles 2v2");
+        assert_eq!(pl_single_player.rating, 1200);
     }
 }

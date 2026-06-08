@@ -151,7 +151,7 @@ impl Default for RocketLeagueProcessWatcher {
     }
 }
 
-fn is_rocket_league_name(name: &OsStr) -> bool {
+pub(crate) fn is_rocket_league_name(name: &OsStr) -> bool {
     let normalized = name.to_string_lossy().to_lowercase();
     normalized == "rocketleague.exe"
         || normalized == "rocketleague.ex"

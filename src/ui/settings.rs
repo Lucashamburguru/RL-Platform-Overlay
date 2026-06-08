@@ -40,6 +40,7 @@ pub(super) fn render_update_notice(ui: &mut egui::Ui, state: &Arc<AppState>) {
     if !version_check.update_available {
         return;
     }
+    let auto_update_status = state.auto_update_status.load();
 
     let frame = egui::Frame::default()
         .fill(egui::Color32::from_rgb(55, 46, 18))
@@ -59,7 +60,40 @@ pub(super) fn render_update_notice(ui: &mut egui::Ui, state: &Arc<AppState>) {
             .strong()
             .color(egui::Color32::from_rgb(255, 226, 150)),
         );
-        ui.hyperlink_to("Download release", &version_check.release_url);
+        ui.horizontal(|ui| {
+            #[cfg(target_os = "windows")]
+            {
+                let can_auto_update = !auto_update_status.running
+                    && !version_check.windows_download_url.is_empty()
+                    && !version_check.windows_checksum_url.is_empty();
+                if ui
+                    .add_enabled(can_auto_update, egui::Button::new("Update and restart"))
+                    .clicked()
+                {
+                    crate::update::start_auto_update(state.clone());
+                }
+            }
+            ui.hyperlink_to("Download release", &version_check.release_url);
+        });
+        if auto_update_status.running && !auto_update_status.message.is_empty() {
+            ui.horizontal(|ui| {
+                ui.add(egui::Spinner::new());
+                ui.label(auto_update_status.message.as_str());
+            });
+        } else if !auto_update_status.error.is_empty() {
+            ui.colored_label(
+                egui::Color32::from_rgb(230, 120, 80),
+                auto_update_status.error.as_str(),
+            );
+        } else if cfg!(target_os = "windows")
+            && (version_check.windows_download_url.is_empty()
+                || version_check.windows_checksum_url.is_empty())
+        {
+            ui.colored_label(
+                egui::Color32::from_rgb(230, 120, 80),
+                "Automatic update is unavailable for this release. Use the release link.",
+            );
+        }
     });
     ui.add_space(6.0);
 }
@@ -340,6 +374,16 @@ pub(super) fn render_overlay_settings_tab(
             });
 
             right.add_space(8.0);
+            setting_row(right, "GG Keys", |ui| {
+                if ui
+                    .text_edit_singleline(&mut config_edit.auto_gg_sequence)
+                    .changed()
+                {
+                    *changed = true;
+                }
+            });
+
+            right.add_space(8.0);
             setting_row(right, "Auto Play", |ui| {
                 if ui
                     .checkbox(
@@ -360,6 +404,7 @@ pub(super) fn render_overlay_settings_tab(
     ui.add_space(10.0);
     settings_section(ui, "Live Preview", |ui| {
         let preview = super::lobby_overlay::preview_lobby_players(state);
+        let session = state.session.load();
         super::lobby_overlay::draw_lobby_panel(
             ui,
             &preview,
@@ -367,6 +412,7 @@ pub(super) fn render_overlay_settings_tab(
             true,
             None,
             None,
+            session.active_mode,
             Some(config_edit.ui_scale.min(1.4)),
         );
     });
@@ -451,6 +497,39 @@ pub(super) fn render_session_settings_tab(
                     *changed = true;
                 }
             });
+
+            ui.add_space(8.0);
+            setting_row(ui, "Expanded", |ui| {
+                ui.vertical(|ui| {
+                    if ui
+                        .checkbox(
+                            &mut config_edit.session_expanded_show_streaks,
+                            "Streaks & Stats",
+                        )
+                        .changed()
+                    {
+                        *changed = true;
+                    }
+                    if ui
+                        .checkbox(
+                            &mut config_edit.session_expanded_show_breakdown,
+                            "Mode Breakdown",
+                        )
+                        .changed()
+                    {
+                        *changed = true;
+                    }
+                    if ui
+                        .checkbox(
+                            &mut config_edit.session_expanded_show_mmr_delta,
+                            "MMR Change",
+                        )
+                        .changed()
+                    {
+                        *changed = true;
+                    }
+                });
+            });
         });
         settings_section(right, "Local MMR", |ui| {
             render_local_mmr_panel(ui, state);
@@ -459,12 +538,19 @@ pub(super) fn render_session_settings_tab(
 
     ui.add_space(10.0);
     settings_section(ui, "Preview", |ui| {
+        let local_mmr = state.local_mmr.load();
         draw_session_panel(
             ui,
             &state.session.load(),
+            &local_mmr,
             config_edit.session_overlay_scale.min(1.4),
             config_edit.session_overlay_display,
             config_edit.session_overlay_opacity,
+            super::session_hud::SessionHudOptions {
+                show_streaks: config_edit.session_expanded_show_streaks,
+                show_breakdown: config_edit.session_expanded_show_breakdown,
+                show_mmr_delta: config_edit.session_expanded_show_mmr_delta,
+            },
         );
     });
 }

@@ -11,7 +11,7 @@ mod session;
 mod setup;
 mod state;
 mod ui;
-mod update;
+pub mod update;
 
 use eframe::egui;
 use state::AppState;
