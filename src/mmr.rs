@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use tokio::time::sleep;
 
 const MMR_TRACKER_API_HOST: &str = "https://api.tracker.gg";
-const MMR_RANKED_PLAYLIST_IDS: [i32; 10] = [10, 11, 12, 13, 27, 28, 29, 30, 34, 63];
+const MMR_TRACKED_PLAYLIST_IDS: [i32; 11] = [0, 10, 11, 12, 13, 27, 28, 29, 30, 34, 63];
 const MMR_CACHE_TTL: Duration = Duration::from_secs(60 * 60);
 
 #[derive(Debug, Clone)]
@@ -38,8 +38,8 @@ pub struct TrackerSnapshot {
     pub current_season: Option<i32>,
 }
 
-fn is_ranked_playlist(playlist_id: i32) -> bool {
-    MMR_RANKED_PLAYLIST_IDS.contains(&playlist_id)
+fn is_tracked_playlist(playlist_id: i32) -> bool {
+    MMR_TRACKED_PLAYLIST_IDS.contains(&playlist_id)
 }
 
 fn tracker_api_url(player: &TrackerPlayer) -> String {
@@ -174,7 +174,7 @@ fn extract_tracker_stats(payload: &Value) -> Option<TrackerSnapshot> {
         let Some(playlist_id) = playlist_id else {
             continue;
         };
-        if !is_ranked_playlist(playlist_id) {
+        if !is_tracked_playlist(playlist_id) {
             continue;
         }
 

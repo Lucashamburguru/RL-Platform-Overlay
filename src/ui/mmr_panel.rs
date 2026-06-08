@@ -99,6 +99,12 @@ fn ranked_playlist_sort_priority(playlist_id: i32, playlist_name: &str) -> i32 {
         1
     } else if playlist_id == 13 || name.contains("standard") || name.contains("3v3") {
         2
+    } else if playlist_id == 0
+        || name.contains("unranked")
+        || name.contains("un-ranked")
+        || name.contains("casual")
+    {
+        3
     } else {
         10
     }
@@ -112,6 +118,8 @@ fn compact_playlist_name(playlist_name: &str) -> String {
         "2v2".to_string()
     } else if name.contains("standard") || name.contains("3v3") {
         "3v3".to_string()
+    } else if name.contains("unranked") || name.contains("un-ranked") || name.contains("casual") {
+        "Casual".to_string()
     } else {
         playlist_name
             .trim_start_matches("Ranked ")
@@ -157,6 +165,9 @@ mod tests {
         assert_eq!(compact_playlist_name("Ranked Doubles 2v2"), "2v2");
         assert_eq!(compact_playlist_name("Ranked Standard 3v3"), "3v3");
         assert_eq!(compact_playlist_name("Ranked Hoops"), "Hoops");
+        assert_eq!(compact_playlist_name("Un-Ranked"), "Casual");
+        assert_eq!(compact_playlist_name("Unranked"), "Casual");
+        assert_eq!(compact_playlist_name("Casual"), "Casual");
     }
 
     #[test]
@@ -164,6 +175,7 @@ mod tests {
         assert_eq!(ranked_playlist_sort_priority(10, "Ranked Duel"), 0);
         assert_eq!(ranked_playlist_sort_priority(11, "Ranked Doubles"), 1);
         assert_eq!(ranked_playlist_sort_priority(13, "Ranked Standard"), 2);
+        assert_eq!(ranked_playlist_sort_priority(0, "Un-Ranked"), 3);
         assert_eq!(ranked_playlist_sort_priority(27, "Ranked Hoops"), 10);
     }
 

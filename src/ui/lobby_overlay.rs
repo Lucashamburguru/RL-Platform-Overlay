@@ -704,8 +704,9 @@ fn select_lobby_playlist(
 
 fn best_playlist(mmr: Option<&TrackerSnapshot>) -> Option<&crate::mmr::TrackerPlaylistSnapshot> {
     mmr?.playlists
-        .values()
-        .filter(|playlist| !playlist.tier_name.is_empty())
+        .iter()
+        .filter(|entry| *entry.0 != 0 && !entry.1.tier_name.is_empty())
+        .map(|entry| entry.1)
         .max_by_key(|playlist| playlist.rating)
 }
 
@@ -985,6 +986,16 @@ mod tests {
                 tier_name: "Diamond II".to_string(),
             },
         );
+        // Casual (ID 0) with a higher rating
+        playlists.insert(
+            0,
+            crate::mmr::TrackerPlaylistSnapshot {
+                name: "Un-Ranked".to_string(),
+                rating: 2000,
+                matches: 50,
+                tier_name: "Unranked".to_string(),
+            },
+        );
 
         let mmr = TrackerSnapshot {
             playlists,
@@ -1003,6 +1014,7 @@ mod tests {
         assert_eq!(pl_2v2.rating, 1200);
 
         // 3. Should fallback to best playlist (2v2 with 1200 rating) for 3v3 (human_count >= 5) because 3v3 is missing
+        // (Even though Casual playlist 0 has a higher rating of 2000, it must be ignored as a fallback for lobby badges)
         let pl_fallback = select_lobby_playlist(Some(&mmr), 6).unwrap();
         assert_eq!(pl_fallback.name, "Ranked Doubles 2v2");
         assert_eq!(pl_fallback.rating, 1200);
