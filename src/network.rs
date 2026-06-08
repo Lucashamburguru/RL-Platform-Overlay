@@ -18,13 +18,20 @@ async fn simulate_key_tap(key: rdev::Key) -> Result<(), rdev::SimulateError> {
     Ok(())
 }
 
-fn handle_match_reset(state: &Arc<AppState>) {
+fn handle_match_reset(state: &Arc<AppState>, early_leave: bool) {
+    let players = state.players.load();
+    let is_online = players.values().any(|p| !p.is_local && !p.is_bot);
+
+    let mut session = (**state.session.load()).clone();
+    if early_leave && is_online {
+        session.record_early_leave();
+    }
+    session.handle_reset_event();
+    state.session.store(Arc::new(session));
+
     state.players.store(Arc::new(HashMap::new()));
     state.local_player_name.store(Arc::new("".to_string()));
     state.local_team.store(255, Ordering::SeqCst);
-    let mut session = (**state.session.load()).clone();
-    session.handle_reset_event();
-    state.session.store(Arc::new(session));
     println!("Match ended, clearing player list.");
 }
 
@@ -108,7 +115,7 @@ fn handle_event(state: &Arc<AppState>, json: &Value) {
     match event {
         "UpdateState" => handle_update_state(state, &json["Data"]),
         "MatchEnded" => {
-            handle_match_reset(state);
+            handle_match_reset(state, false);
 
             let state_clone = state.clone();
             tokio::spawn(async move {
@@ -156,7 +163,7 @@ fn handle_event(state: &Arc<AppState>, json: &Value) {
             }
         }
         "MatchDestroyed" | "LobbyEntered" => {
-            handle_match_reset(state);
+            handle_match_reset(state, true);
         }
         _ => println!("Received event: {}", event),
     }
@@ -528,5 +535,82 @@ mod tests {
             config.cached_local_player_identity.primary_id,
             "Steam|76561198000000000|0"
         );
+    }
+
+    #[test]
+    fn test_early_leave_online_match_records_loss() {
+        let state = AppState::new();
+        handle_update_state(
+            &state,
+            &json!({
+                "MatchGuid": "guid123",
+                "Players": [
+                    {
+                        "Name": "Me",
+                        "PrimaryId": "Steam|1|0",
+                        "TeamNum": 0,
+                        "IsLocalPlayer": true,
+                        "Boost": 100
+                    },
+                    {
+                        "Name": "Opponent",
+                        "PrimaryId": "Epic|2|0",
+                        "TeamNum": 1,
+                        "Boost": 100
+                    }
+                ],
+                "Game": {
+                    "Teams": [
+                        {"TeamNum": 0, "Score": 0},
+                        {"TeamNum": 1, "Score": 0}
+                    ]
+                }
+            }),
+        );
+
+        assert_eq!(state.session.load().active_match_id, "guid123");
+
+        handle_event(&state, &json!({ "Event": "LobbyEntered" }));
+
+        let session = state.session.load();
+        assert_eq!(session.losses, 1);
+        assert_eq!(session.matches_played, 1);
+        assert_eq!(session.last_result, crate::session::MatchResult::Loss);
+    }
+
+    #[test]
+    fn test_early_leave_offline_match_ignored() {
+        let state = AppState::new();
+        handle_update_state(
+            &state,
+            &json!({
+                "MatchGuid": "guid123",
+                "Players": [
+                    {
+                        "Name": "Me",
+                        "PrimaryId": "Steam|1|0",
+                        "TeamNum": 0,
+                        "IsLocalPlayer": true
+                    },
+                    {
+                        "Name": "Bot1",
+                        "PrimaryId": "Unknown|0|0",
+                        "TeamNum": 1
+                    }
+                ],
+                "Game": {
+                    "Teams": [
+                        {"TeamNum": 0, "Score": 0},
+                        {"TeamNum": 1, "Score": 0}
+                    ]
+                }
+            }),
+        );
+
+        handle_event(&state, &json!({ "Event": "LobbyEntered" }));
+
+        let session = state.session.load();
+        assert_eq!(session.losses, 0);
+        assert_eq!(session.matches_played, 0);
     }
 }

@@ -82,6 +82,36 @@ impl SessionState {
         }
     }
 
+    pub fn record_early_leave(&mut self) {
+        if self.result_recorded_for_match || self.active_match_id.is_empty() {
+            return;
+        }
+
+        let result = self
+            .local_team
+            .and_then(|team| result_from_score(self.blue_score, self.orange_score, team))
+            .unwrap_or(MatchResult::Loss);
+
+        self.last_result = result;
+        self.result_recorded_for_match = true;
+        self.matches_played += 1;
+        match result {
+            MatchResult::Win => {
+                self.wins += 1;
+                self.streak = if self.streak >= 0 { self.streak + 1 } else { 1 };
+            }
+            MatchResult::Loss => {
+                self.losses += 1;
+                self.streak = if self.streak <= 0 {
+                    self.streak - 1
+                } else {
+                    -1
+                };
+            }
+            MatchResult::Unknown => {}
+        }
+    }
+
     pub fn handle_reset_event(&mut self) {
         self.active_match_id.clear();
         self.local_team = None;
@@ -216,5 +246,56 @@ mod tests {
         session.handle_update_state(&data, None);
         assert_eq!(session.matches_played, 0);
         assert_eq!(session.last_result, MatchResult::Unknown);
+    }
+
+    #[test]
+    fn test_early_leave_win() {
+        let mut session = SessionState {
+            active_match_id: "xyz".to_string(),
+            local_team: Some(0),
+            blue_score: 3,
+            orange_score: 1,
+            ..Default::default()
+        };
+        session.record_early_leave();
+        assert_eq!(session.wins, 1);
+        assert_eq!(session.losses, 0);
+        assert_eq!(session.matches_played, 1);
+        assert_eq!(session.last_result, MatchResult::Win);
+        assert!(session.result_recorded_for_match);
+    }
+
+    #[test]
+    fn test_early_leave_loss() {
+        let mut session = SessionState {
+            active_match_id: "xyz".to_string(),
+            local_team: Some(0),
+            blue_score: 1,
+            orange_score: 3,
+            ..Default::default()
+        };
+        session.record_early_leave();
+        assert_eq!(session.wins, 0);
+        assert_eq!(session.losses, 1);
+        assert_eq!(session.matches_played, 1);
+        assert_eq!(session.last_result, MatchResult::Loss);
+        assert!(session.result_recorded_for_match);
+    }
+
+    #[test]
+    fn test_early_leave_tie_defaults_to_loss() {
+        let mut session = SessionState {
+            active_match_id: "xyz".to_string(),
+            local_team: Some(0),
+            blue_score: 2,
+            orange_score: 2,
+            ..Default::default()
+        };
+        session.record_early_leave();
+        assert_eq!(session.wins, 0);
+        assert_eq!(session.losses, 1);
+        assert_eq!(session.matches_played, 1);
+        assert_eq!(session.last_result, MatchResult::Loss);
+        assert!(session.result_recorded_for_match);
     }
 }
