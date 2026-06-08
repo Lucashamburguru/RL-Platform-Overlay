@@ -328,6 +328,29 @@ pub(super) fn render_overlay_settings_tab(
                     *changed = true;
                 }
             });
+
+            right.add_space(8.0);
+            setting_row(right, "Auto Chat", |ui| {
+                if ui
+                    .checkbox(&mut config_edit.auto_gg, "Auto 'GG' at Match End")
+                    .changed()
+                {
+                    *changed = true;
+                }
+            });
+
+            right.add_space(8.0);
+            setting_row(right, "Auto Play", |ui| {
+                if ui
+                    .checkbox(
+                        &mut config_edit.auto_freeplay,
+                        "Auto Free Play at Match End",
+                    )
+                    .changed()
+                {
+                    *changed = true;
+                }
+            });
         });
     });
 

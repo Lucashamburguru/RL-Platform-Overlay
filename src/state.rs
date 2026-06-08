@@ -73,6 +73,8 @@ pub struct Config {
     pub ballchasing_visibility: String,
     pub replays_folder: String,
     pub uploaded_replays: Vec<String>,
+    pub auto_gg: bool,
+    pub auto_freeplay: bool,
 }
 
 pub fn detect_rocket_league_path() -> Option<String> {
@@ -215,6 +217,8 @@ impl Default for Config {
             ballchasing_visibility: "public".to_string(),
             replays_folder: detect_replays_path().unwrap_or_default(),
             uploaded_replays: Vec::new(),
+            auto_gg: false,
+            auto_freeplay: false,
         }
     }
 }

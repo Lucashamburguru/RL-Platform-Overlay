@@ -10,6 +10,24 @@ use tokio::io::AsyncReadExt;
 use tokio::net::TcpStream;
 use tokio_tungstenite::connect_async;
 
+async fn simulate_key_tap(key: rdev::Key) -> Result<(), rdev::SimulateError> {
+    rdev::simulate(&rdev::EventType::KeyPress(key))?;
+    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    rdev::simulate(&rdev::EventType::KeyRelease(key))?;
+    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    Ok(())
+}
+
+fn handle_match_reset(state: &Arc<AppState>) {
+    state.players.store(Arc::new(HashMap::new()));
+    state.local_player_name.store(Arc::new("".to_string()));
+    state.local_team.store(255, Ordering::SeqCst);
+    let mut session = (**state.session.load()).clone();
+    session.handle_reset_event();
+    state.session.store(Arc::new(session));
+    println!("Match ended, clearing player list.");
+}
+
 pub async fn start_network_task(state: Arc<AppState>) {
     let url = "ws://127.0.0.1:49123";
     let addr = "127.0.0.1:49123";
@@ -89,14 +107,45 @@ fn handle_event(state: &Arc<AppState>, json: &Value) {
     update_last_event(state, event);
     match event {
         "UpdateState" => handle_update_state(state, &json["Data"]),
-        "MatchEnded" | "MatchDestroyed" | "LobbyEntered" => {
-            state.players.store(Arc::new(HashMap::new()));
-            state.local_player_name.store(Arc::new("".to_string()));
-            state.local_team.store(255, Ordering::SeqCst);
-            let mut session = (**state.session.load()).clone();
-            session.handle_reset_event();
-            state.session.store(Arc::new(session));
-            println!("Match ended, clearing player list.");
+        "MatchEnded" => {
+            handle_match_reset(state);
+
+            let state_clone = state.clone();
+            tokio::spawn(async move {
+                let config = state_clone.config.load();
+                if config.auto_gg {
+                    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+                    println!("Auto-GG: sending 'gg'...");
+                    let _ = simulate_key_tap(rdev::Key::KeyT).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    let _ = simulate_key_tap(rdev::Key::KeyG).await;
+                    let _ = simulate_key_tap(rdev::Key::KeyG).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    let _ = simulate_key_tap(rdev::Key::Return).await;
+                }
+
+                if config.auto_freeplay {
+                    tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
+                    println!("Auto-Freeplay: Navigating to Free Play...");
+                    let _ = simulate_key_tap(rdev::Key::Escape).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+                    let _ = simulate_key_tap(rdev::Key::DownArrow).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    let _ = simulate_key_tap(rdev::Key::Return).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    let _ = simulate_key_tap(rdev::Key::DownArrow).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    let _ = simulate_key_tap(rdev::Key::Return).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+                    let _ = simulate_key_tap(rdev::Key::Return).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    let _ = simulate_key_tap(rdev::Key::Return).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    let _ = simulate_key_tap(rdev::Key::Return).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    let _ = simulate_key_tap(rdev::Key::Return).await;
+                }
+            });
 
             if state.config.load().ballchasing_enabled {
                 let state_clone = state.clone();
@@ -105,6 +154,9 @@ fn handle_event(state: &Arc<AppState>, json: &Value) {
                     crate::replays::trigger_replay_upload(state_clone, false);
                 });
             }
+        }
+        "MatchDestroyed" | "LobbyEntered" => {
+            handle_match_reset(state);
         }
         _ => println!("Received event: {}", event),
     }
