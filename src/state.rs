@@ -502,6 +502,12 @@ pub struct AppState {
     pub hoops_fixer_logs: Arc<std::sync::Mutex<Vec<String>>>,
     pub debug_scrape_status: Arc<std::sync::Mutex<String>>,
     pub debug_tracker_logs: Arc<std::sync::Mutex<Vec<String>>>,
+    pub alt_tab_diagnostics_status: Arc<std::sync::Mutex<String>>,
+    pub xuid_gamertag_cache: Arc<std::sync::Mutex<HashMap<String, String>>>,
+    pub frame_tracker: Arc<crate::diagnostics::SharedFrameTracker>,
+    pub foreground_tracker: Arc<crate::diagnostics::ForegroundTracker>,
+    pub resource_tracker: Arc<crate::diagnostics::ResourceTracker>,
+    pub resource_poller: Arc<std::sync::Mutex<crate::diagnostics::ResourcePoller>>,
 }
 
 impl AppState {
@@ -519,6 +525,9 @@ impl AppState {
             .emulation(wreq_util::Emulation::Chrome128)
             .build()
             .expect("Failed to build MMR HTTP client with Chrome emulation");
+
+        let resource_tracker = Arc::new(crate::diagnostics::ResourceTracker::new());
+        let resource_poller = Arc::new(std::sync::Mutex::new(crate::diagnostics::ResourcePoller::new(resource_tracker.clone())));
 
         Arc::new(Self {
             debug_enabled,
@@ -553,6 +562,12 @@ impl AppState {
             hoops_fixer_logs: Arc::new(std::sync::Mutex::new(Vec::new())),
             debug_scrape_status: Arc::new(std::sync::Mutex::new("Idle".to_string())),
             debug_tracker_logs: Arc::new(std::sync::Mutex::new(Vec::new())),
+            alt_tab_diagnostics_status: Arc::new(std::sync::Mutex::new("Idle".to_string())),
+            xuid_gamertag_cache: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            frame_tracker: Arc::new(crate::diagnostics::SharedFrameTracker::new(60)),
+            foreground_tracker: Arc::new(crate::diagnostics::ForegroundTracker::new()),
+            resource_tracker,
+            resource_poller,
         })
     }
 
