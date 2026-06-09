@@ -689,4 +689,23 @@ mod tests {
         assert_eq!(snapshots.len(), 1);
         assert_eq!(snapshots[0].timestamp_ms, 100);
     }
+
+    #[test]
+    fn test_resource_tracker_buffer_eviction() {
+        let tracker = super::ResourceTracker::new();
+        for i in 0..(super::MAX_RESOURCE_SNAPSHOTS + 5) {
+            tracker.add_snapshot(super::ResourceSnapshot {
+                timestamp_ms: i as u128 * 100,
+                rl_cpu_usage: 0.0,
+                rl_memory_mb: 0,
+                eac_cpu_usage: 0.0,
+                eac_memory_mb: 0,
+                system_cpu_usage: 0.0,
+            });
+        }
+        let snapshots = tracker.get_snapshots();
+        assert_eq!(snapshots.len(), super::MAX_RESOURCE_SNAPSHOTS);
+        assert_eq!(snapshots[0].timestamp_ms, 500);
+        assert_eq!(snapshots.last().unwrap().timestamp_ms, (super::MAX_RESOURCE_SNAPSHOTS + 4) as u128 * 100);
+    }
 }
