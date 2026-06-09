@@ -1,8 +1,10 @@
 use std::collections::VecDeque;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread;
 use std::time::{Duration, Instant};
+use sysinfo::{System, ProcessRefreshKind};
 
 const MAX_SAMPLES: usize = 300;
 const MAX_FOCUS_EVENTS: usize = 80;
@@ -626,6 +628,78 @@ pub fn write_alt_tab_diagnostics_log(
     Ok(path)
 }
 
+pub struct ResourcePoller {
+    tracker: Arc<ResourceTracker>,
+    running: Arc<AtomicBool>,
+    handle: Option<thread::JoinHandle<()>>,
+}
+
+impl ResourcePoller {
+    pub fn new(tracker: Arc<ResourceTracker>) -> Self {
+        Self {
+            tracker,
+            running: Arc::new(AtomicBool::new(false)),
+            handle: None,
+        }
+    }
+
+    pub fn is_running(&self) -> bool {
+        self.running.load(Ordering::Relaxed)
+    }
+
+    pub fn start(&mut self) {
+        if self.is_running() { return; }
+        self.running.store(true, Ordering::Relaxed);
+        
+        let running_flag = self.running.clone();
+        let tracker_ref = self.tracker.clone();
+        
+        self.handle = Some(thread::spawn(move || {
+            let mut sys = System::new_all();
+            let process_refresh_kind = ProcessRefreshKind::nothing().with_cpu();
+            
+            while running_flag.load(Ordering::Relaxed) {
+                sys.refresh_cpu_usage();
+                sys.refresh_processes_specifics(sysinfo::ProcessesToUpdate::All, true, process_refresh_kind);
+                
+                let mut rl_cpu = 0.0;
+                let mut rl_mem = 0;
+                let mut eac_cpu = 0.0;
+                let mut eac_mem = 0;
+                
+                for process in sys.processes().values() {
+                    let name = process.name().to_string_lossy().to_lowercase();
+                    if name.contains("rocketleague") {
+                        rl_cpu = process.cpu_usage();
+                        rl_mem = process.memory() / 1024 / 1024;
+                    } else if name.contains("easyanticheat") || name.contains("eos") {
+                        eac_cpu = process.cpu_usage();
+                        eac_mem = process.memory() / 1024 / 1024;
+                    }
+                }
+                
+                tracker_ref.add_snapshot(ResourceSnapshot {
+                    timestamp_ms: crate::stats_api::now_ms(),
+                    rl_cpu_usage: rl_cpu,
+                    rl_memory_mb: rl_mem,
+                    eac_cpu_usage: eac_cpu,
+                    eac_memory_mb: eac_mem,
+                    system_cpu_usage: sys.global_cpu_usage(),
+                });
+                
+                thread::sleep(Duration::from_millis(250));
+            }
+        }));
+    }
+
+    pub fn stop(&mut self) {
+        self.running.store(false, Ordering::Relaxed);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -707,5 +781,17 @@ mod tests {
         assert_eq!(snapshots.len(), super::MAX_RESOURCE_SNAPSHOTS);
         assert_eq!(snapshots[0].timestamp_ms, 500);
         assert_eq!(snapshots.last().unwrap().timestamp_ms, (super::MAX_RESOURCE_SNAPSHOTS + 4) as u128 * 100);
+    }
+
+    #[test]
+    fn test_poller_lifecycle() {
+        let tracker = std::sync::Arc::new(super::ResourceTracker::new());
+        let mut poller = super::ResourcePoller::new(tracker.clone());
+        
+        assert!(!poller.is_running());
+        poller.start();
+        assert!(poller.is_running());
+        poller.stop();
+        assert!(!poller.is_running());
     }
 }
