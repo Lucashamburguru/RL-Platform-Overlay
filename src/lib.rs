@@ -4,6 +4,7 @@ pub mod replays;
 pub mod stats_api;
 
 mod assets;
+mod diagnostics;
 mod input;
 mod mmr;
 mod network;

@@ -1,10 +1,10 @@
 use std::collections::VecDeque;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
-use sysinfo::{System, ProcessRefreshKind};
+use sysinfo::{ProcessRefreshKind, System};
 
 const MAX_SAMPLES: usize = 300;
 const MAX_FOCUS_EVENTS: usize = 80;
@@ -182,6 +182,7 @@ pub struct ResourceSnapshot {
     pub eac_cpu_usage: f32,
     pub eac_memory_mb: u64,
     pub system_cpu_usage: f32,
+    pub top_processes: Vec<(String, f32)>,
 }
 
 const MAX_RESOURCE_SNAPSHOTS: usize = 40; // 10 seconds at 250ms polling
@@ -207,7 +208,10 @@ impl ResourceTracker {
     }
 
     pub fn get_snapshots(&self) -> Vec<ResourceSnapshot> {
-        self.inner.lock().map(|b| b.iter().cloned().collect()).unwrap_or_default()
+        self.inner
+            .lock()
+            .map(|b| b.iter().cloned().collect())
+            .unwrap_or_default()
     }
 }
 
@@ -357,6 +361,16 @@ impl ForegroundTimeline {
 
 fn is_rocket_league_process(process_name: &str) -> bool {
     process_name.eq_ignore_ascii_case("RocketLeague.exe")
+}
+
+fn is_easy_anticheat_process(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower == "easyanticheat.exe" || lower == "easyanticheat_eos.exe"
+}
+
+fn is_eos_process(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.starts_with("eosoverlayrenderer")
 }
 
 #[cfg(target_os = "windows")]
@@ -571,6 +585,7 @@ pub fn write_alt_tab_diagnostics_log(
     process_samples: &[ProcessDiagnosticsSample],
     system_diagnostics: &[(&'static str, String)],
     resource_snapshots: &[ResourceSnapshot],
+    frame_stats: &FrameStats,
 ) -> Result<PathBuf, String> {
     let path = alt_tab_diagnostics_log_path();
     if let Some(parent) = path.parent() {
@@ -631,13 +646,44 @@ pub fn write_alt_tab_diagnostics_log(
         lines.push("no resource snapshots recorded".to_string());
     } else {
         for s in resource_snapshots {
+            let top = s
+                .top_processes
+                .iter()
+                .map(|(name, cpu)| format!("{name}={cpu:.1}%"))
+                .collect::<Vec<_>>()
+                .join(", ");
             lines.push(format!(
-                "timestamp_ms={} rl_cpu={:.1}% rl_mem={}MB eac_cpu={:.1}% eac_mem={}MB sys_cpu={:.1}%",
-                s.timestamp_ms, s.rl_cpu_usage, s.rl_memory_mb, s.eac_cpu_usage, s.eac_memory_mb, s.system_cpu_usage
+                "timestamp_ms={} rl_cpu={:.1}% rl_mem={}MB eac_cpu={:.1}% eac_mem={}MB sys_cpu={:.1}% top=[{}]",
+                s.timestamp_ms, s.rl_cpu_usage, s.rl_memory_mb, s.eac_cpu_usage, s.eac_memory_mb, s.system_cpu_usage, top
             ));
         }
     }
     lines.push(String::new());
+
+    lines.push("[frame_timing]".to_string());
+    lines.push(format!(
+        "stutter_threshold_ms={:.1}",
+        frame_stats.stutter_threshold_ms
+    ));
+    lines.push(format!("total_frames={}", frame_stats.total_frames));
+    lines.push(format!("stutter_count={}", frame_stats.stutter_count));
+    lines.push(format!("avg_frame_ms={:.2}", frame_stats.avg_ms));
+    lines.push(format!("min_frame_ms={:.2}", frame_stats.min_ms));
+    lines.push(format!("max_frame_ms={:.2}", frame_stats.max_ms));
+    lines.push(format!("last_frame_ms={:.2}", frame_stats.last_frame_ms));
+    if frame_stats.recent_frames.is_empty() {
+        lines.push("no frame samples recorded".to_string());
+    } else {
+        lines.push("recent_frames_ms=".to_string());
+        for (i, ms) in frame_stats.recent_frames.iter().enumerate() {
+            let marker = if *ms > frame_stats.stutter_threshold_ms {
+                " STUTTER"
+            } else {
+                ""
+            };
+            lines.push(format!("  {i}: {:.2}{marker}", ms));
+        }
+    }
 
     std::fs::write(&path, lines.join("\n"))
         .map_err(|error| format!("Could not write diagnostics log: {error}"))?;
@@ -664,38 +710,53 @@ impl ResourcePoller {
     }
 
     pub fn start(&mut self) {
-        if self.is_running() { return; }
+        if self.is_running() {
+            return;
+        }
         self.running.store(true, Ordering::Relaxed);
-        
+
         let running_flag = self.running.clone();
         let tracker_ref = self.tracker.clone();
-        
+
         self.handle = Some(thread::spawn(move || {
             let mut sys = System::new_all();
             let process_refresh_kind = ProcessRefreshKind::nothing().with_cpu();
-            
+
             while running_flag.load(Ordering::Relaxed) {
                 sys.refresh_cpu_usage();
-                sys.refresh_processes_specifics(sysinfo::ProcessesToUpdate::All, true, process_refresh_kind);
-                
+                sys.refresh_processes_specifics(
+                    sysinfo::ProcessesToUpdate::All,
+                    true,
+                    process_refresh_kind,
+                );
+
                 let mut rl_cpu = 0.0;
                 let mut rl_mem = 0;
                 let mut eac_cpu = 0.0;
                 let mut eac_mem = 0;
-                
+
                 for process in sys.processes().values() {
                     let name = process.name().to_string_lossy();
-                    let bytes = name.as_bytes();
-                    
-                    if bytes.windows(12).any(|w| w.eq_ignore_ascii_case(b"rocketleague")) {
+
+                    if is_rocket_league_process(&name) {
                         rl_cpu += process.cpu_usage();
                         rl_mem += process.memory() / BYTES_PER_MB;
-                    } else if bytes.windows(13).any(|w| w.eq_ignore_ascii_case(b"easyanticheat")) || bytes.windows(3).any(|w| w.eq_ignore_ascii_case(b"eos")) {
+                    } else if is_easy_anticheat_process(&name) || is_eos_process(&name) {
                         eac_cpu += process.cpu_usage();
                         eac_mem += process.memory() / BYTES_PER_MB;
                     }
                 }
-                
+
+                let mut top_processes: Vec<(String, f32)> = sys
+                    .processes()
+                    .values()
+                    .filter(|p| p.cpu_usage() > 0.0)
+                    .map(|p| (p.name().to_string_lossy().into_owned(), p.cpu_usage()))
+                    .collect();
+                top_processes
+                    .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                top_processes.truncate(5);
+
                 tracker_ref.add_snapshot(ResourceSnapshot {
                     timestamp_ms: crate::stats_api::now_ms(),
                     rl_cpu_usage: rl_cpu,
@@ -703,14 +764,24 @@ impl ResourcePoller {
                     eac_cpu_usage: eac_cpu,
                     eac_memory_mb: eac_mem,
                     system_cpu_usage: sys.global_cpu_usage(),
+                    top_processes,
                 });
-                
+
                 thread::sleep(Duration::from_millis(POLL_INTERVAL_MS));
             }
         }));
     }
 
     pub fn stop(&mut self) {
+        self.running.store(false, Ordering::Relaxed);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+impl Drop for ResourcePoller {
+    fn drop(&mut self) {
         self.running.store(false, Ordering::Relaxed);
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
@@ -767,6 +838,7 @@ mod tests {
             eac_cpu_usage: 1.2,
             eac_memory_mb: 50,
             system_cpu_usage: 25.0,
+            top_processes: vec![],
         };
         assert_eq!(snapshot.rl_memory_mb, 2048);
     }
@@ -775,7 +847,13 @@ mod tests {
     fn test_resource_tracker_buffer() {
         let tracker = super::ResourceTracker::new();
         tracker.add_snapshot(super::ResourceSnapshot {
-            timestamp_ms: 100, rl_cpu_usage: 0.0, rl_memory_mb: 0, eac_cpu_usage: 0.0, eac_memory_mb: 0, system_cpu_usage: 0.0,
+            timestamp_ms: 100,
+            rl_cpu_usage: 0.0,
+            rl_memory_mb: 0,
+            eac_cpu_usage: 0.0,
+            eac_memory_mb: 0,
+            system_cpu_usage: 0.0,
+            top_processes: vec![],
         });
         let snapshots = tracker.get_snapshots();
         assert_eq!(snapshots.len(), 1);
@@ -793,19 +871,23 @@ mod tests {
                 eac_cpu_usage: 0.0,
                 eac_memory_mb: 0,
                 system_cpu_usage: 0.0,
+                top_processes: vec![],
             });
         }
         let snapshots = tracker.get_snapshots();
         assert_eq!(snapshots.len(), super::MAX_RESOURCE_SNAPSHOTS);
         assert_eq!(snapshots[0].timestamp_ms, 500);
-        assert_eq!(snapshots.last().unwrap().timestamp_ms, (super::MAX_RESOURCE_SNAPSHOTS + 4) as u128 * 100);
+        assert_eq!(
+            snapshots.last().unwrap().timestamp_ms,
+            (super::MAX_RESOURCE_SNAPSHOTS + 4) as u128 * 100
+        );
     }
 
     #[test]
     fn test_poller_lifecycle() {
         let tracker = std::sync::Arc::new(super::ResourceTracker::new());
         let mut poller = super::ResourcePoller::new(tracker.clone());
-        
+
         assert!(!poller.is_running());
         poller.start();
         assert!(poller.is_running());

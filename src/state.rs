@@ -527,7 +527,9 @@ impl AppState {
             .expect("Failed to build MMR HTTP client with Chrome emulation");
 
         let resource_tracker = Arc::new(crate::diagnostics::ResourceTracker::new());
-        let resource_poller = Arc::new(std::sync::Mutex::new(crate::diagnostics::ResourcePoller::new(resource_tracker.clone())));
+        let resource_poller = Arc::new(std::sync::Mutex::new(
+            crate::diagnostics::ResourcePoller::new(resource_tracker.clone()),
+        ));
 
         Arc::new(Self {
             debug_enabled,

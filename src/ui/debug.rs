@@ -305,10 +305,24 @@ fn render_performance_diagnostics(ui: &mut egui::Ui, state: &Arc<AppState>) {
         ui.heading("Performance Diagnostics");
         ui.add_space(6.0);
 
-        let is_polling = state.resource_poller.lock().map(|p| p.is_running()).unwrap_or(false);
-        if ui.button(if is_polling { "Stop Resource Polling" } else { "Start Resource Polling" }).clicked() {
-            if let Ok(mut poller) = state.resource_poller.lock() {
-                if is_polling { poller.stop(); } else { poller.start(); }
+        let is_polling = state
+            .resource_poller
+            .lock()
+            .map(|p| p.is_running())
+            .unwrap_or(false);
+        if ui
+            .button(if is_polling {
+                "Stop Resource Polling"
+            } else {
+                "Start Resource Polling"
+            })
+            .clicked()
+            && let Ok(mut poller) = state.resource_poller.lock()
+        {
+            if is_polling {
+                poller.stop();
+            } else {
+                poller.start();
             }
         }
         ui.add_space(6.0);
@@ -325,6 +339,14 @@ fn render_performance_diagnostics(ui: &mut egui::Ui, state: &Arc<AppState>) {
             {
                 let next_recording = !recording;
                 state.foreground_tracker.set_enabled(next_recording);
+
+                if let Ok(mut poller) = state.resource_poller.lock() {
+                    if next_recording && !poller.is_running() {
+                        poller.start();
+                    } else if !next_recording && poller.is_running() {
+                        poller.stop();
+                    }
+                }
             }
             ui.label(if recording {
                 "Recording foreground-window changes..."
@@ -350,8 +372,8 @@ fn render_performance_diagnostics(ui: &mut egui::Ui, state: &Arc<AppState>) {
                 .size(10.0)
                 .strong(),
         );
-        for (label, value) in &system_diagnostics {
-            debug_status_row(ui, label, &value);
+        for (label, value) in system_diagnostics.iter() {
+            debug_status_row(ui, label, value);
         }
 
         ui.add_space(6.0);
@@ -368,11 +390,13 @@ fn render_performance_diagnostics(ui: &mut egui::Ui, state: &Arc<AppState>) {
             &format!("{} collected", process_samples.len()),
         );
         if ui.button("Save Alt-Tab Diagnostics Log").clicked() {
+            let frame_stats = state.frame_tracker.stats();
             match crate::diagnostics::write_alt_tab_diagnostics_log(
                 &events,
                 &process_samples,
                 &system_diagnostics,
                 &state.resource_tracker.get_snapshots(),
+                &frame_stats,
             ) {
                 Ok(path) => {
                     let message = format!("Saved {}", path.display());
@@ -458,12 +482,7 @@ fn run_tracker_scrape_debug(state: Arc<AppState>, platform: String, player_name_
             player_id: player_name_or_id.clone(),
         };
 
-        let result = crate::mmr::fetch_tracker_snapshot(
-            &state.mmr_client,
-            &player,
-            &state.xuid_gamertag_cache,
-        )
-        .await;
+        let result = crate::mmr::fetch_tracker_snapshot(&state.mmr_client, &player).await;
 
         let status_msg = match result {
             Ok(snapshot) => {
