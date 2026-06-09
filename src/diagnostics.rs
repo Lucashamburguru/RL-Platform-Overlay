@@ -180,6 +180,33 @@ pub struct ResourceSnapshot {
     pub system_cpu_usage: f32,
 }
 
+const MAX_RESOURCE_SNAPSHOTS: usize = 40; // 10 seconds at 250ms polling
+
+pub struct ResourceTracker {
+    pub inner: Mutex<VecDeque<ResourceSnapshot>>,
+}
+
+impl ResourceTracker {
+    pub fn new() -> Self {
+        Self {
+            inner: Mutex::new(VecDeque::with_capacity(MAX_RESOURCE_SNAPSHOTS)),
+        }
+    }
+
+    pub fn add_snapshot(&self, snapshot: ResourceSnapshot) {
+        if let Ok(mut buffer) = self.inner.lock() {
+            if buffer.len() >= MAX_RESOURCE_SNAPSHOTS {
+                buffer.pop_front();
+            }
+            buffer.push_back(snapshot);
+        }
+    }
+
+    pub fn get_snapshots(&self) -> Vec<ResourceSnapshot> {
+        self.inner.lock().map(|b| b.iter().cloned().collect()).unwrap_or_default()
+    }
+}
+
 struct ForegroundSnapshot {
     title: String,
     process_name: String,
@@ -650,5 +677,16 @@ mod tests {
             system_cpu_usage: 25.0,
         };
         assert_eq!(snapshot.rl_memory_mb, 2048);
+    }
+
+    #[test]
+    fn test_resource_tracker_buffer() {
+        let tracker = super::ResourceTracker::new();
+        tracker.add_snapshot(super::ResourceSnapshot {
+            timestamp_ms: 100, rl_cpu_usage: 0.0, rl_memory_mb: 0, eac_cpu_usage: 0.0, eac_memory_mb: 0, system_cpu_usage: 0.0,
+        });
+        let snapshots = tracker.get_snapshots();
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots[0].timestamp_ms, 100);
     }
 }
