@@ -11,6 +11,8 @@ const MAX_FOCUS_EVENTS: usize = 80;
 const MAX_PROCESS_SAMPLES: usize = 120;
 const FOCUS_SAMPLE_INTERVAL: Duration = Duration::from_millis(100);
 const PROCESS_SAMPLE_INTERVAL: Duration = Duration::from_secs(5);
+const POLL_INTERVAL_MS: u64 = 250;
+const BYTES_PER_MB: u64 = 1_048_576;
 #[cfg(target_os = "windows")]
 const SYSTEM_DIAGNOSTICS_CACHE_TTL: Duration = Duration::from_secs(5);
 
@@ -521,7 +523,7 @@ fn collect_system_diagnostics() -> Vec<(&'static str, String)> {
     {
         let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
         if let Ok(bytes) = text.parse::<u64>() {
-            diag.push(("DWM Memory", format!("{} MB", bytes / 1024 / 1024)));
+            diag.push(("DWM Memory", format!("{} MB", bytes / BYTES_PER_MB)));
         }
     }
 
@@ -668,13 +670,15 @@ impl ResourcePoller {
                 let mut eac_mem = 0;
                 
                 for process in sys.processes().values() {
-                    let name = process.name().to_string_lossy().to_lowercase();
-                    if name.contains("rocketleague") {
-                        rl_cpu = process.cpu_usage();
-                        rl_mem = process.memory() / 1024 / 1024;
-                    } else if name.contains("easyanticheat") || name.contains("eos") {
-                        eac_cpu = process.cpu_usage();
-                        eac_mem = process.memory() / 1024 / 1024;
+                    let name = process.name().to_string_lossy();
+                    let bytes = name.as_bytes();
+                    
+                    if bytes.windows(12).any(|w| w.eq_ignore_ascii_case(b"rocketleague")) {
+                        rl_cpu += process.cpu_usage();
+                        rl_mem += process.memory() / BYTES_PER_MB;
+                    } else if bytes.windows(13).any(|w| w.eq_ignore_ascii_case(b"easyanticheat")) || bytes.windows(3).any(|w| w.eq_ignore_ascii_case(b"eos")) {
+                        eac_cpu += process.cpu_usage();
+                        eac_mem += process.memory() / BYTES_PER_MB;
                     }
                 }
                 
@@ -687,7 +691,7 @@ impl ResourcePoller {
                     system_cpu_usage: sys.global_cpu_usage(),
                 });
                 
-                thread::sleep(Duration::from_millis(250));
+                thread::sleep(Duration::from_millis(POLL_INTERVAL_MS));
             }
         }));
     }
