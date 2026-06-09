@@ -126,6 +126,9 @@ pub(super) fn render_debug_settings_tab(
     });
 
     ui.add_space(10.0);
+    render_performance_diagnostics(ui, state);
+
+    ui.add_space(10.0);
     ui.group(|ui| {
         ui.heading("In-Game Tracker Logs");
         ui.add_space(6.0);
@@ -297,6 +300,152 @@ pub(super) fn render_debug_settings_tab(
     });
 }
 
+fn render_performance_diagnostics(ui: &mut egui::Ui, state: &Arc<AppState>) {
+    ui.group(|ui| {
+        ui.heading("Performance Diagnostics");
+        ui.add_space(6.0);
+
+        let is_polling = state.resource_poller.lock().map(|p| p.is_running()).unwrap_or(false);
+        if ui.button(if is_polling { "Stop Resource Polling" } else { "Start Resource Polling" }).clicked() {
+            if let Ok(mut poller) = state.resource_poller.lock() {
+                if is_polling { poller.stop(); } else { poller.start(); }
+            }
+        }
+        ui.add_space(6.0);
+
+        let recording = state.foreground_tracker.enabled();
+        ui.horizontal(|ui| {
+            if ui
+                .add(egui::Button::new(if recording {
+                    "■ Stop Recording"
+                } else {
+                    "▶ Start Recording"
+                }))
+                .clicked()
+            {
+                let next_recording = !recording;
+                state.foreground_tracker.set_enabled(next_recording);
+            }
+            ui.label(if recording {
+                "Recording foreground-window changes..."
+            } else {
+                "Start before Alt-Tabbing out of Rocket League, then return here to inspect the timeline."
+            });
+        });
+
+        if !recording {
+            ui.add_space(6.0);
+        }
+
+        let events = state.foreground_tracker.events();
+        let process_samples = state.foreground_tracker.process_samples();
+        let system_diagnostics = crate::diagnostics::system_diagnostics();
+        render_foreground_timeline(ui, &events);
+
+        // System diagnostics (Windows-specific)
+        ui.add_space(6.0);
+        ui.separator();
+        ui.label(
+            egui::RichText::new("System (cached for 5s)")
+                .size(10.0)
+                .strong(),
+        );
+        for (label, value) in &system_diagnostics {
+            debug_status_row(ui, label, &value);
+        }
+
+        ui.add_space(6.0);
+        debug_status_row(
+            ui,
+            "Diagnostics Log",
+            &crate::diagnostics::alt_tab_diagnostics_log_path()
+                .display()
+                .to_string(),
+        );
+        debug_status_row(
+            ui,
+            "Process Samples",
+            &format!("{} collected", process_samples.len()),
+        );
+        if ui.button("Save Alt-Tab Diagnostics Log").clicked() {
+            match crate::diagnostics::write_alt_tab_diagnostics_log(
+                &events,
+                &process_samples,
+                &system_diagnostics,
+                &state.resource_tracker.get_snapshots(),
+            ) {
+                Ok(path) => {
+                    let message = format!("Saved {}", path.display());
+                    if let Ok(mut status) = state.alt_tab_diagnostics_status.lock() {
+                        *status = message.clone();
+                    }
+                    crate::input::append_hotkey_debug_log(format!(
+                        "alt_tab_diagnostics_saved path={}",
+                        path.display()
+                    ));
+                }
+                Err(error) => {
+                    if let Ok(mut status) = state.alt_tab_diagnostics_status.lock() {
+                        *status = format!("Error: {error}");
+                    }
+                    crate::input::append_hotkey_debug_log(format!(
+                        "alt_tab_diagnostics_save_failed error={error}"
+                    ));
+                }
+            }
+        }
+        let status = state
+            .alt_tab_diagnostics_status
+            .lock()
+            .map(|status| status.clone())
+            .unwrap_or_else(|_| "Unavailable".to_string());
+        debug_status_row(ui, "Log Status", &status);
+    });
+}
+
+fn render_foreground_timeline(ui: &mut egui::Ui, events: &[crate::diagnostics::FocusEvent]) {
+    ui.add_space(6.0);
+    ui.separator();
+    ui.label(
+        egui::RichText::new("Alt-Tab / Foreground Timeline")
+            .size(10.0)
+            .strong(),
+    );
+
+    if events.is_empty() {
+        ui.label("No foreground-window changes recorded yet.");
+        return;
+    }
+
+    egui::ScrollArea::vertical()
+        .max_height(110.0)
+        .show(ui, |ui| {
+            for event in events.iter().rev() {
+                let status = if event.rocket_league_foreground {
+                    "RL foreground"
+                } else {
+                    "RL unfocused"
+                };
+                let color = if event.rocket_league_foreground {
+                    egui::Color32::from_rgb(100, 220, 140)
+                } else {
+                    egui::Color32::from_rgb(230, 200, 80)
+                };
+                ui.label(
+                    egui::RichText::new(format!(
+                        "{:>6.2}s | {:<13} | {} | {}",
+                        event.elapsed_ms as f64 / 1000.0,
+                        status,
+                        event.process_name,
+                        event.title
+                    ))
+                    .font(egui::FontId::monospace(10.0))
+                    .color(color),
+                );
+            }
+        });
+}
+
 fn run_tracker_scrape_debug(state: Arc<AppState>, platform: String, player_name_or_id: String) {
     if let Ok(mut status) = state.debug_scrape_status.lock() {
         *status = "Fetching...".to_string();
@@ -309,7 +458,12 @@ fn run_tracker_scrape_debug(state: Arc<AppState>, platform: String, player_name_
             player_id: player_name_or_id.clone(),
         };
 
-        let result = crate::mmr::fetch_tracker_snapshot(&state.mmr_client, &player).await;
+        let result = crate::mmr::fetch_tracker_snapshot(
+            &state.mmr_client,
+            &player,
+            &state.xuid_gamertag_cache,
+        )
+        .await;
 
         let status_msg = match result {
             Ok(snapshot) => {

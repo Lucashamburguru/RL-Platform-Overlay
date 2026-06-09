@@ -570,6 +570,7 @@ pub fn write_alt_tab_diagnostics_log(
     events: &[FocusEvent],
     process_samples: &[ProcessDiagnosticsSample],
     system_diagnostics: &[(&'static str, String)],
+    resource_snapshots: &[ResourceSnapshot],
 ) -> Result<PathBuf, String> {
     let path = alt_tab_diagnostics_log_path();
     if let Some(parent) = path.parent() {
@@ -621,6 +622,19 @@ pub fn write_alt_tab_diagnostics_log(
     } else {
         for (label, value) in system_diagnostics {
             lines.push(format!("{label}={value}"));
+        }
+    }
+
+    lines.push(String::new());
+    lines.push("[resource_timeline]".to_string());
+    if resource_snapshots.is_empty() {
+        lines.push("no resource snapshots recorded".to_string());
+    } else {
+        for s in resource_snapshots {
+            lines.push(format!(
+                "timestamp_ms={} rl_cpu={:.1}% rl_mem={}MB eac_cpu={:.1}% eac_mem={}MB sys_cpu={:.1}%",
+                s.timestamp_ms, s.rl_cpu_usage, s.rl_memory_mb, s.eac_cpu_usage, s.eac_memory_mb, s.system_cpu_usage
+            ));
         }
     }
     lines.push(String::new());
