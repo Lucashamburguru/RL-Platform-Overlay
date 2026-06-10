@@ -75,7 +75,7 @@ pub struct Config {
     pub ballchasing_api_key: String,
     pub ballchasing_visibility: String,
     pub replays_folder: String,
-    pub uploaded_replays: Vec<String>,
+    pub uploaded_replays: std::collections::HashSet<String>,
     pub auto_gg: bool,
     pub auto_gg_sequence: String,
     pub auto_freeplay: bool,
@@ -223,7 +223,7 @@ impl Default for Config {
             ballchasing_api_key: "".to_string(),
             ballchasing_visibility: "public".to_string(),
             replays_folder: detect_replays_path().unwrap_or_default(),
-            uploaded_replays: Vec::new(),
+            uploaded_replays: std::collections::HashSet::new(),
             auto_gg: false,
             auto_gg_sequence: "T,G,G,Enter".to_string(),
             auto_freeplay: false,
@@ -268,6 +268,9 @@ fn load_config_file(path: &PathBuf) -> Result<Config, String> {
 }
 
 fn config_path() -> PathBuf {
+    if std::env::var("RL_OVERLAY_TEST").is_ok() {
+        return std::env::temp_dir().join("rl_platform_overlay_config_test.toml");
+    }
     #[cfg(test)]
     {
         std::env::temp_dir().join("rl_platform_overlay_config_test.toml")
@@ -415,6 +418,7 @@ pub struct NetworkDiagnostics {
 #[derive(Clone, Debug, Default)]
 pub struct DebugCaptureStatus {
     pub running: bool,
+    pub seconds: u64,
     pub last_output_path: String,
     pub message: String,
     pub error: String,
@@ -469,6 +473,39 @@ pub struct LocalMmrState {
     pub error: String,
 }
 
+pub const NO_TEAM: u8 = 255;
+
+pub struct DiagnosticsState {
+    pub frame_tracker: Arc<crate::diagnostics::SharedFrameTracker>,
+    pub foreground_tracker: Arc<crate::diagnostics::ForegroundTracker>,
+    pub resource_tracker: Arc<crate::diagnostics::ResourceTracker>,
+    pub resource_poller: Arc<std::sync::Mutex<crate::diagnostics::ResourcePoller>>,
+    pub alt_tab_diagnostics_status: Arc<std::sync::Mutex<String>>,
+    pub debug_capture_status: ArcSwap<DebugCaptureStatus>,
+}
+
+pub struct ReplaysState {
+    pub ballchasing_status: Arc<std::sync::Mutex<String>>,
+    pub ballchasing_cloud_count: std::sync::atomic::AtomicU32,
+}
+
+pub struct BoostState {
+    pub boost_swap_status: Arc<std::sync::Mutex<String>>,
+}
+
+pub struct HoopsFixerState {
+    pub hoops_fixer_status: Arc<std::sync::Mutex<String>>,
+    pub hoops_fixer_logs: Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+pub struct MmrState {
+    pub mmr_client: Arc<wreq::Client>,
+    pub xuid_gamertag_cache: Arc<std::sync::Mutex<HashMap<String, String>>>,
+    pub debug_scrape_status: Arc<std::sync::Mutex<String>>,
+    pub debug_tracker_logs: Arc<std::sync::Mutex<Vec<String>>>,
+    pub local_mmr: ArcSwap<LocalMmrState>,
+}
+
 pub struct AppState {
     pub debug_enabled: bool,
     pub is_visible: AtomicBool,
@@ -483,7 +520,6 @@ pub struct AppState {
     pub last_launch_hotkey_unix_ms: AtomicU64,
     pub local_player_name: ArcSwap<String>,
     pub local_player_identity: ArcSwap<LocalPlayerIdentity>,
-    pub local_mmr: ArcSwap<LocalMmrState>,
     pub local_team: std::sync::atomic::AtomicU8,
     pub players: ArcSwap<HashMap<String, PlayerInfo>>,
     pub config: ArcSwap<Config>,
@@ -491,23 +527,15 @@ pub struct AppState {
     pub version_check: ArcSwap<VersionCheck>,
     pub auto_update_status: ArcSwap<AutoUpdateStatus>,
     pub network_diagnostics: ArcSwap<NetworkDiagnostics>,
-    pub debug_capture_status: ArcSwap<DebugCaptureStatus>,
     pub stats_api_setup_result: ArcSwap<StatsApiSetupResult>,
     pub session: ArcSwap<SessionState>,
-    pub boost_swap_status: Arc<std::sync::Mutex<String>>,
-    pub mmr_client: Arc<wreq::Client>,
-    pub ballchasing_status: Arc<std::sync::Mutex<String>>,
-    pub ballchasing_cloud_count: std::sync::atomic::AtomicU32,
-    pub hoops_fixer_status: Arc<std::sync::Mutex<String>>,
-    pub hoops_fixer_logs: Arc<std::sync::Mutex<Vec<String>>>,
-    pub debug_scrape_status: Arc<std::sync::Mutex<String>>,
-    pub debug_tracker_logs: Arc<std::sync::Mutex<Vec<String>>>,
-    pub alt_tab_diagnostics_status: Arc<std::sync::Mutex<String>>,
-    pub xuid_gamertag_cache: Arc<std::sync::Mutex<HashMap<String, String>>>,
-    pub frame_tracker: Arc<crate::diagnostics::SharedFrameTracker>,
-    pub foreground_tracker: Arc<crate::diagnostics::ForegroundTracker>,
-    pub resource_tracker: Arc<crate::diagnostics::ResourceTracker>,
-    pub resource_poller: Arc<std::sync::Mutex<crate::diagnostics::ResourcePoller>>,
+
+    // Grouped Sub-states
+    pub diagnostics: DiagnosticsState,
+    pub replays: ReplaysState,
+    pub boost: BoostState,
+    pub hoops_fixer: HoopsFixerState,
+    pub mmr: MmrState,
 }
 
 impl AppState {
@@ -545,31 +573,41 @@ impl AppState {
             last_launch_hotkey_unix_ms: AtomicU64::new(0),
             local_player_name: ArcSwap::from_pointee("".to_string()),
             local_player_identity: ArcSwap::from_pointee(cached_local_player_identity),
-            local_mmr: ArcSwap::from_pointee(LocalMmrState::default()),
-            local_team: std::sync::atomic::AtomicU8::new(255),
+            local_team: std::sync::atomic::AtomicU8::new(NO_TEAM),
             players: ArcSwap::from_pointee(HashMap::new()),
             config: ArcSwap::from_pointee(config),
             config_status: ArcSwap::from_pointee(config_status),
             version_check: ArcSwap::from_pointee(VersionCheck::default()),
             auto_update_status: ArcSwap::from_pointee(AutoUpdateStatus::default()),
             network_diagnostics: ArcSwap::from_pointee(NetworkDiagnostics::default()),
-            debug_capture_status: ArcSwap::from_pointee(DebugCaptureStatus::default()),
             stats_api_setup_result: ArcSwap::from_pointee(StatsApiSetupResult::default()),
             session: ArcSwap::from_pointee(SessionState::default()),
-            boost_swap_status: Arc::new(std::sync::Mutex::new("Idle".to_string())),
-            mmr_client: Arc::new(mmr_client),
-            ballchasing_status: Arc::new(std::sync::Mutex::new("Idle".to_string())),
-            ballchasing_cloud_count: std::sync::atomic::AtomicU32::new(0),
-            hoops_fixer_status: Arc::new(std::sync::Mutex::new("Idle".to_string())),
-            hoops_fixer_logs: Arc::new(std::sync::Mutex::new(Vec::new())),
-            debug_scrape_status: Arc::new(std::sync::Mutex::new("Idle".to_string())),
-            debug_tracker_logs: Arc::new(std::sync::Mutex::new(Vec::new())),
-            alt_tab_diagnostics_status: Arc::new(std::sync::Mutex::new("Idle".to_string())),
-            xuid_gamertag_cache: Arc::new(std::sync::Mutex::new(HashMap::new())),
-            frame_tracker: Arc::new(crate::diagnostics::SharedFrameTracker::new(60)),
-            foreground_tracker: Arc::new(crate::diagnostics::ForegroundTracker::new()),
-            resource_tracker,
-            resource_poller,
+            diagnostics: DiagnosticsState {
+                frame_tracker: Arc::new(crate::diagnostics::SharedFrameTracker::new(60)),
+                foreground_tracker: Arc::new(crate::diagnostics::ForegroundTracker::new()),
+                resource_tracker,
+                resource_poller,
+                alt_tab_diagnostics_status: Arc::new(std::sync::Mutex::new("Idle".to_string())),
+                debug_capture_status: ArcSwap::from_pointee(DebugCaptureStatus::default()),
+            },
+            replays: ReplaysState {
+                ballchasing_status: Arc::new(std::sync::Mutex::new("Idle".to_string())),
+                ballchasing_cloud_count: std::sync::atomic::AtomicU32::new(0),
+            },
+            boost: BoostState {
+                boost_swap_status: Arc::new(std::sync::Mutex::new("Idle".to_string())),
+            },
+            hoops_fixer: HoopsFixerState {
+                hoops_fixer_status: Arc::new(std::sync::Mutex::new("Idle".to_string())),
+                hoops_fixer_logs: Arc::new(std::sync::Mutex::new(Vec::new())),
+            },
+            mmr: MmrState {
+                mmr_client: Arc::new(mmr_client),
+                xuid_gamertag_cache: Arc::new(std::sync::Mutex::new(HashMap::new())),
+                debug_scrape_status: Arc::new(std::sync::Mutex::new("Idle".to_string())),
+                debug_tracker_logs: Arc::new(std::sync::Mutex::new(Vec::new())),
+                local_mmr: ArcSwap::from_pointee(LocalMmrState::default()),
+            },
         })
     }
 

@@ -33,7 +33,7 @@ pub(super) fn render_session_overlay(ctx: &egui::Context, state: &Arc<AppState>)
         draw_session_panel(
             ui,
             &state.session.load(),
-            &state.local_mmr.load(),
+            &state.mmr.local_mmr.load(),
             config.session_overlay_scale,
             config.session_overlay_display,
             config.session_overlay_opacity,

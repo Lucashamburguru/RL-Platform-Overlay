@@ -30,7 +30,7 @@ pub async fn verify_token(api_key: &str) -> Result<(), String> {
 pub fn trigger_replay_upload(state: Arc<AppState>, scan_all_as_uploaded: bool) {
     tokio::spawn(async move {
         if let Err(e) = run_replay_upload(state, scan_all_as_uploaded).await {
-            eprintln!("Replay upload execution error: {}", e);
+            log::error!("Replay upload execution error: {}", e);
         }
     });
 }
@@ -99,17 +99,7 @@ async fn run_replay_upload(state: Arc<AppState>, scan_all_as_uploaded: bool) -> 
                             .await
                         && (status_code == 201 || status_code == 409)
                     {
-                        let config_current = state.config.load();
-                        let mut config_edit = (**config_current).clone();
-                        if !config_edit.uploaded_replays.contains(&filename) {
-                            config_edit.uploaded_replays.push(filename.clone());
-                            if config_edit.uploaded_replays.len() > 500 {
-                                let skip = config_edit.uploaded_replays.len() - 500;
-                                config_edit.uploaded_replays =
-                                    config_edit.uploaded_replays.split_off(skip);
-                            }
-                            state.save_config(config_edit);
-                        }
+                        mark_replays_uploaded(&state, std::slice::from_ref(&filename));
                         set_status(&state, &format!("Success: Uploaded recent {}", filename));
                     }
                 }
@@ -166,17 +156,7 @@ async fn run_replay_upload(state: Arc<AppState>, scan_all_as_uploaded: bool) -> 
                     set_status(&state, &success_msg);
 
                     // Add to local config cache and save
-                    let config_current = state.config.load();
-                    let mut config_edit = (**config_current).clone();
-                    if !config_edit.uploaded_replays.contains(&filename) {
-                        config_edit.uploaded_replays.push(filename);
-                        if config_edit.uploaded_replays.len() > 500 {
-                            let skip = config_edit.uploaded_replays.len() - 500;
-                            config_edit.uploaded_replays =
-                                config_edit.uploaded_replays.split_off(skip);
-                        }
-                        state.save_config(config_edit);
-                    }
+                    mark_replays_uploaded(&state, &[filename]);
                 } else if status_code == 401 || status_code == 403 {
                     set_status(&state, "Error: Invalid API key (401/403)");
                     break; // Stop processing further files
@@ -235,7 +215,7 @@ async fn upload_file_to_ballchasing(
 
 /// Helper to set AppState's ballchasing status in a thread-safe manner.
 fn set_status(state: &AppState, status: &str) {
-    if let Ok(mut status_lock) = state.ballchasing_status.lock() {
+    if let Ok(mut status_lock) = state.replays.ballchasing_status.lock() {
         *status_lock = status.to_string();
     }
 }
@@ -279,7 +259,7 @@ async fn wait_for_file_stability(path: &Path) -> bool {
 pub fn start_bulk_upload_task(state: Arc<AppState>) {
     tokio::spawn(async move {
         if let Err(e) = run_bulk_upload(state).await {
-            eprintln!("Bulk upload execution error: {}", e);
+            log::error!("Bulk upload execution error: {}", e);
         }
     });
 }
@@ -319,7 +299,7 @@ async fn run_bulk_upload(state: Arc<AppState>) -> Result<(), String> {
         if path.is_file()
             && path.extension().and_then(|s| s.to_str()) == Some("replay")
             && let Some(filename) = path.file_name().and_then(|s| s.to_str())
-            && !uploaded_replays.contains(&filename.to_string())
+            && !uploaded_replays.contains(filename)
         {
             to_upload.push((filename.to_string(), path));
         }
@@ -372,17 +352,7 @@ async fn run_bulk_upload(state: Arc<AppState>) -> Result<(), String> {
             Ok(status_code) => {
                 if status_code == 201 || status_code == 409 {
                     // Success or Duplicate
-                    let config_current = state.config.load();
-                    let mut config_edit = (**config_current).clone();
-                    if !config_edit.uploaded_replays.contains(&filename) {
-                        config_edit.uploaded_replays.push(filename.clone());
-                        if config_edit.uploaded_replays.len() > 500 {
-                            let skip = config_edit.uploaded_replays.len() - 500;
-                            config_edit.uploaded_replays =
-                                config_edit.uploaded_replays.split_off(skip);
-                        }
-                        state.save_config(config_edit);
-                    }
+                    mark_replays_uploaded(&state, std::slice::from_ref(&filename));
                     set_status(
                         &state,
                         &format!("Uploaded {} ({}/{})", filename, index + 1, total),
@@ -441,7 +411,7 @@ async fn run_bulk_upload(state: Arc<AppState>) -> Result<(), String> {
 pub fn start_sync_replays_task(state: Arc<AppState>) {
     tokio::spawn(async move {
         if let Err(e) = run_sync_replays(state).await {
-            eprintln!("Sync replays execution error: {}", e);
+            log::error!("Sync replays execution error: {}", e);
         }
     });
 }
@@ -510,29 +480,16 @@ async fn run_sync_replays(state: Arc<AppState>) -> Result<(), String> {
 
     let count = fetched_ids.len();
     state
+        .replays
         .ballchasing_cloud_count
         .store(count as u32, std::sync::atomic::Ordering::SeqCst);
 
     // Update config cache with these formatted filenames
-    let config_current = state.config.load();
-    let mut config_edit = (**config_current).clone();
-
-    let mut added = 0;
-    for id in fetched_ids {
-        let filename = format!("{}.replay", id.to_lowercase());
-        if !config_edit.uploaded_replays.contains(&filename) {
-            config_edit.uploaded_replays.push(filename);
-            added += 1;
-        }
-    }
-
-    if added > 0 {
-        if config_edit.uploaded_replays.len() > 500 {
-            let skip = config_edit.uploaded_replays.len() - 500;
-            config_edit.uploaded_replays = config_edit.uploaded_replays.split_off(skip);
-        }
-        state.save_config(config_edit);
-    }
+    let filenames: Vec<String> = fetched_ids
+        .into_iter()
+        .map(|id| format!("{}.replay", id.to_lowercase()))
+        .collect();
+    let added = mark_replays_uploaded(&state, &filenames);
 
     set_status(
         &state,
@@ -542,4 +499,26 @@ async fn run_sync_replays(state: Arc<AppState>) -> Result<(), String> {
         ),
     );
     Ok(())
+}
+
+pub fn mark_replays_uploaded(state: &Arc<AppState>, filenames: &[String]) -> usize {
+    let config_current = state.config.load();
+    let mut config_edit = (**config_current).clone();
+    let mut added = 0;
+    for filename in filenames {
+        if config_edit.uploaded_replays.insert(filename.clone()) {
+            added += 1;
+        }
+    }
+    if added > 0 {
+        while config_edit.uploaded_replays.len() > 500 {
+            if let Some(to_remove) = config_edit.uploaded_replays.iter().next().cloned() {
+                config_edit.uploaded_replays.remove(&to_remove);
+            } else {
+                break;
+            }
+        }
+        state.save_config(config_edit);
+    }
+    added
 }

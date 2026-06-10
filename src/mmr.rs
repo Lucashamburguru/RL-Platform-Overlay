@@ -111,16 +111,18 @@ pub async fn fetch_tracker_snapshot(
                 resolved_player.player_name = gamertag;
             }
             Err(err) => {
-                eprintln!(
+                log::error!(
                     "Failed to resolve Xbox XUID {} to gamertag: {}. Falling back to display name: {}",
-                    player.player_id, err, player.player_name
+                    player.player_id,
+                    err,
+                    player.player_name
                 );
             }
         }
     }
 
     let api_url = tracker_api_url(&resolved_player);
-    let response = client.get(&api_url)
+    let mut response = client.get(&api_url)
         .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36")
         .header("Accept-Language", "en-US,en;q=0.9")
         .header("Accept", "application/json, text/plain, */*")
@@ -129,7 +131,30 @@ pub async fn fetch_tracker_snapshot(
         .await
         .map_err(|e| format!("api request error: {}", e))?;
 
-    let status = response.status();
+    let mut status = response.status();
+    if status.as_u16() == 404
+        && platform_lower == "steam"
+        && resolved_player.player_id != resolved_player.player_name
+    {
+        let mut fallback_player = resolved_player.clone();
+        fallback_player.player_id = fallback_player.player_name.clone();
+        let fallback_url = tracker_api_url(&fallback_player);
+        if let Ok(resp) = client.get(&fallback_url)
+            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36")
+            .header("Accept-Language", "en-US,en;q=0.9")
+            .header("Accept", "application/json, text/plain, */*")
+            .header("Referer", "https://rocketleague.tracker.network/")
+            .send()
+            .await
+        {
+            let fallback_status = resp.status();
+            if fallback_status.is_success() {
+                response = resp;
+                status = fallback_status;
+            }
+        }
+    }
+
     if !status.is_success() {
         return Err(format!("non-200 status: {}", status));
     }
@@ -231,6 +256,9 @@ fn select_next_player(
     fetching_players: &mut std::collections::HashSet<String>,
     failed_fetches: &HashMap<String, Instant>,
 ) -> (CachedTrackerPlayer, PendingTrackerPlayer) {
+    if players.len() <= 1 {
+        return (None, None);
+    }
     let mut target_player = None;
     let mut cached_player = None;
     for (name, info) in players.iter() {
@@ -305,14 +333,16 @@ pub fn start_mmr_fetch_task(state: Arc<AppState>) {
             };
 
             if let Some((name, snapshot)) = cached_player {
-                let mut players_map = (**state.players.load()).clone();
-                if let Some(player_info) = players_map.get_mut(&name)
-                    && !player_info.is_local
-                    && player_info.mmr.is_none()
-                {
-                    player_info.mmr = Some(snapshot);
-                    state.players.store(Arc::new(players_map));
-                }
+                state.players.rcu(|players| {
+                    let mut players_map = (**players).clone();
+                    if let Some(player_info) = players_map.get_mut(&name)
+                        && !player_info.is_local
+                        && player_info.mmr.is_none()
+                    {
+                        player_info.mmr = Some(snapshot.clone());
+                    }
+                    Arc::new(players_map)
+                });
                 continue;
             }
 
@@ -322,7 +352,7 @@ pub fn start_mmr_fetch_task(state: Arc<AppState>) {
                     &state,
                     format!("Fetching MMR for {} ({})", name, tracker_player.platform),
                 );
-                match fetch_tracker_snapshot(&state.mmr_client, &tracker_player).await {
+                match fetch_tracker_snapshot(&state.mmr.mmr_client, &tracker_player).await {
                     Ok(snapshot) => {
                         append_tracker_log(
                             &state,
@@ -340,11 +370,13 @@ pub fn start_mmr_fetch_task(state: Arc<AppState>) {
                                 fetched_at: Instant::now(),
                             },
                         );
-                        let mut players_map = (**state.players.load()).clone();
-                        if let Some(player_info) = players_map.get_mut(&name) {
-                            player_info.mmr = Some(snapshot);
-                            state.players.store(Arc::new(players_map));
-                        }
+                        state.players.rcu(|players| {
+                            let mut players_map = (**players).clone();
+                            if let Some(player_info) = players_map.get_mut(&name) {
+                                player_info.mmr = Some(snapshot.clone());
+                            }
+                            Arc::new(players_map)
+                        });
                         fetching_players.remove(&cache_key);
                     }
                     Err(e) => {
@@ -366,11 +398,13 @@ pub fn start_mmr_fetch_task(state: Arc<AppState>) {
                                     fetched_at: Instant::now(),
                                 },
                             );
-                            let mut players_map = (**state.players.load()).clone();
-                            if let Some(player_info) = players_map.get_mut(&name) {
-                                player_info.mmr = Some(snapshot);
-                                state.players.store(Arc::new(players_map));
-                            }
+                            state.players.rcu(|players| {
+                                let mut players_map = (**players).clone();
+                                if let Some(player_info) = players_map.get_mut(&name) {
+                                    player_info.mmr = Some(snapshot.clone());
+                                }
+                                Arc::new(players_map)
+                            });
                             fetching_players.remove(&cache_key);
                         } else {
                             // Temporary error (rate limit, timeout, 403, etc.).
@@ -382,7 +416,7 @@ pub fn start_mmr_fetch_task(state: Arc<AppState>) {
                                 ),
                             );
                             if e.contains("429") || e.contains("403") {
-                                eprintln!(
+                                log::warn!(
                                     "MMR fetching rate limited or blocked: {e}. Cooling down for 60 seconds."
                                 );
                                 cooldown_until = Some(Instant::now() + Duration::from_secs(60));
@@ -440,7 +474,7 @@ pub fn start_local_mmr_refresh(state: Arc<AppState>) {
     if !state.config.load().show_lobby_ranks {
         return;
     }
-    let current_state = state.local_mmr.load();
+    let current_state = state.mmr.local_mmr.load();
     if current_state.fetching {
         return;
     }
@@ -450,7 +484,7 @@ pub fn start_local_mmr_refresh(state: Arc<AppState>) {
         let mut local_mmr = (**current_state).clone();
         local_mmr.fetching = false;
         local_mmr.error = "Waiting for local player identity from Stats API.".to_string();
-        state.local_mmr.store(Arc::new(local_mmr));
+        state.mmr.local_mmr.store(Arc::new(local_mmr));
         return;
     }
 
@@ -458,7 +492,7 @@ pub fn start_local_mmr_refresh(state: Arc<AppState>) {
         let mut local_mmr = (**current_state).clone();
         local_mmr.fetching = false;
         local_mmr.error = "Local player platform is not supported by Tracker.".to_string();
-        state.local_mmr.store(Arc::new(local_mmr));
+        state.mmr.local_mmr.store(Arc::new(local_mmr));
         return;
     };
 
@@ -468,7 +502,7 @@ pub fn start_local_mmr_refresh(state: Arc<AppState>) {
             let mut local_mmr = (**current_state).clone();
             local_mmr.fetching = false;
             local_mmr.error = format!("Could not start local MMR refresh: {error}");
-            state.local_mmr.store(Arc::new(local_mmr));
+            state.mmr.local_mmr.store(Arc::new(local_mmr));
             return;
         }
     };
@@ -476,7 +510,7 @@ pub fn start_local_mmr_refresh(state: Arc<AppState>) {
     let mut local_mmr = (**current_state).clone();
     local_mmr.fetching = true;
     local_mmr.error.clear();
-    state.local_mmr.store(Arc::new(local_mmr));
+    state.mmr.local_mmr.store(Arc::new(local_mmr));
 
     runtime.spawn(async move {
         append_tracker_log(
@@ -486,9 +520,9 @@ pub fn start_local_mmr_refresh(state: Arc<AppState>) {
                 identity.name, identity.platform
             ),
         );
-        let result = fetch_tracker_snapshot(&state.mmr_client, &tracker_player).await;
+        let result = fetch_tracker_snapshot(&state.mmr.mmr_client, &tracker_player).await;
 
-        let mut local_mmr = (**state.local_mmr.load()).clone();
+        let mut local_mmr = (**state.mmr.local_mmr.load()).clone();
         local_mmr.fetching = false;
         match result {
             Ok(snapshot) => {
@@ -517,7 +551,7 @@ pub fn start_local_mmr_refresh(state: Arc<AppState>) {
                 local_mmr.error = error;
             }
         }
-        state.local_mmr.store(Arc::new(local_mmr));
+        state.mmr.local_mmr.store(Arc::new(local_mmr));
     });
 }
 
@@ -534,7 +568,7 @@ fn tracker_player_from_identity(
 }
 
 fn append_tracker_log(state: &AppState, message: String) {
-    if let Ok(mut logs) = state.debug_tracker_logs.lock() {
+    if let Ok(mut logs) = state.mmr.debug_tracker_logs.lock() {
         let time_str =
             if let Ok(now) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
                 let secs = now.as_secs();
@@ -649,7 +683,7 @@ mod tests {
 
         start_local_mmr_refresh(state.clone());
 
-        let local_mmr = state.local_mmr.load();
+        let local_mmr = state.mmr.local_mmr.load();
         assert!(!local_mmr.fetching);
         assert!(
             local_mmr
@@ -760,7 +794,7 @@ mod tests {
 
         start_local_mmr_refresh(state.clone());
 
-        let local_mmr = state.local_mmr.load();
+        let local_mmr = state.mmr.local_mmr.load();
         assert!(!local_mmr.fetching);
         assert!(local_mmr.error.is_empty());
     }

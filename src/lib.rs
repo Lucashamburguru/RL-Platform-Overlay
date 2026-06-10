@@ -7,10 +7,10 @@ mod assets;
 mod diagnostics;
 mod input;
 mod mmr;
-mod network;
+pub mod network;
 mod session;
 mod setup;
-mod state;
+pub mod state;
 mod ui;
 pub mod update;
 
@@ -18,6 +18,16 @@ use eframe::egui;
 use state::AppState;
 
 pub async fn run(debug_enabled: bool) -> eframe::Result<()> {
+    let mut builder = env_logger::Builder::new();
+    builder.filter_level(log::LevelFilter::Warn);
+    let level = if debug_enabled {
+        log::LevelFilter::Debug
+    } else {
+        log::LevelFilter::Info
+    };
+    builder.filter_module("rl_platform_overlay", level);
+    let _ = builder.try_init();
+
     let state = AppState::new_with_debug(debug_enabled);
 
     if state.local_player_identity.load().is_known() {
@@ -29,8 +39,8 @@ pub async fn run(debug_enabled: bool) -> eframe::Result<()> {
         let network_task =
             tokio::spawn(async move { network::start_network_task(net_state).await });
         match network_task.await {
-            Ok(()) => eprintln!("Network task exited unexpectedly."),
-            Err(error) => eprintln!("Network task failed: {error}"),
+            Ok(()) => log::error!("Network task exited unexpectedly."),
+            Err(error) => log::error!("Network task failed: {error}"),
         }
     });
 

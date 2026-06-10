@@ -268,21 +268,21 @@ pub fn fix_single_replay(data: &[u8]) -> Option<(Vec<u8>, Vec<PatchDetail>)> {
 
 /// Helper to set AppState's hoops fixer status.
 fn set_status(state: &AppState, status: &str) {
-    if let Ok(mut lock) = state.hoops_fixer_status.lock() {
+    if let Ok(mut lock) = state.hoops_fixer.hoops_fixer_status.lock() {
         *lock = status.to_string();
     }
 }
 
 /// Helper to append logs to AppState's hoops fixer log list.
 fn append_log(state: &AppState, log: String) {
-    if let Ok(mut lock) = state.hoops_fixer_logs.lock() {
+    if let Ok(mut lock) = state.hoops_fixer.hoops_fixer_logs.lock() {
         lock.push(log);
     }
 }
 
 /// Helper to clear AppState's hoops fixer logs.
 fn clear_logs(state: &AppState) {
-    if let Ok(mut lock) = state.hoops_fixer_logs.lock() {
+    if let Ok(mut lock) = state.hoops_fixer.hoops_fixer_logs.lock() {
         lock.clear();
     }
 }

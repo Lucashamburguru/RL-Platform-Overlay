@@ -49,7 +49,7 @@ pub fn toggle_settings_hotkey(state: &Arc<AppState>, source: &str) {
         "settings_toggle source={source} current={current} new={}",
         !current
     ));
-    println!("Settings menu visibility toggled to: {}", !current);
+    log::info!("Settings menu visibility toggled to: {}", !current);
 }
 
 pub fn toggle_launch_hotkey(state: &Arc<AppState>, source: &str) {
@@ -75,14 +75,14 @@ pub fn toggle_launch_hotkey(state: &Arc<AppState>, source: &str) {
     append_hotkey_debug_log(format!(
         "launch_toggle source={source} current={current} new={new}"
     ));
-    println!("Overlay launched toggled to: {new}");
+    log::info!("Overlay launched toggled to: {new}");
 }
 
 pub fn start_input_tasks(state: Arc<AppState>) {
     let state_ctrl = state.clone();
     std::thread::spawn(move || match Gilrs::new() {
         Ok(mut gilrs) => {
-            println!("Gamepad listener started.");
+            log::info!("Gamepad listener started.");
             let mut pressed_controller_hotkeys = HashSet::new();
 
             loop {
@@ -91,24 +91,25 @@ pub fn start_input_tasks(state: Arc<AppState>) {
                     match event {
                         gilrs::EventType::Connected => {
                             let pad = gilrs.gamepad(id);
-                            println!("Controller Connected: {} (ID: {:?})", pad.name(), id);
+                            log::info!("Controller Connected: {} (ID: {:?})", pad.name(), id);
                         }
                         gilrs::EventType::Disconnected => {
-                            println!("Controller Disconnected (ID: {:?})", id);
+                            log::info!("Controller Disconnected (ID: {:?})", id);
                         }
                         gilrs::EventType::ButtonPressed(button, _) => {
                             let button_str = format!("{:?}", button);
 
                             if state_ctrl.is_recording_ctrl.load(Ordering::SeqCst) {
-                                println!(
+                                log::info!(
                                     "Hotkey Record detected: {} on Controller {:?}",
-                                    button_str, id
+                                    button_str,
+                                    id
                                 );
                                 let mut new_config = (**state_ctrl.config.load()).clone();
                                 new_config.hotkey_ctrl = button_str.clone();
                                 state_ctrl.save_config(new_config);
                                 state_ctrl.is_recording_ctrl.store(false, Ordering::SeqCst);
-                                println!("Controller hotkey updated: {}", button_str);
+                                log::info!("Controller hotkey updated: {}", button_str);
                             } else {
                                 handle_controller_hotkey(
                                     &state_ctrl,
@@ -132,15 +133,16 @@ pub fn start_input_tasks(state: Arc<AppState>) {
                             let button_str = format!("{:?}", button);
 
                             if state_ctrl.is_recording_ctrl.load(Ordering::SeqCst) && value >= 0.5 {
-                                println!(
+                                log::info!(
                                     "Hotkey Record detected: {} on Controller {:?}",
-                                    button_str, id
+                                    button_str,
+                                    id
                                 );
                                 let mut new_config = (**state_ctrl.config.load()).clone();
                                 new_config.hotkey_ctrl = button_str.clone();
                                 state_ctrl.save_config(new_config);
                                 state_ctrl.is_recording_ctrl.store(false, Ordering::SeqCst);
-                                println!("Controller hotkey updated: {}", button_str);
+                                log::info!("Controller hotkey updated: {}", button_str);
                             } else {
                                 handle_controller_hotkey(
                                     &state_ctrl,
@@ -161,13 +163,13 @@ pub fn start_input_tasks(state: Arc<AppState>) {
             }
         }
         Err(error) => {
-            eprintln!("Failed to initialize Gamepad listener: {error}");
+            log::error!("Failed to initialize Gamepad listener: {error}");
         }
     });
 
     let state_kb = state.clone();
     std::thread::spawn(move || {
-        println!("Keyboard listener thread started.");
+        log::info!("Keyboard listener thread started.");
         append_hotkey_debug_log("keyboard_listener_started");
         let mut pressed_keyboard_hotkeys = HashSet::new();
         let callback = move |event: rdev::Event| match event.event_type {
@@ -178,7 +180,7 @@ pub fn start_input_tasks(state: Arc<AppState>) {
                     new_config.hotkey_kb = key_debug.clone();
                     state_kb.save_config(new_config);
                     state_kb.is_recording_kb.store(false, Ordering::SeqCst);
-                    println!("Keyboard hotkey updated to: {:?}", key);
+                    log::info!("Keyboard hotkey updated to: {:?}", key);
                     append_hotkey_debug_log(format!("record_keyboard_hotkey key={key_debug}"));
                 } else if state_kb.is_recording_settings.load(Ordering::SeqCst) {
                     let mut new_config = (**state_kb.config.load()).clone();
@@ -187,14 +189,14 @@ pub fn start_input_tasks(state: Arc<AppState>) {
                     state_kb
                         .is_recording_settings
                         .store(false, Ordering::SeqCst);
-                    println!("Settings hotkey updated to: {:?}", key);
+                    log::info!("Settings hotkey updated to: {:?}", key);
                     append_hotkey_debug_log(format!("record_settings_hotkey key={key_debug}"));
                 } else if state_kb.is_recording_launch.load(Ordering::SeqCst) {
                     let mut new_config = (**state_kb.config.load()).clone();
                     new_config.hotkey_launch = key_debug.clone();
                     state_kb.save_config(new_config);
                     state_kb.is_recording_launch.store(false, Ordering::SeqCst);
-                    println!("Launch hotkey updated to: {:?}", key);
+                    log::info!("Launch hotkey updated to: {:?}", key);
                     append_hotkey_debug_log(format!("record_launch_hotkey key={key_debug}"));
                 } else {
                     let config = state_kb.config.load();
@@ -268,7 +270,7 @@ pub fn start_input_tasks(state: Arc<AppState>) {
         };
 
         if let Err(e) = listen(callback) {
-            eprintln!("Failed to initialize Keyboard listener: {:?}", e);
+            log::error!("Failed to initialize Keyboard listener: {:?}", e);
         }
     });
 }

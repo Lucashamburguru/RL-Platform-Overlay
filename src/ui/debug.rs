@@ -43,7 +43,7 @@ pub(super) fn render_debug_settings_tab(
         let local_name = state.local_player_name.load();
         debug_status_row(ui, "Local Player", local_name.as_str());
         let local_team = state.local_team.load(Ordering::SeqCst);
-        let team_text = if local_team == 255 {
+        let team_text = if local_team == crate::state::NO_TEAM {
             "Unknown".to_string()
         } else {
             local_team.to_string()
@@ -133,14 +133,14 @@ pub(super) fn render_debug_settings_tab(
         ui.heading("In-Game Tracker Logs");
         ui.add_space(6.0);
 
-        let logs = if let Ok(lock) = state.debug_tracker_logs.lock() {
+        let logs = if let Ok(lock) = state.mmr.debug_tracker_logs.lock() {
             lock.clone()
         } else {
             Vec::new()
         };
 
         if ui.button("Clear Tracker Logs").clicked()
-            && let Ok(mut lock) = state.debug_tracker_logs.lock()
+            && let Ok(mut lock) = state.mmr.debug_tracker_logs.lock()
         {
             lock.clear();
         }
@@ -173,14 +173,24 @@ pub(super) fn render_debug_settings_tab(
     ui.add_space(10.0);
     ui.group(|ui| {
         ui.heading("Stats API Capture");
-        let capture = state.debug_capture_status.load();
+        let capture = state.diagnostics.debug_capture_status.load();
         if capture.running {
             ui.horizontal(|ui| {
                 ui.add(egui::Spinner::new());
-                ui.label("Capturing 30 seconds of Stats API output...");
+                ui.label(format!(
+                    "Capturing {} seconds of Stats API output...",
+                    capture.seconds
+                ));
             });
-        } else if ui.button("Capture 30s Stats API Output").clicked() {
-            start_debug_capture(state.clone());
+        } else {
+            ui.horizontal(|ui| {
+                if ui.button("Capture 5s Output").clicked() {
+                    start_debug_capture(state.clone(), 5);
+                }
+                if ui.button("Capture 30s Output").clicked() {
+                    start_debug_capture(state.clone(), 30);
+                }
+            });
         }
 
         render_capture_status(ui, &capture);
@@ -258,7 +268,7 @@ pub(super) fn render_debug_settings_tab(
 
         ui.add_space(6.0);
 
-        let status = if let Ok(lock) = state.debug_scrape_status.lock() {
+        let status = if let Ok(lock) = state.mmr.debug_scrape_status.lock() {
             lock.clone()
         } else {
             "Idle".to_string()
@@ -306,6 +316,7 @@ fn render_performance_diagnostics(ui: &mut egui::Ui, state: &Arc<AppState>) {
         ui.add_space(6.0);
 
         let is_polling = state
+            .diagnostics
             .resource_poller
             .lock()
             .map(|p| p.is_running())
@@ -317,7 +328,7 @@ fn render_performance_diagnostics(ui: &mut egui::Ui, state: &Arc<AppState>) {
                 "Start Resource Polling"
             })
             .clicked()
-            && let Ok(mut poller) = state.resource_poller.lock()
+            && let Ok(mut poller) = state.diagnostics.resource_poller.lock()
         {
             if is_polling {
                 poller.stop();
@@ -327,7 +338,7 @@ fn render_performance_diagnostics(ui: &mut egui::Ui, state: &Arc<AppState>) {
         }
         ui.add_space(6.0);
 
-        let recording = state.foreground_tracker.enabled();
+        let recording = state.diagnostics.foreground_tracker.enabled();
         ui.horizontal(|ui| {
             if ui
                 .add(egui::Button::new(if recording {
@@ -338,9 +349,9 @@ fn render_performance_diagnostics(ui: &mut egui::Ui, state: &Arc<AppState>) {
                 .clicked()
             {
                 let next_recording = !recording;
-                state.foreground_tracker.set_enabled(next_recording);
+                state.diagnostics.foreground_tracker.set_enabled(next_recording);
 
-                if let Ok(mut poller) = state.resource_poller.lock() {
+                if let Ok(mut poller) = state.diagnostics.resource_poller.lock() {
                     if next_recording && !poller.is_running() {
                         poller.start();
                     } else if !next_recording && poller.is_running() {
@@ -359,8 +370,8 @@ fn render_performance_diagnostics(ui: &mut egui::Ui, state: &Arc<AppState>) {
             ui.add_space(6.0);
         }
 
-        let events = state.foreground_tracker.events();
-        let process_samples = state.foreground_tracker.process_samples();
+        let events = state.diagnostics.foreground_tracker.events();
+        let process_samples = state.diagnostics.foreground_tracker.process_samples();
         let system_diagnostics = crate::diagnostics::system_diagnostics();
         render_foreground_timeline(ui, &events);
 
@@ -390,17 +401,17 @@ fn render_performance_diagnostics(ui: &mut egui::Ui, state: &Arc<AppState>) {
             &format!("{} collected", process_samples.len()),
         );
         if ui.button("Save Alt-Tab Diagnostics Log").clicked() {
-            let frame_stats = state.frame_tracker.stats();
+            let frame_stats = state.diagnostics.frame_tracker.stats();
             match crate::diagnostics::write_alt_tab_diagnostics_log(
                 &events,
                 &process_samples,
                 &system_diagnostics,
-                &state.resource_tracker.get_snapshots(),
+                &state.diagnostics.resource_tracker.get_snapshots(),
                 &frame_stats,
             ) {
                 Ok(path) => {
                     let message = format!("Saved {}", path.display());
-                    if let Ok(mut status) = state.alt_tab_diagnostics_status.lock() {
+                    if let Ok(mut status) = state.diagnostics.alt_tab_diagnostics_status.lock() {
                         *status = message.clone();
                     }
                     crate::input::append_hotkey_debug_log(format!(
@@ -409,7 +420,7 @@ fn render_performance_diagnostics(ui: &mut egui::Ui, state: &Arc<AppState>) {
                     ));
                 }
                 Err(error) => {
-                    if let Ok(mut status) = state.alt_tab_diagnostics_status.lock() {
+                    if let Ok(mut status) = state.diagnostics.alt_tab_diagnostics_status.lock() {
                         *status = format!("Error: {error}");
                     }
                     crate::input::append_hotkey_debug_log(format!(
@@ -419,6 +430,7 @@ fn render_performance_diagnostics(ui: &mut egui::Ui, state: &Arc<AppState>) {
             }
         }
         let status = state
+            .diagnostics
             .alt_tab_diagnostics_status
             .lock()
             .map(|status| status.clone())
@@ -471,7 +483,7 @@ fn render_foreground_timeline(ui: &mut egui::Ui, events: &[crate::diagnostics::F
 }
 
 fn run_tracker_scrape_debug(state: Arc<AppState>, platform: String, player_name_or_id: String) {
-    if let Ok(mut status) = state.debug_scrape_status.lock() {
+    if let Ok(mut status) = state.mmr.debug_scrape_status.lock() {
         *status = "Fetching...".to_string();
     }
 
@@ -482,7 +494,7 @@ fn run_tracker_scrape_debug(state: Arc<AppState>, platform: String, player_name_
             player_id: player_name_or_id.clone(),
         };
 
-        let result = crate::mmr::fetch_tracker_snapshot(&state.mmr_client, &player).await;
+        let result = crate::mmr::fetch_tracker_snapshot(&state.mmr.mmr_client, &player).await;
 
         let status_msg = match result {
             Ok(snapshot) => {
@@ -515,7 +527,7 @@ fn run_tracker_scrape_debug(state: Arc<AppState>, platform: String, player_name_
             }
         };
 
-        if let Ok(mut status) = state.debug_scrape_status.lock() {
+        if let Ok(mut status) = state.mmr.debug_scrape_status.lock() {
             *status = status_msg;
         }
     });
@@ -533,33 +545,40 @@ fn render_capture_status(ui: &mut egui::Ui, capture: &DebugCaptureStatus) {
     }
 }
 
-fn start_debug_capture(state: Arc<AppState>) {
+fn start_debug_capture(state: Arc<AppState>, seconds: u64) {
     let output = crate::stats_api::default_capture_path(crate::state::config_dir());
     state
+        .diagnostics
         .debug_capture_status
         .store(Arc::new(DebugCaptureStatus {
             running: true,
+            seconds,
             last_output_path: output.display().to_string(),
             message: String::new(),
             error: String::new(),
         }));
 
     tokio::spawn(async move {
-        let result = crate::stats_api::capture_to_file(&output, 30).await;
+        let result = crate::stats_api::capture_to_file(&output, seconds).await;
         let status = match result {
             Ok(()) => DebugCaptureStatus {
                 running: false,
+                seconds,
                 last_output_path: output.display().to_string(),
                 message: "Capture complete.".to_string(),
                 error: String::new(),
             },
             Err(error) => DebugCaptureStatus {
                 running: false,
+                seconds,
                 last_output_path: output.display().to_string(),
                 message: String::new(),
                 error: format!("Capture failed: {error}"),
             },
         };
-        state.debug_capture_status.store(Arc::new(status));
+        state
+            .diagnostics
+            .debug_capture_status
+            .store(Arc::new(status));
     });
 }

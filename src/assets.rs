@@ -531,7 +531,11 @@ fn restore_standard_boost(rocket_league_path: &str) -> Result<(), String> {
 }
 
 fn set_boost_status(state: &std::sync::Arc<crate::state::AppState>, message: &str) {
-    let mut status = state.boost_swap_status.lock().unwrap();
+    let mut status = state
+        .boost
+        .boost_swap_status
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     *status = message.to_string();
 }
 

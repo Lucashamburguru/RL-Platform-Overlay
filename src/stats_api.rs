@@ -211,9 +211,10 @@ fn write_payload(file: &mut File, source: &str, text: &str) -> io::Result<()> {
     match serde_json::from_str::<Value>(text) {
         Ok(json) => {
             let event = json["Event"].as_str().unwrap_or("Unknown");
-            let player_count = json["Data"]
+            let data = crate::json_utils::decode_json_string_value(&json["Data"]);
+            let player_count = data
                 .get("Players")
-                .or_else(|| json["Data"].get("players"))
+                .or_else(|| data.get("players"))
                 .and_then(Value::as_array)
                 .map_or(0, Vec::len);
             writeln!(file, "summary_event={event}")?;

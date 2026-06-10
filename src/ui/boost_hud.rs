@@ -24,7 +24,7 @@ pub(super) fn preview_teammates(state: &Arc<AppState>) -> Vec<PlayerInfo> {
     let mut teammates: Vec<_> = players
         .values()
         .filter(|p| {
-            local_team != 255
+            local_team != crate::state::NO_TEAM
                 && p.team == local_team
                 && !p.is_local
                 && (local_name.is_empty() || p.name.trim().to_lowercase() != local_name)
@@ -67,7 +67,7 @@ pub(super) fn render_teammate_boost(ctx: &egui::Context, state: &Arc<AppState>) 
     // Do not guess if not found, because a bad fallback shows the wrong team.
     let my_team = {
         let stored_team = state.local_team.load(Ordering::SeqCst);
-        if stored_team != 255 {
+        if stored_team != crate::state::NO_TEAM {
             Some(stored_team)
         } else {
             players

@@ -17,13 +17,13 @@ pub(super) fn preview_lobby_players(state: &Arc<AppState>) -> Vec<PlayerInfo> {
 
     if lobby_players.is_empty() {
         let local_identity = state.local_player_identity.load();
-        let local_mmr = state.local_mmr.load();
+        let local_mmr = state.mmr.local_mmr.load();
         let session = state.session.load();
         let local_team = session
             .local_team
             .or_else(|| {
                 let team = state.local_team.load(Ordering::SeqCst);
-                (team != 255).then_some(team)
+                (team != crate::state::NO_TEAM).then_some(team)
             })
             .unwrap_or(0);
         let opponent_team = if local_team == 0 { 1 } else { 0 };
@@ -159,7 +159,7 @@ pub(super) fn render_overlay(ctx: &egui::Context, state: &Arc<AppState>) {
             players.values().cloned().collect()
         };
         let local_identity = state.local_player_identity.load();
-        let local_mmr = state.local_mmr.load();
+        let local_mmr = state.mmr.local_mmr.load();
         let session = state.session.load();
         draw_lobby_panel(
             ui,
@@ -260,8 +260,8 @@ pub(super) fn draw_lobby_panel(
                 .filter(|p| config.show_bots || !p.is_bot)
                 .collect();
             sorted_players.sort_by(|a, b| {
-                let a_local = is_local_lobby_player(a, local_identity);
-                let b_local = is_local_lobby_player(b, local_identity);
+                let a_local = is_local_lobby_player(a, local_identity, player_count);
+                let b_local = is_local_lobby_player(b, local_identity, player_count);
                 a.team
                     .cmp(&b.team)
                     .then_with(|| b_local.cmp(&a_local))
@@ -334,7 +334,7 @@ fn render_lobby_player_row(
     session_mode: SessionMode,
 ) {
     let team_color = team_color(player.team);
-    let is_local = is_local_lobby_player(player, local_identity);
+    let is_local = is_local_lobby_player(player, local_identity, player_count);
     let mmr = player
         .mmr
         .as_ref()
@@ -803,8 +803,9 @@ fn should_fetch_rank(player: &PlayerInfo) -> bool {
 fn is_local_lobby_player(
     player: &PlayerInfo,
     local_identity: Option<&LocalPlayerIdentity>,
+    player_count: usize,
 ) -> bool {
-    if player.is_local {
+    if player.is_local || (player_count == 1 && !player.is_bot) {
         return true;
     }
     let Some(identity) = local_identity else {
@@ -888,7 +889,7 @@ mod tests {
             ..player("Someone", "Epic|2|0", "Epic")
         };
 
-        assert!(is_local_lobby_player(&player, None));
+        assert!(is_local_lobby_player(&player, None, 2));
     }
 
     #[test]
@@ -896,7 +897,7 @@ mod tests {
         let identity = identity();
         let player = player("Renamed", "steam|123|0", "steam");
 
-        assert!(is_local_lobby_player(&player, Some(&identity)));
+        assert!(is_local_lobby_player(&player, Some(&identity), 2));
     }
 
     #[test]
@@ -904,7 +905,7 @@ mod tests {
         let identity = identity();
         let player = player("cachedname", "Unknown|0|0", "Unknown");
 
-        assert!(is_local_lobby_player(&player, Some(&identity)));
+        assert!(is_local_lobby_player(&player, Some(&identity), 2));
     }
 
     #[test]
@@ -912,7 +913,19 @@ mod tests {
         let identity = identity();
         let player = player("Opponent", "Steam|999|0", "Steam");
 
-        assert!(!is_local_lobby_player(&player, Some(&identity)));
+        assert!(!is_local_lobby_player(&player, Some(&identity), 2));
+    }
+
+    #[test]
+    fn single_player_lobby_marks_player_local() {
+        let p = player("Player", "Unknown|0|0", "Unknown");
+        assert!(is_local_lobby_player(&p, None, 1));
+
+        let bot = PlayerInfo {
+            is_bot: true,
+            ..player("Bot", "Unknown|0|0", "Unknown")
+        };
+        assert!(!is_local_lobby_player(&bot, None, 1));
     }
 
     #[test]
@@ -959,14 +972,17 @@ mod tests {
                 tier_name: "Grand Champion I".to_string(),
             },
         );
-        state.local_mmr.store(Arc::new(crate::state::LocalMmrState {
-            current: Some(TrackerSnapshot {
-                playlists,
-                last_updated: None,
-                current_season: None,
-            }),
-            ..Default::default()
-        }));
+        state
+            .mmr
+            .local_mmr
+            .store(Arc::new(crate::state::LocalMmrState {
+                current: Some(TrackerSnapshot {
+                    playlists,
+                    last_updated: None,
+                    current_season: None,
+                }),
+                ..Default::default()
+            }));
 
         let preview = preview_lobby_players(&state);
         let local = preview.iter().find(|player| player.is_local).unwrap();

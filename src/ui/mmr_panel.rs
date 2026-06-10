@@ -6,7 +6,7 @@ use super::common::debug_status_row;
 
 pub(super) fn render_local_mmr_panel(ui: &mut egui::Ui, state: &Arc<AppState>) {
     let identity = state.local_player_identity.load();
-    let local_mmr = state.local_mmr.load();
+    let local_mmr = state.mmr.local_mmr.load();
 
     ui.heading("Local MMR");
     if identity.is_known() {

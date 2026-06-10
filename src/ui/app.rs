@@ -501,8 +501,8 @@ struct RepaintInputs {
 
 fn schedule_repaint(ctx: &egui::Context, state: &Arc<AppState>, inputs: RepaintInputs) {
     let has_drag_input = inputs.layout_mode && ctx.input(|input| input.pointer.any_down());
-    let has_spinner = state.local_mmr.load().fetching
-        || state.debug_capture_status.load().running
+    let has_spinner = state.mmr.local_mmr.load().fetching
+        || state.diagnostics.debug_capture_status.load().running
         || boost_operation_running(state);
     let needs_animation = inputs.show_hud
         || inputs.show_session_overlay
@@ -523,7 +523,11 @@ fn schedule_repaint(ctx: &egui::Context, state: &Arc<AppState>, inputs: RepaintI
 }
 
 fn boost_operation_running(state: &Arc<AppState>) -> bool {
-    let status = state.boost_swap_status.lock().unwrap();
+    let status = state
+        .boost
+        .boost_swap_status
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let status = status.as_str();
     !status.is_empty()
         && status != "Idle"

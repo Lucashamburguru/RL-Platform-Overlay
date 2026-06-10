@@ -1,4 +1,4 @@
-use crate::json_utils::{decode_json_string_value, number_field, string_field};
+use crate::json_utils::{bool_field, decode_json_string_value, number_field, string_field};
 use crate::session::SessionMode;
 use crate::state::{AppState, LocalPlayerIdentity, PlayerInfo};
 use crate::stats_api::{StatsApiTransport, TcpJsonSplitter};
@@ -21,12 +21,12 @@ async fn simulate_key_tap(key: rdev::Key) -> Result<(), rdev::SimulateError> {
 
 async fn simulate_auto_key_tap(key: rdev::Key, action: &str) -> bool {
     if !rocket_league_accepts_auto_input() {
-        println!("{action} skipped: Rocket League is not the foreground window.");
+        log::info!("{action} skipped: Rocket League is not the foreground window.");
         return false;
     }
 
     if let Err(error) = simulate_key_tap(key).await {
-        eprintln!("{action} key simulation failed: {error:?}");
+        log::error!("{action} key simulation failed: {error:?}");
         return false;
     }
 
@@ -36,7 +36,7 @@ async fn simulate_auto_key_tap(key: rdev::Key, action: &str) -> bool {
 async fn simulate_auto_key_sequence(sequence: &str, action: &str) {
     let keys = parse_auto_key_sequence(sequence);
     if keys.is_empty() {
-        eprintln!("{action} skipped: no valid keys in sequence '{sequence}'.");
+        log::error!("{action} skipped: no valid keys in sequence '{sequence}'.");
         return;
     }
 
@@ -184,19 +184,24 @@ fn handle_match_reset(state: &Arc<AppState>, early_leave: bool) {
 
     state.players.store(Arc::new(HashMap::new()));
     state.local_player_name.store(Arc::new("".to_string()));
-    state.local_team.store(255, Ordering::SeqCst);
-    println!("Match ended, clearing player list.");
+    state
+        .local_team
+        .store(crate::state::NO_TEAM, Ordering::SeqCst);
+    log::info!("Match ended, clearing player list.");
 }
 
 pub async fn start_network_task(state: Arc<AppState>) {
-    let url = "ws://127.0.0.1:49123";
-    let addr = "127.0.0.1:49123";
-    println!("Connecting to {}...", url);
+    start_network_task_with_addr(state, "127.0.0.1:49123").await;
+}
+
+pub async fn start_network_task_with_addr(state: Arc<AppState>, addr: &str) {
+    let url = format!("ws://{addr}");
+    log::info!("Connecting to {}...", url);
     loop {
         // Try WebSocket first
-        match connect_async(url).await {
+        match connect_async(&url).await {
             Ok((mut ws_stream, _)) => {
-                println!("Connected to Rocket League via WebSocket!");
+                log::info!("Connected to Rocket League via WebSocket!");
                 state.is_connected.store(true, Ordering::SeqCst);
                 update_transport(&state, StatsApiTransport::WebSocket);
                 while let Some(msg) = ws_stream.next().await {
@@ -215,9 +220,9 @@ pub async fn start_network_task(state: Arc<AppState>) {
             }
             Err(e) => {
                 if format!("{}", e).contains("invalid HTTP version") {
-                    println!("Detected raw TCP traffic. Switching to TCP mode...");
+                    log::info!("Detected raw TCP traffic. Switching to TCP mode...");
                     if let Ok(mut stream) = TcpStream::connect(addr).await {
-                        println!("Connected to Rocket League via TCP!");
+                        log::info!("Connected to Rocket League via TCP!");
                         state.is_connected.store(true, Ordering::SeqCst);
                         update_transport(&state, StatsApiTransport::Tcp);
                         let mut buffer = [0u8; 16384];
@@ -238,7 +243,7 @@ pub async fn start_network_task(state: Arc<AppState>) {
                                 }
                                 Err(error) => {
                                     let message = format!("TCP read error: {error}");
-                                    eprintln!("{message}");
+                                    log::error!("{message}");
                                     update_connection_error(&state, message);
                                     break;
                                 }
@@ -253,7 +258,7 @@ pub async fn start_network_task(state: Arc<AppState>) {
                     }
                 } else {
                     state.is_connected.store(false, Ordering::SeqCst);
-                    eprintln!("Connection failed: {}. Retrying in 5s...", e);
+                    log::error!("Connection failed: {}. Retrying in 5s...", e);
                     update_connection_error(&state, e.to_string());
                 }
             }
@@ -269,7 +274,7 @@ fn handle_event(state: &Arc<AppState>, json: &Value) {
         "UpdateState" => handle_update_state(state, &json["Data"]),
         "MatchEnded" => {
             let local_team = state.local_team.load(Ordering::SeqCst);
-            let local_team_hint = (local_team != 255).then_some(local_team);
+            let local_team_hint = (local_team != crate::state::NO_TEAM).then_some(local_team);
             let mut session = (**state.session.load()).clone();
             session.handle_match_ended(&json["Data"], local_team_hint);
             state.session.store(Arc::new(session));
@@ -281,13 +286,13 @@ fn handle_event(state: &Arc<AppState>, json: &Value) {
                 let config = state_clone.config.load();
                 if config.auto_gg {
                     tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
-                    println!("Auto-GG: sending configured key sequence...");
+                    log::info!("Auto-GG: sending configured key sequence...");
                     simulate_auto_key_sequence(&config.auto_gg_sequence, "Auto-GG").await;
                 }
 
                 if config.auto_freeplay {
                     tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
-                    println!("Auto-Freeplay: Navigating to Free Play...");
+                    log::info!("Auto-Freeplay: Navigating to Free Play...");
                     if !simulate_auto_key_tap(rdev::Key::Escape, "Auto-Freeplay").await {
                         return;
                     }
@@ -335,7 +340,7 @@ fn handle_event(state: &Arc<AppState>, json: &Value) {
         "MatchDestroyed" | "LobbyEntered" => {
             handle_match_reset(state, true);
         }
-        _ => println!("Received event: {}", event),
+        _ => log::debug!("Received event: {}", event),
     }
 }
 
@@ -343,15 +348,20 @@ fn handle_update_state(state: &Arc<AppState>, data: &Value) {
     let real_data = decode_json_string_value(data);
     let mut target_name_hint = None;
     let mut target_team_hint = None;
+    let mut b_has_target = false;
 
     if let Some(_obj) = real_data.as_object() {
         // Extract local player identity from the game block when available.
         if let Some(game) = real_data.get("game").or_else(|| real_data.get("Game")) {
+            b_has_target = bool_field(game, &["bHasTarget", "hasTarget"]).unwrap_or(false);
+
             if let Some(client) = string_field(game, &["client", "Client"]) {
                 state.local_player_name.store(Arc::new(client.to_string()));
             } else if let Some(me) = string_field(game, &["me", "Me"]) {
                 state.local_player_name.store(Arc::new(me.to_string()));
-            } else if let Some(target) = game.get("target").or_else(|| game.get("Target")) {
+            } else if !b_has_target
+                && let Some(target) = game.get("target").or_else(|| game.get("Target"))
+            {
                 if let Some(target_name) = string_field(target, &["Name", "name"]) {
                     target_name_hint = Some(target_name.to_string());
                 }
@@ -397,11 +407,19 @@ fn handle_update_state(state: &Arc<AppState>, data: &Value) {
             parsed_players += 1;
 
             // Check for isLocalPlayer flag
-            let is_local = p["IsLocalPlayer"].as_bool().unwrap_or(false)
+            let mut is_local = p["IsLocalPlayer"].as_bool().unwrap_or(false)
                 || p["isLocalPlayer"].as_bool().unwrap_or(false)
                 || p["isMe"].as_bool().unwrap_or(false)
                 || (!current_local_name.is_empty()
                     && name.eq_ignore_ascii_case(current_local_name));
+
+            // If we are spectating another player, ensure they are not marked as local
+            if b_has_target {
+                let cached_identity = state.local_player_identity.load();
+                if cached_identity.is_known() && !name.eq_ignore_ascii_case(&cached_identity.name) {
+                    is_local = false;
+                }
+            }
 
             if is_local {
                 state.local_player_name.store(Arc::new(name.clone()));
@@ -472,7 +490,7 @@ fn handle_update_state(state: &Arc<AppState>, data: &Value) {
         state.local_player_name.store(Arc::new(target_name));
     }
 
-    if state.local_team.load(Ordering::SeqCst) == 255
+    if state.local_team.load(Ordering::SeqCst) == crate::state::NO_TEAM
         && parsed_local_team.is_none()
         && let Some(target_team) = target_team_hint
     {
@@ -482,10 +500,21 @@ fn handle_update_state(state: &Arc<AppState>, data: &Value) {
     if !new_players.is_empty() {
         // println!("State Updated: {} players in lobby", new_players.len());
     }
-    state.players.store(Arc::new(new_players));
+    state.players.rcu(|current_players| {
+        let mut final_players = new_players.clone();
+        for (name, player) in final_players.iter_mut() {
+            if let Some(prev) = current_players.get(name)
+                && player.mmr.is_none()
+                && prev.mmr.is_some()
+            {
+                player.mmr = prev.mmr.clone();
+            }
+        }
+        Arc::new(final_players)
+    });
 
     let local_team = state.local_team.load(Ordering::SeqCst);
-    let local_team_hint = (local_team != 255).then_some(local_team);
+    let local_team_hint = (local_team != crate::state::NO_TEAM).then_some(local_team);
     let mode_hint = real_data
         .get("Game")
         .or_else(|| real_data.get("game"))
@@ -559,7 +588,7 @@ fn parse_platform(id: &str) -> (String, bool) {
         return ("BOT".to_string(), true);
     }
     let parts: Vec<&str> = id.split('|').collect();
-    let platform = parts[0];
+    let platform = parts.first().copied().unwrap_or("Unknown");
     match platform {
         "Steam" => ("Steam".to_string(), false),
         "Epic" => ("Epic".to_string(), false),
@@ -601,6 +630,8 @@ mod tests {
             ("Unknown".to_string(), false)
         );
         assert_eq!(parse_platform(""), ("Unknown".to_string(), false));
+        assert_eq!(parse_platform("Steam"), ("Steam".to_string(), false));
+        assert_eq!(parse_platform("Epic"), ("Epic".to_string(), false));
     }
 
     #[test]
@@ -690,7 +721,7 @@ mod tests {
                 }
             ],
             "Game": {
-                "bHasTarget": true,
+                "bHasTarget": false,
                 "Target": {
                     "Name": "cyberPeng",
                     "Shortcut": 1,
@@ -736,6 +767,46 @@ mod tests {
         assert!(players["CachedName"].is_local);
         assert_eq!(state.local_team.load(Ordering::SeqCst), 1);
         assert!(!players["Opponent"].is_local);
+    }
+
+    #[test]
+    fn test_update_state_in_spectate_mode_does_not_overwrite_local_player() {
+        let state = AppState::new();
+        state.update_local_player_identity(crate::state::LocalPlayerIdentity {
+            name: "MyRealName".to_string(),
+            primary_id: "Steam|76561197981997358|0".to_string(),
+            platform: "Steam".to_string(),
+        });
+        state
+            .local_player_name
+            .store(Arc::new("MyRealName".to_string()));
+
+        let data = json!({
+            "Game": {
+                "bHasTarget": true,
+                "Target": {
+                    "Name": "SpectatedPlayer",
+                    "TeamNum": 0
+                }
+            },
+            "Players": [
+                {
+                    "Name": "SpectatedPlayer",
+                    "PrimaryId": "Epic|999|0",
+                    "TeamNum": 0,
+                    "IsLocalPlayer": true
+                }
+            ]
+        });
+
+        handle_update_state(&state, &data);
+
+        let players = state.players.load();
+        // The spectated player should not be marked as local
+        assert!(!players["SpectatedPlayer"].is_local);
+        // The local player identity should still be MyRealName
+        assert_eq!(state.local_player_identity.load().name, "MyRealName");
+        assert_eq!(**state.local_player_name.load(), "MyRealName");
     }
 
     #[test]

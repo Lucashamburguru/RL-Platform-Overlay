@@ -187,9 +187,11 @@ impl SessionState {
             return;
         }
 
-        let result = self
-            .local_team
-            .and_then(|team| result_from_score(self.blue_score, self.orange_score, team))
+        let Some(local_team) = self.local_team else {
+            return;
+        };
+
+        let result = result_from_score(self.blue_score, self.orange_score, local_team)
             .unwrap_or(MatchResult::Loss);
 
         self.apply_match_result(result);
@@ -508,6 +510,23 @@ mod tests {
         assert_eq!(session.matches_played, 1);
         assert_eq!(session.last_result, MatchResult::Loss);
         assert!(session.result_recorded_for_match);
+    }
+
+    #[test]
+    fn test_early_leave_unknown_team_ignored() {
+        let mut session = SessionState {
+            active_match_id: "xyz".to_string(),
+            local_team: None,
+            blue_score: 1,
+            orange_score: 3,
+            ..Default::default()
+        };
+        session.record_early_leave();
+        assert_eq!(session.wins, 0);
+        assert_eq!(session.losses, 0);
+        assert_eq!(session.matches_played, 0);
+        assert_eq!(session.last_result, MatchResult::Unknown);
+        assert!(!session.result_recorded_for_match);
     }
 
     #[test]
