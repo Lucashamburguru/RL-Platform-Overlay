@@ -128,6 +128,7 @@ pub struct SessionState {
     pub local_team: Option<u8>,
     pub blue_score: u32,
     pub orange_score: u32,
+    pub round_started: bool,
     result_recorded_for_match: bool,
 }
 
@@ -180,10 +181,32 @@ impl SessionState {
                 self.record_result(winner);
             }
         }
+
+        if let Some(players) = real_data
+            .get("Players")
+            .or_else(|| real_data.get("players"))
+            .and_then(Value::as_array)
+        {
+            for p in players {
+                let score = number_field(p, &["Score", "score"]).unwrap_or(0);
+                let touches = number_field(p, &["Touches", "touches"]).unwrap_or(0);
+                let goals = number_field(p, &["Goals", "goals"]).unwrap_or(0);
+                let saves = number_field(p, &["Saves", "saves"]).unwrap_or(0);
+                let demos = number_field(p, &["Demos", "demos"]).unwrap_or(0);
+                if score > 0 || touches > 0 || goals > 0 || saves > 0 || demos > 0 {
+                    self.round_started = true;
+                }
+            }
+        }
+    }
+
+    pub fn handle_round_started(&mut self) {
+        self.round_started = true;
     }
 
     pub fn record_early_leave(&mut self) {
-        if self.result_recorded_for_match || self.active_match_id.is_empty() {
+        if self.result_recorded_for_match || self.active_match_id.is_empty() || !self.round_started
+        {
             return;
         }
 
@@ -242,6 +265,7 @@ impl SessionState {
         self.blue_score = 0;
         self.orange_score = 0;
         self.result_recorded_for_match = false;
+        self.round_started = false;
     }
 
     fn record_result(&mut self, winner: &str) {
@@ -463,6 +487,7 @@ mod tests {
             local_team: Some(0),
             blue_score: 3,
             orange_score: 1,
+            round_started: true,
             ..Default::default()
         };
         session.record_early_leave();
@@ -483,6 +508,7 @@ mod tests {
             local_team: Some(0),
             blue_score: 1,
             orange_score: 3,
+            round_started: true,
             ..Default::default()
         };
         session.record_early_leave();
@@ -502,6 +528,7 @@ mod tests {
             local_team: Some(0),
             blue_score: 2,
             orange_score: 2,
+            round_started: true,
             ..Default::default()
         };
         session.record_early_leave();
@@ -537,6 +564,7 @@ mod tests {
             local_team: Some(0),
             blue_score: 0,
             orange_score: 1,
+            round_started: true,
             ..Default::default()
         };
         session.record_early_leave();
@@ -552,6 +580,7 @@ mod tests {
             local_team: Some(0),
             blue_score: 1,
             orange_score: 0,
+            round_started: true,
             ..Default::default()
         };
         session.record_early_leave();

@@ -272,6 +272,11 @@ fn handle_event(state: &Arc<AppState>, json: &Value) {
     update_last_event(state, event);
     match event {
         "UpdateState" => handle_update_state(state, &json["Data"]),
+        "RoundStarted" | "ClockUpdatedSeconds" | "BallHit" | "GoalScored" | "StatfeedEvent" => {
+            let mut session = (**state.session.load()).clone();
+            session.handle_round_started();
+            state.session.store(Arc::new(session));
+        }
         "MatchEnded" => {
             let local_team = state.local_team.load(Ordering::SeqCst);
             let local_team_hint = (local_team != crate::state::NO_TEAM).then_some(local_team);
@@ -899,6 +904,7 @@ mod tests {
 
         assert_eq!(state.session.load().active_match_id, "guid123");
 
+        handle_event(&state, &json!({ "Event": "RoundStarted" }));
         handle_event(&state, &json!({ "Event": "LobbyEntered" }));
 
         let session = state.session.load();
