@@ -1,3 +1,4 @@
+pub mod history;
 pub mod hoops_fixer;
 pub mod json_utils;
 pub mod replays;

@@ -75,6 +75,11 @@ jobs:
         $name = Split-Path "${{ matrix.binary_path }}" -Leaf
         "$hash  $name" | Out-File -FilePath "${{ matrix.binary_path }}.sha256" -Encoding ascii
 
+    - name: Sign release asset
+      env:
+        RL_OVERLAY_RELEASE_SIGNING_KEY_B64: ${{ secrets.RL_OVERLAY_RELEASE_SIGNING_KEY_B64 }}
+      run: cargo run --release --bin sign_update -- --asset "${{ matrix.binary_path }}" --out "${{ matrix.binary_path }}.sig"
+
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
@@ -82,6 +87,7 @@ jobs:
         path: |
           ${{ matrix.binary_path }}
           ${{ matrix.binary_path }}.sha256
+          ${{ matrix.binary_path }}.sig
 
     - name: Create Release
       if: startsWith(github.ref, 'refs/tags/v')
@@ -90,5 +96,6 @@ jobs:
         files: |
           ${{ matrix.binary_path }}
           ${{ matrix.binary_path }}.sha256
+          ${{ matrix.binary_path }}.sig
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

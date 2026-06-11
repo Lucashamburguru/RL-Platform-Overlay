@@ -10,9 +10,9 @@ use super::hotkeys::egui_to_rdev_key;
 use super::lobby_overlay::render_overlay;
 use super::session_hud::render_session_overlay;
 use super::settings::{
-    render_boost_settings_tab, render_launch_controls, render_overlay_settings_tab,
-    render_replays_settings_tab, render_session_settings_tab, render_settings_tabs,
-    render_setup_settings_tab, render_update_notice,
+    render_boost_settings_tab, render_history_settings_tab, render_launch_controls,
+    render_overlay_settings_tab, render_replays_settings_tab, render_session_settings_tab,
+    render_settings_tabs, render_setup_settings_tab, render_update_notice,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -22,6 +22,7 @@ pub enum ConfirmAction {
     AlphaBoostApply,
     AlphaBoostRestore,
     DeleteBackups,
+    ClearHistory,
 }
 
 pub struct MainApp {
@@ -81,6 +82,7 @@ pub(super) enum SettingsTab {
     Session,
     Boost,
     Replays,
+    History,
     Debug,
 }
 
@@ -229,7 +231,7 @@ impl eframe::App for MainApp {
 
                     if self.last_logged_show_settings != Some(show_settings) {
                         crate::input::append_hotkey_debug_log(
-                            self.state.debug_enabled,
+                            self.state.debug_logging_enabled.load(Ordering::SeqCst),
                             format!(
                                 "ui_show_settings visible={show_settings} launched={is_launched} recording_kb={} recording_ctrl={} recording_settings={} recording_launch={}",
                                 self.state.hotkeys.is_recording_kb.load(Ordering::SeqCst),
@@ -273,7 +275,7 @@ impl eframe::App for MainApp {
                                     let btn = ui.add(egui::Button::new("⚙ Settings").frame(true));
                                     if btn.clicked() {
                                         crate::input::append_hotkey_debug_log(
-                                            self.state.debug_enabled,
+                                            self.state.debug_logging_enabled.load(Ordering::SeqCst),
                                             "gear_settings_button_clicked visible=true",
                                         );
                                         self.state.flags.is_settings_visible.store(true, Ordering::SeqCst);
@@ -294,7 +296,7 @@ impl eframe::App for MainApp {
                                 {
                                     if *pressed && name == settings_hotkey {
                                         crate::input::append_hotkey_debug_log(
-                                            self.state.debug_enabled,
+                                            self.state.debug_logging_enabled.load(Ordering::SeqCst),
                                             format!(
                                                 "egui_keypress key={name} settings_match=true"
                                             ),
@@ -343,7 +345,7 @@ impl eframe::App for MainApp {
                             });
                         if !settings_open {
                             crate::input::append_hotkey_debug_log(
-                                self.state.debug_enabled,
+                                self.state.debug_logging_enabled.load(Ordering::SeqCst),
                                 "settings_window_close_clicked visible=false",
                             );
                             self.state
@@ -510,96 +512,7 @@ impl eframe::App for MainApp {
             }
         }
 
-        if let Some(action) = self.confirm_modal {
-            let mut open = true;
-            let mut close_modal = false;
-            let mut proceed = false;
-
-            egui::Window::new("Confirm Action")
-                .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-                .collapsible(false)
-                .resizable(false)
-                .movable(false)
-                .open(&mut open)
-                .show(ctx, |ui| {
-                    ui.spacing_mut().item_spacing.y = 10.0;
-                    match action {
-                        ConfirmAction::ResetConfig => {
-                            ui.label("Are you sure you want to reset all settings to default?");
-                            ui.label("This will revert your customized hotkeys, HUD scales, opacity, and other settings.");
-                        }
-                        ConfirmAction::ClearUploadCache => {
-                            ui.label("Are you sure you want to clear your uploaded replays cache?");
-                            ui.label("This will cause the auto-uploader to re-check and potentially re-upload local replays.");
-                        }
-                        ConfirmAction::AlphaBoostApply => {
-                            ui.heading("⚠️ Terms of Service Acknowledgment");
-                            ui.label("Applying Alpha Boost modifications edits local game files.");
-                            ui.label("Under Psyonix / Rocket League Terms of Service (ToS), modifying game files or cosmetics can technically be considered a violation and carries a risk of account suspension.");
-                            ui.add_space(4.0);
-                            ui.checkbox(&mut self.tos_accepted, "I read, understand, and accept the risks associated with this action.");
-                        }
-                        ConfirmAction::AlphaBoostRestore => {
-                            ui.label("Are you sure you want to restore original Rocket League boost files?");
-                            ui.label("This will revert any local file modifications made by Alpha Boost.");
-                        }
-                        ConfirmAction::DeleteBackups => {
-                            ui.label("Are you sure you want to permanently delete all hoops replay backup (.replay.bak) files?");
-                            ui.colored_label(egui::Color32::from_rgb(230, 80, 80), "⚠️ This action is irreversible!");
-                        }
-                    }
-
-                    ui.add_space(8.0);
-                    ui.horizontal(|ui| {
-                        let confirm_enabled = match action {
-                            ConfirmAction::AlphaBoostApply => self.tos_accepted,
-                            _ => true,
-                        };
-
-                        if ui.add_enabled(confirm_enabled, egui::Button::new("Yes, Proceed")).clicked() {
-                            proceed = true;
-                            close_modal = true;
-                        }
-                        if ui.button("Cancel").clicked() {
-                            close_modal = true;
-                        }
-                    });
-                });
-
-            if !open || close_modal {
-                self.confirm_modal = None;
-                self.tos_accepted = false;
-            }
-
-            if proceed {
-                match action {
-                    ConfirmAction::ResetConfig => {
-                        let default_config = crate::state::Config::default();
-                        self.state.save_config(default_config);
-                    }
-                    ConfirmAction::ClearUploadCache => {
-                        let config = self.state.system.config.load();
-                        let mut config_edit = (**config).clone();
-                        config_edit.uploaded_replays.clear();
-                        self.state.save_config(config_edit);
-                        if let Ok(mut status) = self.state.replays.ballchasing_status.lock() {
-                            *status = "Upload cache cleared.".to_string();
-                        }
-                    }
-                    ConfirmAction::AlphaBoostApply => {
-                        let rl_path = self.state.system.config.load().rocket_league_path.clone();
-                        crate::assets::start_apply_alpha_boost(self.state.clone(), rl_path);
-                    }
-                    ConfirmAction::AlphaBoostRestore => {
-                        let rl_path = self.state.system.config.load().rocket_league_path.clone();
-                        crate::assets::start_restore_standard_boost(self.state.clone(), rl_path);
-                    }
-                    ConfirmAction::DeleteBackups => {
-                        crate::hoops_fixer::start_delete_backups_task(self.state.clone());
-                    }
-                }
-            }
-        }
+        self.render_confirm_modal(ctx);
 
         schedule_repaint(
             ctx,
@@ -785,6 +698,7 @@ impl MainApp {
                     &mut config_edit,
                     &mut changed,
                     self.is_rl_running,
+                    &self.rl_process_detection_detail,
                 ),
                 SettingsTab::Overlay => render_overlay_settings_tab(
                     ui,
@@ -807,6 +721,13 @@ impl MainApp {
                     &mut self.confirm_modal,
                 ),
                 SettingsTab::Replays => render_replays_settings_tab(
+                    ui,
+                    &self.state,
+                    &mut config_edit,
+                    &mut changed,
+                    &mut self.confirm_modal,
+                ),
+                SettingsTab::History => render_history_settings_tab(
                     ui,
                     &self.state,
                     &mut config_edit,
@@ -852,7 +773,162 @@ impl MainApp {
                 self.state.flags.is_launched.store(false, Ordering::SeqCst);
                 self.launched_by_layout_mode = false;
             }
+            let history_enabled = config_edit.history_enabled;
+            let history_indicators_enabled = config_edit.lobby_history_indicators_enabled;
             self.state.save_config(config_edit);
+            if history_enabled {
+                crate::history::refresh_totals(&self.state);
+                if history_indicators_enabled {
+                    crate::history::refresh_lobby_history(&self.state);
+                }
+            } else {
+                self.state
+                    .history
+                    .player_summaries
+                    .store(Arc::new(Default::default()));
+            }
+        }
+    }
+
+    fn render_confirm_modal(&mut self, ctx: &egui::Context) {
+        let Some(action) = self.confirm_modal else {
+            return;
+        };
+
+        let mut open = true;
+        let mut close_modal = false;
+        let mut proceed = false;
+
+        egui::Window::new("Confirm Action")
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .collapsible(false)
+            .resizable(false)
+            .movable(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.spacing_mut().item_spacing.y = 10.0;
+                self.render_confirm_modal_body(ui, action);
+
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    let confirm_enabled = match action {
+                        ConfirmAction::AlphaBoostApply => self.tos_accepted,
+                        _ => true,
+                    };
+
+                    if ui
+                        .add_enabled(confirm_enabled, egui::Button::new("Yes, Proceed"))
+                        .clicked()
+                    {
+                        proceed = true;
+                        close_modal = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        close_modal = true;
+                    }
+                });
+            });
+
+        if !open || close_modal {
+            self.confirm_modal = None;
+            self.tos_accepted = false;
+        }
+
+        if proceed {
+            self.perform_confirm_action(action);
+        }
+    }
+
+    fn render_confirm_modal_body(&mut self, ui: &mut egui::Ui, action: ConfirmAction) {
+        match action {
+            ConfirmAction::ResetConfig => {
+                ui.label("Are you sure you want to reset all settings to default?");
+                ui.label(
+                    "This will revert your customized hotkeys, HUD scales, opacity, and other settings.",
+                );
+            }
+            ConfirmAction::ClearUploadCache => {
+                ui.label("Are you sure you want to clear your uploaded replays cache?");
+                ui.label(
+                    "This will cause the auto-uploader to re-check and potentially re-upload local replays.",
+                );
+            }
+            ConfirmAction::AlphaBoostApply => {
+                ui.heading("⚠️ Terms of Service Acknowledgment");
+                ui.label("Applying Alpha Boost modifications edits local game files.");
+                ui.label("Under Psyonix / Rocket League Terms of Service (ToS), modifying game files or cosmetics can technically be considered a violation and carries a risk of account suspension.");
+                ui.add_space(4.0);
+                ui.checkbox(
+                    &mut self.tos_accepted,
+                    "I read, understand, and accept the risks associated with this action.",
+                );
+            }
+            ConfirmAction::AlphaBoostRestore => {
+                ui.label("Are you sure you want to restore original Rocket League boost files?");
+                ui.label("This will revert any local file modifications made by Alpha Boost.");
+            }
+            ConfirmAction::DeleteBackups => {
+                ui.label(
+                    "Are you sure you want to permanently delete all hoops replay backup (.replay.bak) files?",
+                );
+                ui.colored_label(
+                    egui::Color32::from_rgb(230, 80, 80),
+                    "⚠️ This action is irreversible!",
+                );
+            }
+            ConfirmAction::ClearHistory => {
+                ui.label("Are you sure you want to clear local player history?");
+                ui.label("This deletes the SQLite history database contents for stored matches and players.");
+            }
+        }
+    }
+
+    fn perform_confirm_action(&mut self, action: ConfirmAction) {
+        match action {
+            ConfirmAction::ResetConfig => {
+                let default_config = crate::state::Config::default();
+                self.state.save_config(default_config);
+            }
+            ConfirmAction::ClearUploadCache => {
+                let config = self.state.system.config.load();
+                let mut config_edit = (**config).clone();
+                config_edit.uploaded_replays.clear();
+                self.state.save_config(config_edit);
+                if let Ok(mut status) = self.state.replays.ballchasing_status.lock() {
+                    *status = "Upload cache cleared.".to_string();
+                }
+            }
+            ConfirmAction::AlphaBoostApply => {
+                let rl_path = self.state.system.config.load().rocket_league_path.clone();
+                crate::assets::start_apply_alpha_boost(self.state.clone(), rl_path);
+            }
+            ConfirmAction::AlphaBoostRestore => {
+                let rl_path = self.state.system.config.load().rocket_league_path.clone();
+                crate::assets::start_restore_standard_boost(self.state.clone(), rl_path);
+            }
+            ConfirmAction::DeleteBackups => {
+                crate::hoops_fixer::start_delete_backups_task(self.state.clone());
+            }
+            ConfirmAction::ClearHistory => match crate::history::clear_history() {
+                Ok(()) => {
+                    self.state
+                        .history
+                        .player_summaries
+                        .store(Arc::new(Default::default()));
+                    self.state
+                        .history
+                        .totals
+                        .store(Arc::new(crate::history::HistoryTotals::default()));
+                    if let Ok(mut status) = self.state.history.status.lock() {
+                        *status = "History cleared.".to_string();
+                    }
+                }
+                Err(error) => {
+                    if let Ok(mut status) = self.state.history.status.lock() {
+                        *status = format!("History clear failed: {error}");
+                    }
+                }
+            },
         }
     }
 }

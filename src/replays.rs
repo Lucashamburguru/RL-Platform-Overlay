@@ -1,8 +1,47 @@
-use crate::state::AppState;
+use crate::state::{AppState, ReplayUploadProgress};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
+
+const BULK_UPLOAD_DELAY_SECS: u64 = 30;
+
+#[derive(Clone)]
+struct ReplayFile {
+    filename: String,
+    path: PathBuf,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum UploadStatus {
+    Uploaded,
+    Duplicate,
+    InvalidApiKey,
+    RateLimited,
+    Failed(u16),
+}
+
+enum BulkReplayOutcome {
+    Continue,
+    Stop(String),
+}
+
+impl UploadStatus {
+    fn from_status_code(status_code: u16) -> Self {
+        match status_code {
+            201 => Self::Uploaded,
+            409 => Self::Duplicate,
+            401 | 403 => Self::InvalidApiKey,
+            429 => Self::RateLimited,
+            other => Self::Failed(other),
+        }
+    }
+
+    fn is_cached_success(self) -> bool {
+        matches!(self, Self::Uploaded | Self::Duplicate)
+    }
+}
 
 /// Verifies a Ballchasing.com API token by making a GET request to the validation endpoint.
 pub async fn verify_token(client: &wreq::Client, api_key: &str) -> Result<(), String> {
@@ -47,21 +86,9 @@ async fn run_replay_upload(state: Arc<AppState>, scan_all_as_uploaded: bool) -> 
         return Ok(());
     }
 
-    // Read the directory for .replay files
-    let Ok(entries) = fs::read_dir(&replays_dir) else {
+    let Ok(found_files) = replay_files_in_dir(&replays_dir) else {
         return Ok(());
     };
-
-    let mut found_files = Vec::new();
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_file()
-            && path.extension().and_then(|s| s.to_str()) == Some("replay")
-            && let Some(filename) = path.file_name().and_then(|s| s.to_str())
-        {
-            found_files.push((filename.to_string(), path));
-        }
-    }
 
     if scan_all_as_uploaded {
         // Startup mode: only upload files that were modified in the last 15 minutes and are not in cache.
@@ -72,35 +99,41 @@ async fn run_replay_upload(state: Arc<AppState>, scan_all_as_uploaded: bool) -> 
         let uploaded_set = &config.uploaded_replays;
 
         if config.ballchasing_enabled && !api_key.is_empty() {
-            for (filename, path) in found_files {
-                if uploaded_set.contains(&filename) {
+            for replay in found_files {
+                if uploaded_set.contains(&replay.filename) {
                     continue;
                 }
-                if let Ok(metadata) = fs::metadata(&path)
+                if let Ok(metadata) = fs::metadata(&replay.path)
                     && let Ok(modified) = metadata.modified()
                     && let Ok(elapsed) = now.duration_since(modified)
                     && elapsed.as_secs() < 15 * 60
                 {
-                    set_status(&state, &format!("Checking recent file: {}", filename));
-                    if !wait_for_file_stability(&path).await {
+                    set_status(
+                        &state,
+                        &format!("Checking recent file: {}", replay.filename),
+                    );
+                    if !wait_for_file_stability(&replay.path).await {
                         continue;
                     }
-                    set_status(&state, &format!("Uploading recent {}...", filename));
-                    let Ok(file_bytes) = fs::read(&path) else {
+                    set_status(&state, &format!("Uploading recent {}...", replay.filename));
+                    let Ok(file_bytes) = fs::read(&replay.path) else {
                         continue;
                     };
                     if let Ok(status_code) = upload_file_to_ballchasing(
                         &state.system.http_client,
                         &api_key,
                         &visibility,
-                        &filename,
+                        &replay.filename,
                         file_bytes,
                     )
                     .await
-                        && (status_code == 201 || status_code == 409)
+                        && UploadStatus::from_status_code(status_code).is_cached_success()
                     {
-                        mark_replays_uploaded(&state, std::slice::from_ref(&filename));
-                        set_status(&state, &format!("Success: Uploaded recent {}", filename));
+                        mark_replays_uploaded(&state, std::slice::from_ref(&replay.filename));
+                        set_status(
+                            &state,
+                            &format!("Success: Uploaded recent {}", replay.filename),
+                        );
                     }
                 }
             }
@@ -122,25 +155,31 @@ async fn run_replay_upload(state: Arc<AppState>, scan_all_as_uploaded: bool) -> 
     let visibility = config.ballchasing_visibility.clone();
     let uploaded_set = &config.uploaded_replays;
 
-    for (filename, path) in found_files {
-        if uploaded_set.contains(&filename) {
+    for replay in found_files {
+        if uploaded_set.contains(&replay.filename) {
             continue;
         }
 
-        set_status(&state, &format!("Checking file stability: {}", filename));
+        set_status(
+            &state,
+            &format!("Checking file stability: {}", replay.filename),
+        );
 
-        if !wait_for_file_stability(&path).await {
+        if !wait_for_file_stability(&replay.path).await {
             set_status(
                 &state,
-                &format!("Upload skipped (unstable file): {}", filename),
+                &format!("Upload skipped (unstable file): {}", replay.filename),
             );
             continue;
         }
 
-        set_status(&state, &format!("Uploading {}...", filename));
+        set_status(&state, &format!("Uploading {}...", replay.filename));
 
-        let Ok(file_bytes) = fs::read(&path) else {
-            set_status(&state, &format!("Error: Could not read {}", filename));
+        let Ok(file_bytes) = fs::read(&replay.path) else {
+            set_status(
+                &state,
+                &format!("Error: Could not read {}", replay.filename),
+            );
             continue;
         };
 
@@ -148,36 +187,39 @@ async fn run_replay_upload(state: Arc<AppState>, scan_all_as_uploaded: bool) -> 
             &state.system.http_client,
             &api_key,
             &visibility,
-            &filename,
+            &replay.filename,
             file_bytes,
         )
         .await
         {
-            Ok(status_code) => {
-                if status_code == 201 || status_code == 409 {
-                    // Success or duplicate
+            Ok(status_code) => match UploadStatus::from_status_code(status_code) {
+                UploadStatus::Uploaded | UploadStatus::Duplicate => {
                     let success_msg = if status_code == 201 {
-                        format!("Success: Uploaded {}", filename)
+                        format!("Success: Uploaded {}", replay.filename)
                     } else {
-                        format!("Success: Replay already on ballchasing ({})", filename)
+                        format!(
+                            "Success: Replay already on ballchasing ({})",
+                            replay.filename
+                        )
                     };
                     set_status(&state, &success_msg);
-
-                    // Add to local config cache and save
-                    mark_replays_uploaded(&state, &[filename]);
-                } else if status_code == 401 || status_code == 403 {
+                    mark_replays_uploaded(&state, &[replay.filename]);
+                }
+                UploadStatus::InvalidApiKey => {
                     set_status(&state, "Error: Invalid API key (401/403)");
-                    break; // Stop processing further files
-                } else if status_code == 429 {
+                    break;
+                }
+                UploadStatus::RateLimited => {
                     set_status(&state, "Error: Rate limit hit (429)");
                     break;
-                } else {
+                }
+                UploadStatus::Failed(status_code) => {
                     set_status(
                         &state,
                         &format!("Error: Upload failed with status {}", status_code),
                     );
                 }
-            }
+            },
             Err(err) => {
                 set_status(&state, &format!("Error: {}", err));
             }
@@ -185,6 +227,37 @@ async fn run_replay_upload(state: Arc<AppState>, scan_all_as_uploaded: bool) -> 
     }
 
     Ok(())
+}
+
+fn replay_files_in_dir(replays_dir: &Path) -> Result<Vec<ReplayFile>, std::io::Error> {
+    let mut files = Vec::new();
+    for entry in fs::read_dir(replays_dir)?.flatten() {
+        let path = entry.path();
+        if path.is_file()
+            && path.extension().and_then(|s| s.to_str()) == Some("replay")
+            && let Some(filename) = path.file_name().and_then(|s| s.to_str())
+        {
+            files.push(ReplayFile {
+                filename: filename.to_string(),
+                path,
+            });
+        }
+    }
+    Ok(files)
+}
+
+fn pending_replay_files(
+    replays_dir: &Path,
+    uploaded_replays: &[String],
+) -> Result<Vec<ReplayFile>, std::io::Error> {
+    Ok(replay_files_in_dir(replays_dir)?
+        .into_iter()
+        .filter(|replay| {
+            !uploaded_replays
+                .iter()
+                .any(|uploaded| uploaded == &replay.filename)
+        })
+        .collect())
 }
 
 /// Uploads a single file to ballchasing.com using multipart/form-data.
@@ -261,6 +334,24 @@ async fn wait_for_file_stability(path: &Path) -> bool {
 }
 
 pub fn start_bulk_upload_task(state: Arc<AppState>) {
+    if state.replays.upload_progress.load().running {
+        set_status(&state, "Bulk upload already running");
+        return;
+    }
+
+    state.replays.upload_paused.store(false, Ordering::SeqCst);
+    state
+        .replays
+        .upload_stop_requested
+        .store(false, Ordering::SeqCst);
+    state
+        .replays
+        .upload_progress
+        .store(Arc::new(ReplayUploadProgress {
+            running: true,
+            ..Default::default()
+        }));
+
     tokio::spawn(async move {
         if let Err(e) = run_bulk_upload(state).await {
             log::error!("Bulk upload execution error: {}", e);
@@ -273,158 +364,418 @@ async fn run_bulk_upload(state: Arc<AppState>) -> Result<(), String> {
     let folder_str = config.replays_folder.trim();
     if folder_str.is_empty() {
         set_status(&state, "Error: Replays folder unconfigured");
+        finish_bulk_upload(&state, "Replays folder unconfigured");
         return Ok(());
     }
 
     let replays_dir = PathBuf::from(folder_str);
     if !replays_dir.exists() || !replays_dir.is_dir() {
         set_status(&state, "Error: Replays folder does not exist");
+        finish_bulk_upload(&state, "Replays folder does not exist");
         return Ok(());
     }
 
     let api_key = config.ballchasing_api_key.trim().to_string();
     if api_key.is_empty() {
         set_status(&state, "Error: API key is empty");
+        finish_bulk_upload(&state, "API key is empty");
         return Ok(());
     }
 
     let visibility = config.ballchasing_visibility.clone();
     let uploaded_replays = config.uploaded_replays.clone();
+    drop(config);
 
-    // Read directory
-    let Ok(entries) = fs::read_dir(&replays_dir) else {
+    let Ok(to_upload) = pending_replay_files(&replays_dir, &uploaded_replays) else {
         set_status(&state, "Error: Could not read directory");
+        finish_bulk_upload(&state, "Could not read directory");
         return Ok(());
     };
 
-    let mut to_upload = Vec::new();
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_file()
-            && path.extension().and_then(|s| s.to_str()) == Some("replay")
-            && let Some(filename) = path.file_name().and_then(|s| s.to_str())
-            && !uploaded_replays.iter().any(|x| x == filename)
-        {
-            to_upload.push((filename.to_string(), path));
-        }
-    }
-
     if to_upload.is_empty() {
         set_status(&state, "Success: All local replays already uploaded!");
+        state
+            .replays
+            .upload_progress
+            .store(Arc::new(ReplayUploadProgress {
+                running: false,
+                recent_events: vec!["All local replays already uploaded".to_string()],
+                ..Default::default()
+            }));
         return Ok(());
     }
 
     let total = to_upload.len();
+    update_upload_progress(&state, |progress| {
+        progress.running = true;
+        progress.total = total;
+        progress.recent_events.clear();
+        progress
+            .recent_events
+            .push(format!("Bulk upload queued {total} files"));
+    });
     set_status(
         &state,
         &format!("Bulk upload started: 0/{} uploaded", total),
     );
 
-    for (index, (filename, path)) in to_upload.into_iter().enumerate() {
+    let mut aborted_reason: Option<String> = None;
+    for (index, replay) in to_upload.into_iter().enumerate() {
+        if state.replays.upload_stop_requested.load(Ordering::SeqCst) {
+            set_status(&state, "Bulk upload stopped by user");
+            push_upload_event(&state, "Stopped by user".to_string());
+            break;
+        }
+
+        wait_while_paused(&state).await;
+        if state.replays.upload_stop_requested.load(Ordering::SeqCst) {
+            set_status(&state, "Bulk upload stopped by user");
+            push_upload_event(&state, "Stopped by user".to_string());
+            break;
+        }
+
         // Double check configuration key is not cleared mid-run
         let current_config = state.system.config.load();
         if current_config.ballchasing_api_key.trim().is_empty() {
             set_status(&state, "Bulk upload stopped: API key cleared");
+            push_upload_event(&state, "Stopped: API key cleared".to_string());
+            aborted_reason = Some("API key cleared".to_string());
             break;
         }
 
-        set_status(
-            &state,
-            &format!("Bulk uploading {} ({}/{})", filename, index + 1, total),
-        );
-
-        // Stability check
-        if !wait_for_file_stability(&path).await {
-            set_status(&state, &format!("Skipped {} (unstable file)", filename));
-            continue;
-        }
-
-        let Ok(file_bytes) = fs::read(&path) else {
-            set_status(
-                &state,
-                &format!(
-                    "Error: Could not read {} ({}/{})",
-                    filename,
-                    index + 1,
-                    total
-                ),
-            );
-            continue;
-        };
-
-        match upload_file_to_ballchasing(
-            &state.system.http_client,
-            &api_key,
-            &visibility,
-            &filename,
-            file_bytes,
-        )
-        .await
+        if let BulkReplayOutcome::Stop(reason) =
+            upload_bulk_replay(&state, replay, &api_key, &visibility, index, total).await
         {
-            Ok(status_code) => {
-                if status_code == 201 || status_code == 409 {
-                    // Success or Duplicate
-                    mark_replays_uploaded(&state, std::slice::from_ref(&filename));
-                    set_status(
-                        &state,
-                        &format!("Uploaded {} ({}/{})", filename, index + 1, total),
-                    );
-                } else if status_code == 401 || status_code == 403 {
-                    set_status(&state, "Error: Invalid API key during bulk upload");
-                    break;
-                } else if status_code == 429 {
-                    set_status(&state, "Error: Rate limit hit during bulk upload");
-                    break;
-                } else {
-                    set_status(
-                        &state,
-                        &format!("Error: Failed status {} on {}", status_code, filename),
-                    );
-                }
-            }
-            Err(e) => {
-                set_status(&state, &format!("Error uploading {}: {}", filename, e));
-            }
+            aborted_reason = Some(reason);
+            break;
         }
 
-        // Delay to respect rate limits (30 seconds per file, since rate limit is 2 uploads per minute)
-        if index + 1 < total {
-            for s in (1..=30).rev() {
-                // Check if key is cleared
-                if state
-                    .system
-                    .config
-                    .load()
-                    .ballchasing_api_key
-                    .trim()
-                    .is_empty()
-                {
-                    break;
-                }
-                set_status(
-                    &state,
-                    &format!(
-                        "Waiting {}s before next upload... ({}/{})",
-                        s,
-                        index + 1,
-                        total
-                    ),
-                );
-                tokio::time::sleep(Duration::from_secs(1)).await;
-            }
+        // Delay to respect rate limits.
+        if index + 1 < total
+            && let Some(reason) = wait_between_bulk_uploads(&state, index, total).await
+        {
+            aborted_reason = Some(reason);
+            break;
         }
     }
 
     let final_config = state.system.config.load();
     let current_uploaded_count = final_config.uploaded_replays.len();
+    let stopped = state.replays.upload_stop_requested.load(Ordering::SeqCst);
+    if stopped {
+        set_status(&state, "Bulk upload stopped by user");
+    } else if let Some(reason) = &aborted_reason {
+        set_status(&state, &format!("Error: Bulk upload stopped ({reason})"));
+    } else {
+        set_status(
+            &state,
+            &format!(
+                "Success: Bulk upload finished. Cache holds {} uploads.",
+                current_uploaded_count
+            ),
+        );
+    }
+    update_upload_progress(&state, |progress| {
+        progress.running = false;
+        progress.paused = false;
+        progress.stop_requested = false;
+        progress.current_file.clear();
+        push_event(
+            progress,
+            if stopped {
+                format!(
+                    "Stopped: {} processed, {} uploaded, {} skipped, {} failed",
+                    progress.processed, progress.uploaded, progress.skipped, progress.failed
+                )
+            } else if let Some(reason) = &aborted_reason {
+                format!(
+                    "Stopped: {reason}. {} processed, {} uploaded, {} skipped, {} failed",
+                    progress.processed, progress.uploaded, progress.skipped, progress.failed
+                )
+            } else {
+                format!(
+                    "Finished: {} uploaded, {} skipped, {} failed",
+                    progress.uploaded, progress.skipped, progress.failed
+                )
+            },
+        );
+    });
+    Ok(())
+}
+
+async fn upload_bulk_replay(
+    state: &Arc<AppState>,
+    replay: ReplayFile,
+    api_key: &str,
+    visibility: &str,
+    index: usize,
+    total: usize,
+) -> BulkReplayOutcome {
+    update_upload_progress(state, |progress| {
+        progress.current_file = replay.filename.clone();
+        progress.paused = false;
+        progress.stop_requested = false;
+    });
     set_status(
-        &state,
+        state,
         &format!(
-            "Success: Bulk upload finished. Cache holds {} uploads.",
-            current_uploaded_count
+            "Bulk uploading {} ({}/{})",
+            replay.filename,
+            index + 1,
+            total
         ),
     );
-    Ok(())
+
+    if !wait_for_file_stability(&replay.path).await {
+        set_status(
+            state,
+            &format!("Skipped {} (unstable file)", replay.filename),
+        );
+        update_upload_progress(state, |progress| {
+            progress.processed += 1;
+            progress.skipped += 1;
+            push_event(
+                progress,
+                format!("Skipped {}: file was still changing", replay.filename),
+            );
+        });
+        return BulkReplayOutcome::Continue;
+    }
+
+    let Ok(file_bytes) = fs::read(&replay.path) else {
+        set_status(
+            state,
+            &format!(
+                "Error: Could not read {} ({}/{})",
+                replay.filename,
+                index + 1,
+                total
+            ),
+        );
+        update_upload_progress(state, |progress| {
+            progress.processed += 1;
+            progress.failed += 1;
+            progress.last_error = format!("Could not read {}", replay.filename);
+            push_event(
+                progress,
+                format!("Failed {}: could not read file", replay.filename),
+            );
+        });
+        return BulkReplayOutcome::Continue;
+    };
+
+    match upload_file_to_ballchasing(
+        &state.system.http_client,
+        api_key,
+        visibility,
+        &replay.filename,
+        file_bytes,
+    )
+    .await
+    {
+        Ok(status_code) => {
+            handle_bulk_upload_status(state, &replay.filename, status_code, index, total)
+        }
+        Err(error) => {
+            set_status(
+                state,
+                &format!("Error uploading {}: {}", replay.filename, error),
+            );
+            update_upload_progress(state, |progress| {
+                progress.processed += 1;
+                progress.failed += 1;
+                progress.last_error = format!("Error uploading {}: {error}", replay.filename);
+                push_event(progress, format!("Failed {}: {error}", replay.filename));
+            });
+            BulkReplayOutcome::Continue
+        }
+    }
+}
+
+fn handle_bulk_upload_status(
+    state: &Arc<AppState>,
+    filename: &str,
+    status_code: u16,
+    index: usize,
+    total: usize,
+) -> BulkReplayOutcome {
+    match UploadStatus::from_status_code(status_code) {
+        UploadStatus::Uploaded | UploadStatus::Duplicate => {
+            let upload_status = UploadStatus::from_status_code(status_code);
+            mark_replays_uploaded(state, &[filename.to_string()]);
+            let status_message = if upload_status == UploadStatus::Uploaded {
+                format!("Uploaded {} ({}/{})", filename, index + 1, total)
+            } else {
+                format!(
+                    "Already on ballchasing {} ({}/{})",
+                    filename,
+                    index + 1,
+                    total
+                )
+            };
+            set_status(state, &status_message);
+            update_upload_progress(state, |progress| {
+                progress.processed += 1;
+                if upload_status == UploadStatus::Uploaded {
+                    progress.uploaded += 1;
+                    push_event(progress, format!("Uploaded {filename}"));
+                } else {
+                    progress.skipped += 1;
+                    push_event(
+                        progress,
+                        format!("Skipped {filename}: already on ballchasing"),
+                    );
+                }
+            });
+            BulkReplayOutcome::Continue
+        }
+        UploadStatus::InvalidApiKey => {
+            set_status(state, "Error: Invalid API key during bulk upload");
+            update_upload_progress(state, |progress| {
+                progress.processed += 1;
+                progress.failed += 1;
+                progress.last_error = "Invalid API key during bulk upload".to_string();
+                push_event(progress, "Stopped: invalid API key".to_string());
+            });
+            BulkReplayOutcome::Stop("Invalid API key".to_string())
+        }
+        UploadStatus::RateLimited => {
+            set_status(state, "Error: Rate limit hit during bulk upload");
+            update_upload_progress(state, |progress| {
+                progress.processed += 1;
+                progress.failed += 1;
+                progress.last_error = "Rate limit hit during bulk upload".to_string();
+                push_event(progress, "Stopped: Ballchasing rate limit hit".to_string());
+            });
+            BulkReplayOutcome::Stop("Rate limit hit".to_string())
+        }
+        UploadStatus::Failed(status_code) => {
+            set_status(
+                state,
+                &format!("Error: Failed status {} on {}", status_code, filename),
+            );
+            update_upload_progress(state, |progress| {
+                progress.processed += 1;
+                progress.failed += 1;
+                progress.last_error =
+                    format!("Ballchasing returned HTTP {status_code} for {filename}");
+                push_event(progress, format!("Failed {filename}: HTTP {status_code}"));
+            });
+            BulkReplayOutcome::Continue
+        }
+    }
+}
+
+async fn wait_between_bulk_uploads(state: &AppState, index: usize, total: usize) -> Option<String> {
+    for seconds in (1..=BULK_UPLOAD_DELAY_SECS).rev() {
+        wait_while_paused(state).await;
+        if state.replays.upload_stop_requested.load(Ordering::SeqCst) {
+            set_status(state, "Bulk upload stopped by user");
+            push_upload_event(state, "Stopped by user".to_string());
+            return None;
+        }
+        if state
+            .system
+            .config
+            .load()
+            .ballchasing_api_key
+            .trim()
+            .is_empty()
+        {
+            return Some("API key cleared".to_string());
+        }
+        set_status(
+            state,
+            &format!(
+                "Waiting {}s before next upload... ({}/{})",
+                seconds,
+                index + 1,
+                total
+            ),
+        );
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+    None
+}
+
+pub fn set_bulk_upload_paused(state: &AppState, paused: bool) {
+    state.replays.upload_paused.store(paused, Ordering::SeqCst);
+    update_upload_progress(state, |progress| {
+        progress.paused = paused;
+        push_event(
+            progress,
+            if paused {
+                "Paused by user".to_string()
+            } else {
+                "Resumed by user".to_string()
+            },
+        );
+    });
+    set_status(
+        state,
+        if paused {
+            "Bulk upload paused"
+        } else {
+            "Bulk upload resumed"
+        },
+    );
+}
+
+pub fn stop_bulk_upload(state: &AppState) {
+    state
+        .replays
+        .upload_stop_requested
+        .store(true, Ordering::SeqCst);
+    state.replays.upload_paused.store(false, Ordering::SeqCst);
+    update_upload_progress(state, |progress| {
+        progress.stop_requested = true;
+        progress.paused = false;
+        push_event(progress, "Stop requested".to_string());
+    });
+    set_status(state, "Stopping bulk upload...");
+}
+
+async fn wait_while_paused(state: &AppState) {
+    while state.replays.upload_paused.load(Ordering::SeqCst)
+        && !state.replays.upload_stop_requested.load(Ordering::SeqCst)
+    {
+        update_upload_progress(state, |progress| {
+            progress.paused = true;
+        });
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    update_upload_progress(state, |progress| {
+        progress.paused = false;
+    });
+}
+
+fn finish_bulk_upload(state: &AppState, reason: &str) {
+    update_upload_progress(state, |progress| {
+        progress.running = false;
+        progress.paused = false;
+        progress.current_file.clear();
+        progress.last_error = reason.to_string();
+        push_event(progress, format!("Stopped: {reason}"));
+    });
+}
+
+fn push_upload_event(state: &AppState, event: String) {
+    update_upload_progress(state, |progress| push_event(progress, event));
+}
+
+fn update_upload_progress(state: &AppState, update: impl FnOnce(&mut ReplayUploadProgress)) {
+    let mut progress = (**state.replays.upload_progress.load()).clone();
+    progress.paused = state.replays.upload_paused.load(Ordering::SeqCst);
+    progress.stop_requested = state.replays.upload_stop_requested.load(Ordering::SeqCst);
+    update(&mut progress);
+    state.replays.upload_progress.store(Arc::new(progress));
+}
+
+fn push_event(progress: &mut ReplayUploadProgress, event: String) {
+    progress.recent_events.push(event);
+    while progress.recent_events.len() > 12 {
+        progress.recent_events.remove(0);
+    }
 }
 
 pub fn start_sync_replays_task(state: Arc<AppState>) {

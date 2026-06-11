@@ -1,6 +1,10 @@
 #[cfg(target_os = "windows")]
 use crate::state::config_dir;
 use crate::state::{AppState, AutoUpdateStatus, VersionCheck};
+#[cfg(any(target_os = "windows", test))]
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+#[cfg(any(target_os = "windows", test))]
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde_json::Value;
 #[cfg(any(target_os = "windows", test))]
 use sha2::{Digest, Sha256};
@@ -13,6 +17,9 @@ const LATEST_RELEASE_URL: &str =
     "https://api.github.com/repos/Lucashamburguru/RL-Platform-Overlay/releases/latest";
 const WINDOWS_ASSET_NAME: &str = "rl-platform-overlay.exe";
 const WINDOWS_CHECKSUM_ASSET_NAME: &str = "rl-platform-overlay.exe.sha256";
+const WINDOWS_SIGNATURE_ASSET_NAME: &str = "rl-platform-overlay.exe.sig";
+#[cfg(target_os = "windows")]
+const RELEASE_SIGNING_PUBLIC_KEY_B64: &str = "PZxbpTJyQ7EzHd77YcsTT/BbTZecf6T7HVC3XO6AQpw=";
 #[cfg(target_os = "windows")]
 const UPDATE_SCRIPT: &str = r#"
 param(
@@ -100,9 +107,13 @@ async fn download_and_apply_update(state: Arc<AppState>) -> Result<(), String> {
         if version_check.windows_checksum_url.is_empty() {
             return Err("Latest release does not include a Windows checksum asset.".to_string());
         }
+        if version_check.windows_signature_url.is_empty() {
+            return Err("Latest release does not include a Windows signature asset.".to_string());
+        }
 
         let download_url = version_check.windows_download_url.clone();
         let checksum_url = version_check.windows_checksum_url.clone();
+        let signature_url = version_check.windows_signature_url.clone();
         let latest_tag = version_check.latest_tag.clone();
         drop(version_check);
 
@@ -128,6 +139,25 @@ async fn download_and_apply_update(state: Arc<AppState>) -> Result<(), String> {
         let expected_sha = parse_checksum(&checksum_text, WINDOWS_ASSET_NAME)
             .ok_or_else(|| format!("Checksum file does not contain {WINDOWS_ASSET_NAME}."))?;
 
+        let signature_response = client
+            .get(&signature_url)
+            .header("User-Agent", "RL-Platform-Overlay")
+            .send()
+            .await
+            .map_err(|error| format!("Signature download failed: {error}"))?;
+        let signature_status = signature_response.status();
+        if !signature_status.is_success() {
+            return Err(format!(
+                "Signature download failed with status {signature_status}."
+            ));
+        }
+        let signature_text = signature_response
+            .text()
+            .await
+            .map_err(|error| format!("Could not read update signature: {error}"))?;
+        let signature = parse_signature(&signature_text, WINDOWS_ASSET_NAME)
+            .ok_or_else(|| format!("Signature file does not contain {WINDOWS_ASSET_NAME}."))?;
+
         let download_response = client
             .get(&download_url)
             .header("User-Agent", "RL-Platform-Overlay")
@@ -152,6 +182,7 @@ async fn download_and_apply_update(state: Arc<AppState>) -> Result<(), String> {
                 "Update checksum mismatch. Expected {expected_sha}, got {actual_sha}."
             ));
         }
+        verify_release_signature(&bytes, &signature)?;
 
         let update_dir = config_dir()
             .unwrap_or_else(|| PathBuf::from("."))
@@ -265,6 +296,8 @@ async fn check_latest_release(client: &wreq::Client) -> Result<VersionCheck, Str
     let windows_asset = release_asset_url(&release, WINDOWS_ASSET_NAME).unwrap_or_default();
     let windows_checksum =
         release_asset_url(&release, WINDOWS_CHECKSUM_ASSET_NAME).unwrap_or_default();
+    let windows_signature =
+        release_asset_url(&release, WINDOWS_SIGNATURE_ASSET_NAME).unwrap_or_default();
 
     Ok(VersionCheck {
         checked: true,
@@ -276,6 +309,7 @@ async fn check_latest_release(client: &wreq::Client) -> Result<VersionCheck, Str
             .to_string(),
         windows_download_url: windows_asset,
         windows_checksum_url: windows_checksum,
+        windows_signature_url: windows_signature,
         error: String::new(),
     })
 }
@@ -346,6 +380,58 @@ fn parse_checksum(content: &str, asset_name: &str) -> Option<String> {
 }
 
 #[cfg(any(target_os = "windows", test))]
+fn parse_signature(content: &str, asset_name: &str) -> Option<Vec<u8>> {
+    let content = content.trim_start_matches('\u{feff}');
+    let asset_lower = asset_name.to_lowercase();
+
+    if let Some(signature) = content.lines().find_map(|line| {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || !trimmed.to_lowercase().contains(&asset_lower) {
+            return None;
+        }
+        trimmed.split_whitespace().find_map(decode_signature_token)
+    }) {
+        return Some(signature);
+    }
+
+    content.split_whitespace().find_map(decode_signature_token)
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn decode_signature_token(token: &str) -> Option<Vec<u8>> {
+    let decoded = BASE64.decode(token.trim()).ok()?;
+    (decoded.len() == 64).then_some(decoded)
+}
+
+#[cfg(target_os = "windows")]
+fn verify_release_signature(bytes: &[u8], signature_bytes: &[u8]) -> Result<(), String> {
+    verify_signature_with_public_key(bytes, signature_bytes, RELEASE_SIGNING_PUBLIC_KEY_B64)
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn verify_signature_with_public_key(
+    bytes: &[u8],
+    signature_bytes: &[u8],
+    public_key_b64: &str,
+) -> Result<(), String> {
+    let public_key_bytes = BASE64
+        .decode(public_key_b64)
+        .map_err(|error| format!("Invalid embedded release public key: {error}"))?;
+    let public_key: [u8; 32] = public_key_bytes
+        .try_into()
+        .map_err(|_| "Invalid embedded release public key length.".to_string())?;
+    let signature: [u8; 64] = signature_bytes
+        .try_into()
+        .map_err(|_| "Invalid update signature length.".to_string())?;
+
+    let verifying_key = VerifyingKey::from_bytes(&public_key)
+        .map_err(|error| format!("Invalid embedded release public key: {error}"))?;
+    verifying_key
+        .verify(bytes, &Signature::from_bytes(&signature))
+        .map_err(|_| "Update signature verification failed.".to_string())
+}
+
+#[cfg(any(target_os = "windows", test))]
 fn sha256_hex(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
@@ -366,6 +452,10 @@ mod tests {
                 {
                     "name": "rl-platform-overlay.exe",
                     "browser_download_url": "https://example.com/rl-platform-overlay.exe"
+                },
+                {
+                    "name": "rl-platform-overlay.exe.sig",
+                    "browser_download_url": "https://example.com/rl-platform-overlay.exe.sig"
                 }
             ]
         });
@@ -374,6 +464,10 @@ mod tests {
         assert_eq!(
             release_asset_url(&release, WINDOWS_ASSET_NAME),
             Some("https://example.com/rl-platform-overlay.exe".to_string())
+        );
+        assert_eq!(
+            release_asset_url(&release, WINDOWS_SIGNATURE_ASSET_NAME),
+            Some("https://example.com/rl-platform-overlay.exe.sig".to_string())
         );
     }
 
@@ -447,6 +541,45 @@ mod tests {
         assert_eq!(
             sha256_hex(b"abc"),
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
+
+    #[test]
+    fn test_parse_signature_finds_named_asset_signature() {
+        let signature = vec![42_u8; 64];
+        let encoded = BASE64.encode(&signature);
+        let content = format!("{encoded}  {WINDOWS_ASSET_NAME}\n");
+
+        assert_eq!(
+            parse_signature(&content, WINDOWS_ASSET_NAME),
+            Some(signature.clone())
+        );
+
+        assert_eq!(
+            parse_signature(&encoded, WINDOWS_ASSET_NAME),
+            Some(signature)
+        );
+        assert_eq!(parse_signature("not-signature", WINDOWS_ASSET_NAME), None);
+    }
+
+    #[test]
+    fn test_verify_signature_with_public_key() {
+        use ed25519_dalek::{Signer, SigningKey};
+
+        let seed = [7_u8; 32];
+        let signing_key = SigningKey::from_bytes(&seed);
+        let public_key_b64 = BASE64.encode(signing_key.verifying_key().as_bytes());
+        let message = b"release bytes";
+        let signature = signing_key.sign(message).to_bytes();
+
+        assert!(verify_signature_with_public_key(message, &signature, &public_key_b64).is_ok());
+        assert!(
+            verify_signature_with_public_key(
+                b"tampered release bytes",
+                &signature,
+                &public_key_b64
+            )
+            .is_err()
         );
     }
 }

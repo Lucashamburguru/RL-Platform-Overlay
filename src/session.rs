@@ -36,6 +36,7 @@ pub enum SessionMode {
     Hoops,
     Dropshot,
     Knockout,
+    Freeplay,
     #[default]
     Unknown,
 }
@@ -96,6 +97,7 @@ impl SessionMode {
             Self::Hoops => "Hoops",
             Self::Dropshot => "Dropshot",
             Self::Knockout => "Knockout",
+            Self::Freeplay => "Freeplay",
             Self::Unknown => "Unknown",
         }
     }
@@ -111,6 +113,15 @@ impl SessionModeRecord {
     pub fn matches_played(&self) -> u32 {
         self.wins + self.losses
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RecordedResultFingerprint {
+    mode: SessionMode,
+    local_team: u8,
+    blue_score: u32,
+    orange_score: u32,
+    result: MatchResult,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -130,6 +141,8 @@ pub struct SessionState {
     pub orange_score: u32,
     pub round_started: bool,
     result_recorded_for_match: bool,
+    last_recorded_match_id: String,
+    last_recorded_result: Option<RecordedResultFingerprint>,
 }
 
 impl SessionState {
@@ -175,7 +188,7 @@ impl SessionState {
             }
 
             let has_winner = bool_field(game, &["bHasWinner", "hasWinner"]).unwrap_or(false);
-            if has_winner && !self.result_recorded_for_match {
+            if has_winner && !self.has_recorded_current_match() {
                 return true;
             }
         }
@@ -208,10 +221,21 @@ impl SessionState {
         mode_hint: SessionMode,
     ) {
         let real_data = decode_json_string_value(data);
+        let has_winner = real_data
+            .get("Game")
+            .or_else(|| real_data.get("game"))
+            .and_then(|game| bool_field(game, &["bHasWinner", "hasWinner"]))
+            .unwrap_or(false);
 
         if let Some(match_guid) = string_field(&real_data, &["MatchGuid", "matchGuid"])
             && self.active_match_id != match_guid
         {
+            if has_winner
+                && self.matches_last_recorded_result(&real_data, local_team_hint, mode_hint)
+            {
+                return;
+            }
+
             self.active_match_id = match_guid.to_string();
             self.active_mode = SessionMode::Unknown;
             self.result_recorded_for_match = false;
@@ -243,7 +267,6 @@ impl SessionState {
                 }
             }
 
-            let has_winner = bool_field(game, &["bHasWinner", "hasWinner"]).unwrap_or(false);
             if has_winner {
                 let winner = string_field(game, &["Winner", "winner"]).unwrap_or("");
                 self.record_result(winner);
@@ -273,7 +296,9 @@ impl SessionState {
     }
 
     pub fn record_early_leave(&mut self) {
-        if self.result_recorded_for_match || self.active_match_id.is_empty() || !self.round_started
+        if self.has_recorded_current_match()
+            || self.active_match_id.is_empty()
+            || !self.round_started
         {
             return;
         }
@@ -291,14 +316,16 @@ impl SessionState {
     pub fn handle_match_ended(&mut self, data: &Value, local_team_hint: Option<u8>) {
         let real_data = decode_json_string_value(data);
 
-        if self.result_recorded_for_match {
-            return;
+        if let Some(match_guid) = string_field(&real_data, &["MatchGuid", "matchGuid"]) {
+            if self.active_match_id.is_empty() {
+                self.active_match_id = match_guid.to_string();
+            } else if self.active_match_id != match_guid {
+                return;
+            }
         }
 
-        if let Some(match_guid) = string_field(&real_data, &["MatchGuid", "matchGuid"])
-            && self.active_match_id.is_empty()
-        {
-            self.active_match_id = match_guid.to_string();
+        if self.has_recorded_current_match() {
+            return;
         }
 
         if let Some(team) = local_team_hint {
@@ -337,7 +364,7 @@ impl SessionState {
     }
 
     fn record_result(&mut self, winner: &str) {
-        if self.result_recorded_for_match {
+        if self.has_recorded_current_match() {
             return;
         }
 
@@ -360,6 +387,16 @@ impl SessionState {
         }
 
         self.result_recorded_for_match = true;
+        if !self.active_match_id.is_empty() {
+            self.last_recorded_match_id = self.active_match_id.clone();
+        }
+        self.last_recorded_result = Some(RecordedResultFingerprint {
+            mode: self.active_mode,
+            local_team: self.local_team.unwrap_or(255),
+            blue_score: self.blue_score,
+            orange_score: self.orange_score,
+            result,
+        });
         self.matches_played += 1;
         match result {
             MatchResult::Win => {
@@ -387,6 +424,72 @@ impl SessionState {
                 MatchResult::Unknown => {}
             }
         }
+    }
+
+    fn has_recorded_current_match(&self) -> bool {
+        self.result_recorded_for_match
+            || (!self.active_match_id.is_empty()
+                && self.last_recorded_match_id == self.active_match_id)
+    }
+
+    fn matches_last_recorded_result(
+        &self,
+        real_data: &Value,
+        local_team_hint: Option<u8>,
+        mode_hint: SessionMode,
+    ) -> bool {
+        let Some(last_recorded) = &self.last_recorded_result else {
+            return false;
+        };
+
+        self.result_fingerprint(real_data, local_team_hint, mode_hint)
+            .as_ref()
+            == Some(last_recorded)
+    }
+
+    fn result_fingerprint(
+        &self,
+        real_data: &Value,
+        local_team_hint: Option<u8>,
+        mode_hint: SessionMode,
+    ) -> Option<RecordedResultFingerprint> {
+        let game = real_data.get("Game").or_else(|| real_data.get("game"))?;
+        let local_team = local_team_hint.or(self.local_team)?;
+        let mode = if mode_hint != SessionMode::Unknown {
+            mode_hint
+        } else {
+            self.active_mode
+        };
+
+        let mut blue_score = self.blue_score;
+        let mut orange_score = self.orange_score;
+        if let Some(teams) = game
+            .get("Teams")
+            .or_else(|| game.get("teams"))
+            .and_then(Value::as_array)
+        {
+            for team in teams {
+                let team_num = number_field(team, &["TeamNum", "teamNum", "Team", "team"]);
+                let score = number_field(team, &["Score", "score"]);
+                match (team_num, score) {
+                    (Some(0), Some(score)) => blue_score = score as u32,
+                    (Some(1), Some(score)) => orange_score = score as u32,
+                    _ => {}
+                }
+            }
+        }
+
+        let winner = string_field(game, &["Winner", "winner"]).unwrap_or("");
+        let result = result_from_winner(winner, local_team)
+            .or_else(|| result_from_score(blue_score, orange_score, local_team))?;
+
+        Some(RecordedResultFingerprint {
+            mode,
+            local_team,
+            blue_score,
+            orange_score,
+            result,
+        })
     }
 }
 
@@ -454,6 +557,87 @@ mod tests {
         assert_eq!(session.streak, 1);
         assert_eq!(session.best_win_streak, 1);
         assert_eq!(session.mode_records[&SessionMode::Twos].wins, 1);
+    }
+
+    #[test]
+    fn ignores_stale_winner_update_after_reset() {
+        let mut session = SessionState::default();
+        let data = json!({
+            "MatchGuid": "abc",
+            "Game": {
+                "Teams": [
+                    {"TeamNum": 0, "Score": 4},
+                    {"TeamNum": 1, "Score": 2}
+                ],
+                "bHasWinner": true,
+                "Winner": "Blue"
+            }
+        });
+
+        session.handle_update_state(&data, Some(0), SessionMode::Twos);
+        session.handle_reset_event();
+        session.handle_update_state(&data, Some(0), SessionMode::Twos);
+
+        assert_eq!(session.wins, 1);
+        assert_eq!(session.matches_played, 1);
+        assert_eq!(session.mode_records[&SessionMode::Twos].wins, 1);
+    }
+
+    #[test]
+    fn ignores_ready_up_winner_update_with_new_match_guid() {
+        let mut session = SessionState::default();
+        let first_result = json!({
+            "MatchGuid": "old-guid",
+            "Game": {
+                "Teams": [
+                    {"TeamNum": 0, "Score": 1},
+                    {"TeamNum": 1, "Score": 0}
+                ],
+                "bHasWinner": true,
+                "Winner": "Blue"
+            }
+        });
+        let ready_up_result = json!({
+            "MatchGuid": "new-guid",
+            "Game": {
+                "Teams": [
+                    {"TeamNum": 0, "Score": 1},
+                    {"TeamNum": 1, "Score": 0}
+                ],
+                "bHasWinner": true,
+                "Winner": "Blue"
+            }
+        });
+
+        session.handle_update_state(&first_result, Some(0), SessionMode::Hoops);
+        session.handle_update_state(&ready_up_result, Some(0), SessionMode::Hoops);
+
+        assert_eq!(session.wins, 1);
+        assert_eq!(session.matches_played, 1);
+        assert_eq!(session.active_match_id, "old-guid");
+        assert_eq!(session.mode_records[&SessionMode::Hoops].wins, 1);
+    }
+
+    #[test]
+    fn ignores_stale_match_ended_after_reset() {
+        let mut session = SessionState {
+            active_match_id: "abc".to_string(),
+            active_mode: SessionMode::Hoops,
+            local_team: Some(0),
+            ..Default::default()
+        };
+        let data = json!({
+            "MatchGuid": "abc",
+            "WinnerTeamNum": 0
+        });
+
+        session.handle_match_ended(&data, None);
+        session.handle_reset_event();
+        session.handle_match_ended(&data, Some(0));
+
+        assert_eq!(session.wins, 1);
+        assert_eq!(session.matches_played, 1);
+        assert_eq!(session.mode_records[&SessionMode::Hoops].wins, 1);
     }
 
     #[test]
@@ -707,5 +891,10 @@ mod tests {
             SessionMode::infer(Some("Stadium_P"), None),
             SessionMode::Unknown
         );
+    }
+
+    #[test]
+    fn labels_freeplay_mode() {
+        assert_eq!(SessionMode::Freeplay.label(), "Freeplay");
     }
 }

@@ -1,8 +1,11 @@
 use crate::state::{AppState, Config};
-use crate::ui::common::{StatusTone, debug_status_row, setting_row, settings_section, status_text};
+use crate::ui::common::{
+    StatusTone, debug_status_row, helper_text, setting_row, settings_section, status_text,
+};
 use crate::ui::hotkeys::render_hotkey_settings_section;
 use eframe::egui;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 pub(crate) fn render_setup_settings_tab(
     ui: &mut egui::Ui,
@@ -11,6 +14,7 @@ pub(crate) fn render_setup_settings_tab(
     config_edit: &mut Config,
     changed: &mut bool,
     is_rl_running: bool,
+    rl_process_detection_detail: &str,
 ) {
     settings_section(ui, "Stats API Setup", |ui| {
         setting_row(ui, "Rocket League Folder", |ui| {
@@ -128,5 +132,85 @@ pub(crate) fn render_setup_settings_tab(
     });
 
     ui.add_space(10.0);
+    render_support_diagnostics_section(
+        ui,
+        state,
+        config_edit,
+        changed,
+        is_rl_running,
+        rl_process_detection_detail,
+    );
+
+    ui.add_space(10.0);
     render_hotkey_settings_section(ui, ctx, state, config_edit, changed);
+}
+
+fn render_support_diagnostics_section(
+    ui: &mut egui::Ui,
+    state: &Arc<AppState>,
+    config_edit: &mut Config,
+    changed: &mut bool,
+    is_rl_running: bool,
+    rl_process_detection_detail: &str,
+) {
+    settings_section(ui, "Support Diagnostics", |ui| {
+        ui.horizontal_wrapped(|ui| {
+            if ui
+                .checkbox(&mut config_edit.debug_logging_enabled, "Enable debug logging")
+                .on_hover_text("Records extra hotkey and overlay state events to the local diagnostics log.")
+                .changed()
+            {
+                *changed = true;
+                state
+                    .debug_logging_enabled
+                    .store(config_edit.debug_logging_enabled, Ordering::SeqCst);
+                crate::input::append_hotkey_debug_log(
+                    config_edit.debug_logging_enabled,
+                    format!(
+                        "debug_logging_enabled value={}",
+                        config_edit.debug_logging_enabled
+                    ),
+                );
+            }
+
+            ui.add_space(8.0);
+            if ui
+                .add_sized([178.0, 24.0], egui::Button::new("Copy Diagnostics Bundle"))
+                .on_hover_text("Copies connection, config, session, player, and recent debug log details. API keys are not included.")
+                .clicked()
+            {
+                let bundle = crate::diagnostics::support_diagnostics_bundle(
+                    state,
+                    state.flags.is_launched.load(Ordering::SeqCst),
+                    is_rl_running,
+                    rl_process_detection_detail,
+                );
+                ui.ctx().copy_text(bundle);
+                ui.data_mut(|d| {
+                    d.insert_temp(ui.make_persistent_id("support_diagnostics_copied"), true)
+                });
+                crate::input::append_hotkey_debug_log(
+                    state.debug_logging_enabled.load(Ordering::SeqCst),
+                    "support_diagnostics_copied",
+                );
+            }
+        });
+
+        ui.add_space(4.0);
+        ui.label(helper_text(
+            "Use this when reporting connection, hotkey, player parsing, or session detection issues.",
+        ));
+        debug_status_row(
+            ui,
+            "Hotkey Log",
+            &crate::input::hotkey_debug_log_path().display().to_string(),
+        );
+
+        if ui.data(|d| {
+            d.get_temp::<bool>(ui.make_persistent_id("support_diagnostics_copied"))
+                .unwrap_or(false)
+        }) {
+            status_text(ui, StatusTone::Success, "Diagnostics copied to clipboard.");
+        }
+    });
 }

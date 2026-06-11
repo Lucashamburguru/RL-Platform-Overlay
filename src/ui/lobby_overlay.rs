@@ -161,6 +161,7 @@ pub(super) fn render_overlay(ctx: &egui::Context, state: &Arc<AppState>) {
         let local_identity = state.game.local_player_identity.load();
         let local_mmr = state.mmr.local_mmr.load();
         let session = state.game.session.load();
+        let history_summaries = state.history.player_summaries.load();
         draw_lobby_panel(
             ui,
             &players_vec,
@@ -169,6 +170,7 @@ pub(super) fn render_overlay(ctx: &egui::Context, state: &Arc<AppState>) {
             Some(&local_identity),
             local_mmr.current.as_ref(),
             session.active_mode,
+            Some(&history_summaries),
             None,
         );
         render_drag_position_handle(ui, config.layout_mode, config.ui_scale)
@@ -194,6 +196,7 @@ pub(super) fn draw_lobby_panel(
     local_identity: Option<&LocalPlayerIdentity>,
     local_mmr: Option<&TrackerSnapshot>,
     session_mode: SessionMode,
+    history_summaries: Option<&HashMap<String, crate::history::PlayerHistorySummary>>,
     scale_override: Option<f32>,
 ) {
     let scale = scale_override.unwrap_or(config.ui_scale);
@@ -249,6 +252,11 @@ pub(super) fn draw_lobby_panel(
                             .color(status_color)
                             .size(7.0 * scale),
                     );
+                    ui.label(
+                        egui::RichText::new(session_mode.label())
+                            .size(8.5 * scale)
+                            .color(egui::Color32::from_gray(150)),
+                    );
                 });
             });
 
@@ -297,6 +305,7 @@ pub(super) fn draw_lobby_panel(
                         local_mmr,
                         player_count,
                         session_mode,
+                        history_summaries,
                     );
                     ui.add_space(2.0 * scale);
                 }
@@ -332,6 +341,7 @@ fn render_lobby_player_row(
     local_mmr: Option<&TrackerSnapshot>,
     player_count: usize,
     session_mode: SessionMode,
+    history_summaries: Option<&HashMap<String, crate::history::PlayerHistorySummary>>,
 ) {
     let team_color = team_color(player.team);
     let is_local = is_local_lobby_player(player, local_identity, player_count);
@@ -360,6 +370,7 @@ fn render_lobby_player_row(
             team_color,
             player_count,
             session_mode,
+            history_summaries,
         );
     } else {
         render_expanded_row_v2(
@@ -374,6 +385,7 @@ fn render_lobby_player_row(
             team_color,
             player_count,
             session_mode,
+            history_summaries,
         );
     }
 }
@@ -391,6 +403,7 @@ fn render_compact_row(
     team_color: egui::Color32,
     player_count: usize,
     session_mode: SessionMode,
+    history_summaries: Option<&HashMap<String, crate::history::PlayerHistorySummary>>,
 ) {
     let accent_width = 3.0 * scale;
     let row_height = 18.0 * scale;
@@ -426,6 +439,12 @@ fn render_compact_row(
                 select_lobby_playlist(mmr, session_mode, player_count),
             ) {
                 render_mmr_badge(ui, &playlist.tier_name, playlist.rating, false, scale);
+            }
+
+            if let Some(summary) = history_summary_for_player(player, history_summaries)
+                && !is_local
+            {
+                render_history_badge(ui, summary, scale);
             }
         });
 
@@ -468,6 +487,7 @@ fn render_expanded_row_v2(
     team_color: egui::Color32,
     player_count: usize,
     session_mode: SessionMode,
+    history_summaries: Option<&HashMap<String, crate::history::PlayerHistorySummary>>,
 ) {
     let accent_width = 3.0 * scale;
     let accent_height = 32.0 * scale;
@@ -507,6 +527,11 @@ fn render_expanded_row_v2(
                     );
                     if is_local {
                         render_you_badge(ui, scale);
+                    }
+                    if let Some(summary) = history_summary_for_player(player, history_summaries)
+                        && !is_local
+                    {
+                        render_history_badge(ui, summary, scale);
                     }
                 });
 
@@ -605,6 +630,35 @@ fn render_you_badge(ui: &mut egui::Ui, scale: f32) {
             .size(7.0 * scale)
             .color(egui::Color32::from_rgb(0, 255, 150))
             .strong(),
+    );
+}
+
+fn history_summary_for_player<'a>(
+    player: &PlayerInfo,
+    history_summaries: Option<&'a HashMap<String, crate::history::PlayerHistorySummary>>,
+) -> Option<&'a crate::history::PlayerHistorySummary> {
+    let key = crate::history::player_key(player)?;
+    history_summaries?.get(key.as_str())
+}
+
+fn render_history_badge(
+    ui: &mut egui::Ui,
+    summary: &crate::history::PlayerHistorySummary,
+    scale: f32,
+) {
+    if summary.total_games() == 0 {
+        return;
+    }
+
+    ui.label(
+        egui::RichText::new(format!(
+            "Seen {} With {} Vs {}",
+            summary.total_games(),
+            summary.games_with,
+            summary.games_against
+        ))
+        .size(7.0 * scale)
+        .color(egui::Color32::from_gray(145)),
     );
 }
 
@@ -729,7 +783,7 @@ fn lobby_playlist_id(session_mode: SessionMode) -> Option<i32> {
         SessionMode::Threes => Some(13),
         SessionMode::Hoops => Some(27),
         SessionMode::Dropshot => Some(29),
-        SessionMode::Knockout | SessionMode::Unknown => None,
+        SessionMode::Knockout | SessionMode::Freeplay | SessionMode::Unknown => None,
     }
 }
 

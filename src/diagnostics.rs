@@ -690,6 +690,326 @@ pub fn write_alt_tab_diagnostics_log(
     Ok(path)
 }
 
+pub fn support_diagnostics_bundle(
+    state: &crate::state::AppState,
+    is_launched: bool,
+    is_rl_running: bool,
+    rl_process_detection_detail: &str,
+) -> String {
+    let config = state.system.config.load();
+    let config_status = state.system.config_status.load();
+    let diagnostics = state.system.network_diagnostics.load();
+    let version = state.system.version_check.load();
+    let local_identity = state.game.local_player_identity.load();
+    let local_name = state.game.local_player_name.load();
+    let local_team = state.game.local_team.load(Ordering::SeqCst);
+    let players = state.game.players.load();
+    let session = state.game.session.load();
+    let capture = state.diagnostics.debug_capture_status.load();
+
+    let mut lines = Vec::new();
+    lines.push("RL Platform Overlay Support Diagnostics".to_string());
+    lines.push(format!("generated_unix_ms={}", crate::stats_api::now_ms()));
+    lines.push(format!("app_version={}", env!("CARGO_PKG_VERSION")));
+    lines.push(format!("os={}", std::env::consts::OS));
+    lines.push(format!("arch={}", std::env::consts::ARCH));
+    lines.push(format!(
+        "debug_tab_enabled={}",
+        if state.debug_enabled { "true" } else { "false" }
+    ));
+    lines.push(format!(
+        "debug_logging_enabled={}",
+        if state.debug_logging_enabled.load(Ordering::SeqCst) {
+            "true"
+        } else {
+            "false"
+        }
+    ));
+
+    lines.push(String::new());
+    lines.push("[config]".to_string());
+    lines.push(format!("config_path={}", config_status.path));
+    lines.push(format!(
+        "config_status={}",
+        if config_status.last_error.is_empty() {
+            "OK"
+        } else {
+            config_status.last_error.as_str()
+        }
+    ));
+    lines.push(format!(
+        "rocket_league_path={}",
+        empty_label(&config.rocket_league_path)
+    ));
+    lines.push(format!(
+        "replays_folder={}",
+        empty_label(&config.replays_folder)
+    ));
+    lines.push(format!(
+        "ballchasing_enabled={}",
+        config.ballchasing_enabled
+    ));
+    lines.push(format!(
+        "ballchasing_api_key_present={}",
+        !config.ballchasing_api_key.trim().is_empty()
+    ));
+    lines.push(format!("layout_mode={}", config.layout_mode));
+    lines.push(format!("show_stats={}", config.show_stats));
+    lines.push(format!("show_lobby_ranks={}", config.show_lobby_ranks));
+    lines.push(format!(
+        "show_teammate_boost={}",
+        config.show_teammate_boost
+    ));
+    lines.push(format!(
+        "session_overlay_enabled={}",
+        config.session_overlay_enabled
+    ));
+
+    lines.push(String::new());
+    lines.push("[runtime]".to_string());
+    lines.push(format!("overlay_launched={is_launched}"));
+    lines.push(format!(
+        "hud_visible={}",
+        state.flags.is_visible.load(Ordering::SeqCst)
+    ));
+    lines.push(format!(
+        "settings_visible={}",
+        state.flags.is_settings_visible.load(Ordering::SeqCst)
+    ));
+    lines.push(format!(
+        "stats_api_connected={}",
+        state.flags.is_connected.load(Ordering::SeqCst)
+    ));
+    lines.push(format!("rocket_league_running={is_rl_running}"));
+    lines.push(format!(
+        "rocket_league_detection_detail={}",
+        empty_label(rl_process_detection_detail)
+    ));
+
+    lines.push(String::new());
+    lines.push("[stats_api]".to_string());
+    lines.push(format!("transport={}", diagnostics.transport.label()));
+    lines.push(format!(
+        "last_event={}",
+        empty_label(&diagnostics.last_event)
+    ));
+    lines.push(format!(
+        "last_event_unix_ms={}",
+        diagnostics.last_event_unix_ms
+    ));
+    lines.push(format!(
+        "last_parse_error={}",
+        empty_label(&diagnostics.last_parse_error)
+    ));
+    lines.push(format!(
+        "last_connection_error={}",
+        empty_label(&diagnostics.last_connection_error)
+    ));
+
+    lines.push(String::new());
+    lines.push("[local_player]".to_string());
+    lines.push(format!("local_name={}", empty_label(local_name.as_str())));
+    lines.push(format!(
+        "identity_name={}",
+        empty_label(&local_identity.name)
+    ));
+    lines.push(format!(
+        "identity_platform={}",
+        empty_label(&local_identity.platform)
+    ));
+    lines.push(format!(
+        "identity_primary_id={}",
+        empty_label(&local_identity.primary_id)
+    ));
+    lines.push(format!(
+        "local_team={}",
+        if local_team == crate::state::NO_TEAM {
+            "Unknown".to_string()
+        } else {
+            local_team.to_string()
+        }
+    ));
+
+    lines.push(String::new());
+    lines.push("[session]".to_string());
+    lines.push(format!(
+        "active_match_id={}",
+        empty_label(&session.active_match_id)
+    ));
+    lines.push(format!("active_mode={}", session.active_mode.label()));
+    lines.push(format!("matches_played={}", session.matches_played));
+    lines.push(format!("wins={}", session.wins));
+    lines.push(format!("losses={}", session.losses));
+    lines.push(format!("streak={}", session.streak));
+    lines.push(format!("last_result={}", session.last_result.label()));
+    lines.push(format!("blue_score={}", session.blue_score));
+    lines.push(format!("orange_score={}", session.orange_score));
+    lines.push(format!("round_started={}", session.round_started));
+    if session.mode_records.is_empty() {
+        lines.push("mode_records=none".to_string());
+    } else {
+        for (mode, record) in &session.mode_records {
+            lines.push(format!(
+                "mode_record={} wins={} losses={} matches={}",
+                mode.label(),
+                record.wins,
+                record.losses,
+                record.matches_played()
+            ));
+        }
+    }
+
+    lines.push(String::new());
+    lines.push("[players]".to_string());
+    lines.push(format!("count={}", players.len()));
+    if players.is_empty() {
+        lines.push("no players parsed".to_string());
+    } else {
+        let mut player_lines = players
+            .values()
+            .map(|player| {
+                format!(
+                    "name={} platform={} team={} local={} bot={} boost={} score={} goals={} saves={} touches={} demos={} mmr_loaded={}",
+                    player.name,
+                    player.platform,
+                    player.team,
+                    player.is_local,
+                    player.is_bot,
+                    player.boost,
+                    player.score,
+                    player.goals,
+                    player.saves,
+                    player.touches,
+                    player.demos,
+                    player.mmr.is_some()
+                )
+            })
+            .collect::<Vec<_>>();
+        player_lines.sort();
+        lines.extend(player_lines);
+    }
+
+    lines.push(String::new());
+    lines.push("[version_check]".to_string());
+    lines.push(format!("checked={}", version.checked));
+    lines.push(format!("update_available={}", version.update_available));
+    lines.push(format!("latest_tag={}", empty_label(&version.latest_tag)));
+    lines.push(format!("error={}", empty_label(&version.error)));
+
+    lines.push(String::new());
+    lines.push("[diagnostics]".to_string());
+    lines.push(format!(
+        "hotkey_log_path={}",
+        crate::input::hotkey_debug_log_path().display()
+    ));
+    lines.push(format!("stats_api_capture_running={}", capture.running));
+    lines.push(format!(
+        "last_capture_output={}",
+        empty_label(&capture.last_output_path)
+    ));
+    lines.push(format!(
+        "last_capture_error={}",
+        empty_label(&capture.error)
+    ));
+    lines.push(format!(
+        "frame_tracker_enabled={}",
+        state.diagnostics.frame_tracker.enabled()
+    ));
+    lines.push(format!(
+        "foreground_tracker_enabled={}",
+        state.diagnostics.foreground_tracker.enabled()
+    ));
+    let resource_poller_running = state
+        .diagnostics
+        .resource_poller
+        .lock()
+        .map(|poller| poller.is_running())
+        .unwrap_or(false);
+    lines.push(format!("resource_poller_running={resource_poller_running}"));
+    lines.push(format!(
+        "resource_snapshots={}",
+        state.diagnostics.resource_tracker.get_snapshots().len()
+    ));
+
+    let upload_progress = state.replays.upload_progress.load();
+    lines.push(String::new());
+    lines.push("[replay_upload]".to_string());
+    lines.push(format!("running={}", upload_progress.running));
+    lines.push(format!("paused={}", upload_progress.paused));
+    lines.push(format!("stop_requested={}", upload_progress.stop_requested));
+    lines.push(format!("total={}", upload_progress.total));
+    lines.push(format!("processed={}", upload_progress.processed));
+    lines.push(format!("uploaded={}", upload_progress.uploaded));
+    lines.push(format!("skipped={}", upload_progress.skipped));
+    lines.push(format!("failed={}", upload_progress.failed));
+    lines.push(format!(
+        "current_file={}",
+        empty_label(&upload_progress.current_file)
+    ));
+    lines.push(format!(
+        "last_error={}",
+        empty_label(&upload_progress.last_error)
+    ));
+    if upload_progress.recent_events.is_empty() {
+        lines.push("recent_events=none".to_string());
+    } else {
+        for event in &upload_progress.recent_events {
+            lines.push(format!("event={event}"));
+        }
+    }
+
+    let system = system_diagnostics();
+    lines.push(String::new());
+    lines.push("[system]".to_string());
+    if system.is_empty() {
+        lines.push("no system diagnostics available".to_string());
+    } else {
+        for (label, value) in system {
+            lines.push(format!("{label}={value}"));
+        }
+    }
+
+    lines.push(String::new());
+    lines.push("[recent_hotkey_log]".to_string());
+    lines.extend(read_recent_lines(
+        &crate::input::hotkey_debug_log_path(),
+        40,
+    ));
+
+    lines.join("\n")
+}
+
+fn empty_label(value: &str) -> &str {
+    if value.trim().is_empty() {
+        "(empty)"
+    } else {
+        value
+    }
+}
+
+fn read_recent_lines(path: &PathBuf, max_lines: usize) -> Vec<String> {
+    match std::fs::read_to_string(path) {
+        Ok(content) => {
+            let mut lines = content
+                .lines()
+                .rev()
+                .take(max_lines)
+                .map(str::to_string)
+                .collect::<Vec<_>>();
+            lines.reverse();
+            if lines.is_empty() {
+                vec!["hotkey log is empty".to_string()]
+            } else {
+                lines
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            vec!["hotkey log file not found".to_string()]
+        }
+        Err(error) => vec![format!("could not read hotkey log: {error}")],
+    }
+}
+
 pub struct ResourcePoller {
     tracker: Arc<ResourceTracker>,
     running: Arc<AtomicBool>,

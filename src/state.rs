@@ -54,6 +54,9 @@ pub struct Config {
     pub show_teammate_boost: bool,
     pub show_lobby_matches: bool,
     pub show_lobby_ranks: bool,
+    pub history_enabled: bool,
+    pub lobby_history_indicators_enabled: bool,
+    pub debug_logging_enabled: bool,
     pub teammate_hud_scale: f32,
     pub teammate_boost_display: TeammateBoostDisplay,
     pub rocket_league_path: String,
@@ -204,6 +207,9 @@ impl Default for Config {
             show_teammate_boost: false,
             show_lobby_matches: false,
             show_lobby_ranks: true,
+            history_enabled: false,
+            lobby_history_indicators_enabled: true,
+            debug_logging_enabled: false,
             teammate_hud_scale: 2.2,
             teammate_boost_display: TeammateBoostDisplay::Bars,
             rocket_league_path,
@@ -405,6 +411,7 @@ mod tests {
         "#;
         let config: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(config.lobby_display_mode, LobbyDisplayMode::Expanded);
+        assert!(!config.debug_logging_enabled);
     }
 }
 
@@ -431,6 +438,7 @@ pub struct VersionCheck {
     pub release_url: String,
     pub windows_download_url: String,
     pub windows_checksum_url: String,
+    pub windows_signature_url: String,
     pub error: String,
 }
 
@@ -459,6 +467,21 @@ pub struct DebugCaptureStatus {
     pub last_output_path: String,
     pub message: String,
     pub error: String,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ReplayUploadProgress {
+    pub running: bool,
+    pub paused: bool,
+    pub stop_requested: bool,
+    pub total: usize,
+    pub processed: usize,
+    pub uploaded: usize,
+    pub skipped: usize,
+    pub failed: usize,
+    pub current_file: String,
+    pub last_error: String,
+    pub recent_events: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -525,6 +548,9 @@ pub struct DiagnosticsState {
 pub struct ReplaysState {
     pub ballchasing_status: Arc<std::sync::Mutex<String>>,
     pub ballchasing_cloud_count: std::sync::atomic::AtomicU32,
+    pub upload_progress: ArcSwap<ReplayUploadProgress>,
+    pub upload_paused: AtomicBool,
+    pub upload_stop_requested: AtomicBool,
 }
 
 pub struct BoostState {
@@ -541,6 +567,12 @@ pub struct MmrState {
     pub debug_scrape_status: Arc<std::sync::Mutex<String>>,
     pub debug_tracker_logs: Arc<std::sync::Mutex<Vec<String>>>,
     pub local_mmr: ArcSwap<LocalMmrState>,
+}
+
+pub struct HistoryState {
+    pub player_summaries: ArcSwap<HashMap<String, crate::history::PlayerHistorySummary>>,
+    pub totals: ArcSwap<crate::history::HistoryTotals>,
+    pub status: Arc<std::sync::Mutex<String>>,
 }
 
 pub struct AppFlags {
@@ -579,6 +611,7 @@ pub struct SystemState {
 
 pub struct AppState {
     pub debug_enabled: bool,
+    pub debug_logging_enabled: AtomicBool,
     pub flags: AppFlags,
     pub hotkeys: HotkeyRecordingState,
     pub game: GameLobbyState,
@@ -590,6 +623,7 @@ pub struct AppState {
     pub boost: BoostState,
     pub hoops_fixer: HoopsFixerState,
     pub mmr: MmrState,
+    pub history: HistoryState,
 
     pub config_write_mutex: std::sync::Mutex<()>,
 }
@@ -601,8 +635,14 @@ impl AppState {
     }
 
     pub fn new_with_debug(debug_enabled: bool) -> Arc<Self> {
+        #[cfg(test)]
+        {
+            let _ = fs::remove_file(config_path());
+        }
+
         let (config, config_status) = Config::load();
         let cached_local_player_identity = config.cached_local_player_identity.clone();
+        let debug_logging_enabled = config.debug_logging_enabled;
 
         let http_client = Arc::new(
             wreq::Client::builder()
@@ -619,6 +659,7 @@ impl AppState {
 
         Arc::new(Self {
             debug_enabled,
+            debug_logging_enabled: AtomicBool::new(debug_logging_enabled),
             flags: AppFlags {
                 is_visible: AtomicBool::new(false),
                 is_settings_visible: AtomicBool::new(true),
@@ -660,6 +701,9 @@ impl AppState {
             replays: ReplaysState {
                 ballchasing_status: Arc::new(std::sync::Mutex::new("Idle".to_string())),
                 ballchasing_cloud_count: std::sync::atomic::AtomicU32::new(0),
+                upload_progress: ArcSwap::from_pointee(ReplayUploadProgress::default()),
+                upload_paused: AtomicBool::new(false),
+                upload_stop_requested: AtomicBool::new(false),
             },
             boost: BoostState {
                 boost_swap_status: Arc::new(std::sync::Mutex::new("Idle".to_string())),
@@ -673,6 +717,11 @@ impl AppState {
                 debug_scrape_status: Arc::new(std::sync::Mutex::new("Idle".to_string())),
                 debug_tracker_logs: Arc::new(std::sync::Mutex::new(Vec::new())),
                 local_mmr: ArcSwap::from_pointee(LocalMmrState::default()),
+            },
+            history: HistoryState {
+                player_summaries: ArcSwap::from_pointee(HashMap::new()),
+                totals: ArcSwap::from_pointee(crate::history::HistoryTotals::default()),
+                status: Arc::new(std::sync::Mutex::new("History disabled.".to_string())),
             },
             config_write_mutex: std::sync::Mutex::new(()),
         })

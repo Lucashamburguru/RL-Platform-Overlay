@@ -59,14 +59,17 @@ pub(super) fn render_debug_settings_tab(
         );
         if ui.button("Clear Hotkey Log").clicked() {
             let path = crate::input::hotkey_debug_log_path();
-            match std::fs::write(&path, "") {
-                Ok(()) => {
-                    crate::input::append_hotkey_debug_log(state.debug_enabled, "hotkey_log_cleared")
+            if path.exists() {
+                match std::fs::write(&path, "") {
+                    Ok(()) => crate::input::append_hotkey_debug_log(
+                        state.debug_logging_enabled.load(Ordering::SeqCst),
+                        "hotkey_log_cleared",
+                    ),
+                    Err(error) => crate::input::append_hotkey_debug_log(
+                        state.debug_logging_enabled.load(Ordering::SeqCst),
+                        format!("hotkey_log_clear_failed error={error}"),
+                    ),
                 }
-                Err(error) => crate::input::append_hotkey_debug_log(
-                    state.debug_enabled,
-                    format!("hotkey_log_clear_failed error={error}"),
-                ),
             }
         }
 
@@ -417,7 +420,7 @@ fn render_performance_diagnostics(ui: &mut egui::Ui, state: &Arc<AppState>) {
                     if let Ok(mut status) = state.diagnostics.alt_tab_diagnostics_status.lock() {
                         *status = message.clone();
                     }
-                    crate::input::append_hotkey_debug_log(state.debug_enabled, format!(
+                    crate::input::append_hotkey_debug_log(state.debug_logging_enabled.load(Ordering::SeqCst), format!(
                         "alt_tab_diagnostics_saved path={}",
                         path.display()
                     ));
@@ -426,7 +429,7 @@ fn render_performance_diagnostics(ui: &mut egui::Ui, state: &Arc<AppState>) {
                     if let Ok(mut status) = state.diagnostics.alt_tab_diagnostics_status.lock() {
                         *status = format!("Error: {error}");
                     }
-                    crate::input::append_hotkey_debug_log(state.debug_enabled, format!(
+                    crate::input::append_hotkey_debug_log(state.debug_logging_enabled.load(Ordering::SeqCst), format!(
                         "alt_tab_diagnostics_save_failed error={error}"
                     ));
                 }

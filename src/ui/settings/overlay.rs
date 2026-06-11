@@ -221,6 +221,7 @@ pub(crate) fn render_overlay_settings_tab(
             Some(&local_identity),
             local_mmr.current.as_ref(),
             session.active_mode,
+            None,
             Some(config_edit.ui_scale.min(1.4)),
         );
     });

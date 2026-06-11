@@ -7,12 +7,14 @@ use super::app::SettingsTab;
 use crate::ui::common::{StatusTone, status_color};
 
 mod boost;
+mod history;
 mod overlay;
 mod replays;
 mod session;
 mod setup;
 
 pub(super) use boost::render_boost_settings_tab;
+pub(super) use history::render_history_settings_tab;
 pub(super) use overlay::render_overlay_settings_tab;
 pub(super) use replays::render_replays_settings_tab;
 pub(super) use session::render_session_settings_tab;
@@ -30,6 +32,7 @@ pub(super) fn render_settings_tabs(
         ui.selectable_value(selected, SettingsTab::Session, "Session");
         ui.selectable_value(selected, SettingsTab::Boost, "Boost & Alpha");
         ui.selectable_value(selected, SettingsTab::Replays, "Replays");
+        ui.selectable_value(selected, SettingsTab::History, "History");
         if debug_enabled {
             ui.selectable_value(selected, SettingsTab::Debug, "Debug");
         }
@@ -67,7 +70,8 @@ pub(super) fn render_update_notice(ui: &mut egui::Ui, state: &Arc<AppState>) {
             {
                 let can_auto_update = !auto_update_status.running
                     && !version_check.windows_download_url.is_empty()
-                    && !version_check.windows_checksum_url.is_empty();
+                    && !version_check.windows_checksum_url.is_empty()
+                    && !version_check.windows_signature_url.is_empty();
                 if ui
                     .add_enabled(can_auto_update, egui::Button::new("Update and restart"))
                     .clicked()
@@ -89,7 +93,8 @@ pub(super) fn render_update_notice(ui: &mut egui::Ui, state: &Arc<AppState>) {
             );
         } else if cfg!(target_os = "windows")
             && (version_check.windows_download_url.is_empty()
-                || version_check.windows_checksum_url.is_empty())
+                || version_check.windows_checksum_url.is_empty()
+                || version_check.windows_signature_url.is_empty())
         {
             ui.colored_label(
                 egui::Color32::from_rgb(230, 120, 80),

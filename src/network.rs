@@ -210,8 +210,12 @@ fn handle_match_reset(state: &Arc<AppState>, early_leave: bool) {
     let is_online = players.values().any(|p| !p.is_local && !p.is_bot);
 
     let mut session = (**state.game.session.load()).clone();
+    let matches_before = session.matches_played;
     if early_leave && is_online {
         session.record_early_leave();
+    }
+    if session.matches_played > matches_before {
+        crate::history::record_completed_match(state, &session);
     }
     session.handle_reset_event();
     state.game.session.store(Arc::new(session));
@@ -319,7 +323,11 @@ fn handle_event(state: &Arc<AppState>, json: &Value) {
             let local_team = state.game.local_team.load(Ordering::SeqCst);
             let local_team_hint = (local_team != crate::state::NO_TEAM).then_some(local_team);
             let mut session = (**state.game.session.load()).clone();
+            let matches_before = session.matches_played;
             session.handle_match_ended(&json["Data"], local_team_hint);
+            if session.matches_played > matches_before {
+                crate::history::record_completed_match(state, &session);
+            }
             state.game.session.store(Arc::new(session));
 
             handle_match_reset(state, false);
@@ -357,204 +365,281 @@ fn handle_event(state: &Arc<AppState>, json: &Value) {
 
 fn handle_update_state(state: &Arc<AppState>, data: &Value) {
     let real_data = decode_json_string_value(data);
-    let mut target_name_hint = None;
-    let mut target_team_hint = None;
-    let mut b_has_target = false;
+    let mut game_hints = extract_game_hints(&real_data);
 
-    if let Some(_obj) = real_data.as_object() {
-        // Extract local player identity from the game block when available.
-        if let Some(game) = real_data.get("game").or_else(|| real_data.get("Game")) {
-            b_has_target = bool_field(game, &["bHasTarget", "hasTarget"]).unwrap_or(false);
-
-            if let Some(client) = string_field(game, &["client", "Client"]) {
-                state
-                    .game
-                    .local_player_name
-                    .store(Arc::new(client.to_string()));
-            } else if let Some(me) = string_field(game, &["me", "Me"]) {
-                state.game.local_player_name.store(Arc::new(me.to_string()));
-            } else if !b_has_target
-                && let Some(target) = game.get("target").or_else(|| game.get("Target"))
-            {
-                if let Some(target_name) = string_field(target, &["Name", "name"]) {
-                    target_name_hint = Some(target_name.to_string());
-                }
-
-                if let Some(target_team) =
-                    number_field(target, &["TeamNum", "teamNum", "Team", "team"])
-                {
-                    target_team_hint = Some(target_team as u8);
-                }
-            }
-        }
+    if let Some(local_name) = game_hints.local_name.take() {
+        state.game.local_player_name.store(Arc::new(local_name));
     }
 
-    // Try "Players", "players", and even check if the data IS the player array
-    let players_val = real_data
-        .get("Players")
-        .or_else(|| real_data.get("players"))
-        .unwrap_or(&real_data); // Fallback: maybe Data is the array itself
-
-    let mut new_players = HashMap::new();
-    let mut player_count = None;
     let current_local_name = state.game.local_player_name.load();
     let current_local_name = current_local_name.trim();
     let has_known_local_name = !current_local_name.is_empty();
-    let target_name_hint_ref = target_name_hint.as_deref().unwrap_or("").trim();
+    let target_name_hint_ref = game_hints.target_name.as_deref().unwrap_or("").trim();
     let current_local_name = if current_local_name.is_empty() {
         target_name_hint_ref
     } else {
         current_local_name
     };
-    let mut parsed_local_team = None;
-    let mut parsed_local_name = None;
-    if let Some(players) = players_val.as_array() {
-        let mut parsed_players = 0usize;
-        for p in players {
-            let name = string_field(p, &["Name", "name"])
-                .unwrap_or("")
-                .trim()
-                .to_string();
-            if name.is_empty() {
-                continue;
-            }
-            parsed_players += 1;
-
-            // Check for isLocalPlayer flag
-            let mut is_local = p["IsLocalPlayer"].as_bool().unwrap_or(false)
-                || p["isLocalPlayer"].as_bool().unwrap_or(false)
-                || p["isMe"].as_bool().unwrap_or(false)
-                || (!current_local_name.is_empty()
-                    && name.eq_ignore_ascii_case(current_local_name));
-
-            // If we are spectating another player, ensure they are not marked as local
-            if b_has_target {
-                let cached_identity = state.game.local_player_identity.load();
-                if cached_identity.is_known() && !name.eq_ignore_ascii_case(&cached_identity.name) {
-                    is_local = false;
-                }
-            }
-
-            if is_local {
-                state.game.local_player_name.store(Arc::new(name.clone()));
-                parsed_local_name = Some(name.clone());
-            }
-
-            let primary_id =
-                string_field(p, &["PrimaryId", "primaryId", "primary_id"]).unwrap_or("");
-            let (platform, is_bot) = parse_platform(primary_id);
-            let team = number_field(p, &["TeamNum", "teamNum", "Team", "team"]).unwrap_or(0) as u8;
-
-            if is_local {
-                state.game.local_team.store(team, Ordering::SeqCst);
-                parsed_local_team = Some(team);
-                let first_known_identity =
-                    state.update_local_player_identity(LocalPlayerIdentity {
-                        name: name.clone(),
-                        primary_id: primary_id.to_string(),
-                        platform: platform.clone(),
-                    });
-                if first_known_identity {
-                    crate::mmr::start_local_mmr_refresh(state.clone());
-                }
-            }
-
-            let boost = number_field(p, &["Boost", "boost"]).unwrap_or(0) as u8;
-            let score = number_field(p, &["Score", "score"]).unwrap_or(0) as u32;
-            let goals = number_field(p, &["Goals", "goals"]).unwrap_or(0) as u32;
-            let saves = number_field(p, &["Saves", "saves"]).unwrap_or(0) as u32;
-            let touches = number_field(p, &["Touches", "touches"]).unwrap_or(0) as u32;
-            let car_touches =
-                number_field(p, &["CarTouches", "carTouches", "car_touches"]).unwrap_or(0) as u32;
-            let demos = number_field(p, &["Demos", "demos"]).unwrap_or(0) as u32;
-
-            // Preserve MMR if we already have it
-            let previous_players = state.game.players.load();
-            let mmr = previous_players
-                .get(&name)
-                .and_then(|prev| prev.mmr.clone());
-
-            new_players.insert(
-                name.clone(),
-                PlayerInfo {
-                    name,
-                    primary_id: primary_id.to_string(),
-                    platform,
-                    team,
-                    is_bot,
-                    is_local,
-                    boost,
-                    score,
-                    goals,
-                    saves,
-                    touches,
-                    car_touches,
-                    demos,
-                    mmr,
-                },
-            );
-        }
-        player_count = Some(parsed_players);
-    }
+    let parsed_update =
+        parse_update_players(&real_data, current_local_name, game_hints.has_target, state);
+    apply_local_player_update(state, &parsed_update);
 
     if !has_known_local_name
-        && parsed_local_name.is_none()
-        && let Some(target_name) = target_name_hint
+        && parsed_update.local_name.is_none()
+        && let Some(target_name) = game_hints.target_name
     {
         state.game.local_player_name.store(Arc::new(target_name));
     }
 
     if state.game.local_team.load(Ordering::SeqCst) == crate::state::NO_TEAM
-        && parsed_local_team.is_none()
-        && let Some(target_team) = target_team_hint
+        && parsed_update.local_team.is_none()
+        && let Some(target_team) = game_hints.target_team
     {
         state.game.local_team.store(target_team, Ordering::SeqCst);
     }
 
-    if !new_players.is_empty() {
+    if !parsed_update.players.is_empty() {
         // println!("State Updated: {} players in lobby", new_players.len());
     }
-    let new_players_arc = Arc::new(new_players);
-    state.game.players.rcu(|current_players| {
-        let mut needs_merge = false;
-        for (name, player) in current_players.iter() {
-            if player.mmr.is_some()
-                && let Some(new_p) = new_players_arc.get(name)
-                && new_p.mmr.is_none()
-            {
-                needs_merge = true;
-                break;
-            }
-        }
+    store_players_preserving_mmr(state, parsed_update.players);
 
-        if needs_merge {
-            let mut final_players = (*new_players_arc).clone();
-            for (name, player) in final_players.iter_mut() {
-                if player.mmr.is_none()
-                    && let Some(prev) = current_players.get(name)
-                {
-                    player.mmr = prev.mmr.clone();
-                }
-            }
-            Arc::new(final_players)
-        } else {
-            new_players_arc.clone()
+    update_session_from_payload(state, &real_data, parsed_update.player_count);
+}
+
+#[derive(Default)]
+struct GameHints {
+    local_name: Option<String>,
+    target_name: Option<String>,
+    target_team: Option<u8>,
+    has_target: bool,
+}
+
+struct ParsedUpdateState {
+    players: HashMap<String, PlayerInfo>,
+    player_count: Option<usize>,
+    local_name: Option<String>,
+    local_team: Option<u8>,
+}
+
+fn extract_game_hints(data: &Value) -> GameHints {
+    let mut hints = GameHints::default();
+    let Some(game) = data.get("game").or_else(|| data.get("Game")) else {
+        return hints;
+    };
+
+    hints.has_target = bool_field(game, &["bHasTarget", "hasTarget"]).unwrap_or(false);
+    if let Some(client) = string_field(game, &["client", "Client"]) {
+        hints.local_name = Some(client.to_string());
+    } else if let Some(me) = string_field(game, &["me", "Me"]) {
+        hints.local_name = Some(me.to_string());
+    }
+
+    if let Some(target) = game.get("target").or_else(|| game.get("Target")) {
+        hints.target_name = string_field(target, &["Name", "name"]).map(str::to_string);
+        hints.target_team =
+            number_field(target, &["TeamNum", "teamNum", "Team", "team"]).map(|team| team as u8);
+    }
+
+    hints
+}
+
+fn parse_update_players(
+    data: &Value,
+    current_local_name: &str,
+    has_target: bool,
+    state: &Arc<AppState>,
+) -> ParsedUpdateState {
+    let players_val = data
+        .get("Players")
+        .or_else(|| data.get("players"))
+        .unwrap_or(data);
+    let Some(players) = players_val.as_array() else {
+        return ParsedUpdateState {
+            players: HashMap::new(),
+            player_count: None,
+            local_name: None,
+            local_team: None,
+        };
+    };
+
+    let previous_players = state.game.players.load();
+    let cached_identity = state.game.local_player_identity.load();
+    let mut parsed = ParsedUpdateState {
+        players: HashMap::new(),
+        player_count: Some(0),
+        local_name: None,
+        local_team: None,
+    };
+
+    for player_payload in players {
+        let Some(player) = parse_player_info(
+            player_payload,
+            current_local_name,
+            has_target,
+            &cached_identity,
+            &previous_players,
+        ) else {
+            continue;
+        };
+
+        if player.is_local {
+            parsed.local_name = Some(player.name.clone());
+            parsed.local_team = Some(player.team);
         }
+        parsed.player_count = parsed.player_count.map(|count| count + 1);
+        parsed.players.insert(player.name.clone(), player);
+    }
+
+    parsed
+}
+
+fn parse_player_info(
+    player_payload: &Value,
+    current_local_name: &str,
+    has_target: bool,
+    cached_identity: &LocalPlayerIdentity,
+    previous_players: &HashMap<String, PlayerInfo>,
+) -> Option<PlayerInfo> {
+    let name = string_field(player_payload, &["Name", "name"])
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if name.is_empty() {
+        return None;
+    }
+
+    let primary_id =
+        string_field(player_payload, &["PrimaryId", "primaryId", "primary_id"]).unwrap_or("");
+    let (platform, is_bot) = parse_platform(primary_id);
+    let player_identity = LocalPlayerIdentity {
+        name: name.clone(),
+        primary_id: primary_id.to_string(),
+        platform: platform.clone(),
+    };
+    let mut is_local = player_payload["IsLocalPlayer"].as_bool().unwrap_or(false)
+        || player_payload["isLocalPlayer"].as_bool().unwrap_or(false)
+        || player_payload["isMe"].as_bool().unwrap_or(false)
+        || (!current_local_name.is_empty() && name.eq_ignore_ascii_case(current_local_name))
+        || (cached_identity.is_known() && cached_identity.same_account(&player_identity));
+
+    if has_target && cached_identity.is_known() && !name.eq_ignore_ascii_case(&cached_identity.name)
+    {
+        is_local = false;
+    }
+
+    let team =
+        number_field(player_payload, &["TeamNum", "teamNum", "Team", "team"]).unwrap_or(0) as u8;
+
+    Some(PlayerInfo {
+        name: name.clone(),
+        primary_id: primary_id.to_string(),
+        platform,
+        team,
+        is_bot,
+        is_local,
+        boost: number_field(player_payload, &["Boost", "boost"]).unwrap_or(0) as u8,
+        score: number_field(player_payload, &["Score", "score"]).unwrap_or(0) as u32,
+        goals: number_field(player_payload, &["Goals", "goals"]).unwrap_or(0) as u32,
+        saves: number_field(player_payload, &["Saves", "saves"]).unwrap_or(0) as u32,
+        touches: number_field(player_payload, &["Touches", "touches"]).unwrap_or(0) as u32,
+        car_touches: number_field(player_payload, &["CarTouches", "carTouches", "car_touches"])
+            .unwrap_or(0) as u32,
+        demos: number_field(player_payload, &["Demos", "demos"]).unwrap_or(0) as u32,
+        mmr: previous_players
+            .get(&name)
+            .and_then(|prev| prev.mmr.clone()),
+    })
+}
+
+fn apply_local_player_update(state: &Arc<AppState>, parsed_update: &ParsedUpdateState) {
+    let Some(local_name) = parsed_update.local_name.as_ref() else {
+        return;
+    };
+    let Some(local_player) = parsed_update.players.get(local_name) else {
+        return;
+    };
+
+    state
+        .game
+        .local_player_name
+        .store(Arc::new(local_name.clone()));
+    state
+        .game
+        .local_team
+        .store(local_player.team, Ordering::SeqCst);
+    let first_known_identity = state.update_local_player_identity(LocalPlayerIdentity {
+        name: local_player.name.clone(),
+        primary_id: local_player.primary_id.clone(),
+        platform: local_player.platform.clone(),
     });
+    if first_known_identity {
+        crate::mmr::start_local_mmr_refresh(state.clone());
+    }
+}
 
+fn store_players_preserving_mmr(state: &Arc<AppState>, players: HashMap<String, PlayerInfo>) {
+    let new_players_arc = Arc::new(players);
+    state.game.players.rcu(|current_players| {
+        let needs_merge = current_players.iter().any(|(name, player)| {
+            player.mmr.is_some()
+                && new_players_arc
+                    .get(name)
+                    .is_some_and(|new_player| new_player.mmr.is_none())
+        });
+
+        if !needs_merge {
+            return new_players_arc.clone();
+        }
+
+        let mut final_players = (*new_players_arc).clone();
+        for (name, player) in final_players.iter_mut() {
+            if player.mmr.is_none()
+                && let Some(prev) = current_players.get(name)
+            {
+                player.mmr = prev.mmr.clone();
+            }
+        }
+        Arc::new(final_players)
+    });
+    crate::history::refresh_lobby_history(state);
+}
+
+fn update_session_from_payload(
+    state: &Arc<AppState>,
+    real_data: &Value,
+    player_count: Option<usize>,
+) {
     let local_team = state.game.local_team.load(Ordering::SeqCst);
     let local_team_hint = (local_team != crate::state::NO_TEAM).then_some(local_team);
     let mode_hint = real_data
         .get("Game")
         .or_else(|| real_data.get("game"))
         .and_then(session_mode_hint_from_game);
-    let session_mode = SessionMode::infer(mode_hint, player_count);
+    let session_mode = infer_session_mode(real_data, mode_hint, player_count);
     let current_session = state.game.session.load();
-    if current_session.would_change(&real_data, local_team_hint, session_mode) {
+    if current_session.would_change(real_data, local_team_hint, session_mode) {
         let mut session = (**current_session).clone();
-        session.handle_update_state(&real_data, local_team_hint, session_mode);
+        let matches_before = session.matches_played;
+        session.handle_update_state(real_data, local_team_hint, session_mode);
+        if session.matches_played > matches_before {
+            crate::history::record_completed_match(state, &session);
+        }
         state.game.session.store(Arc::new(session));
     }
+}
+
+fn infer_session_mode(
+    real_data: &Value,
+    mode_hint: Option<&str>,
+    player_count: Option<usize>,
+) -> SessionMode {
+    if string_field(real_data, &["MatchGuid", "matchGuid"]).is_some_and(str::is_empty)
+        && player_count == Some(1)
+    {
+        return SessionMode::Freeplay;
+    }
+
+    SessionMode::infer(mode_hint, player_count)
 }
 
 fn session_mode_hint_from_game(game: &Value) -> Option<&str> {
@@ -1060,6 +1145,102 @@ mod tests {
         assert_eq!(session.wins, 0);
         assert!(session.mode_records.is_empty());
         assert_eq!(session.active_mode, crate::session::SessionMode::Unknown);
+    }
+
+    #[test]
+    fn test_update_state_detects_freeplay_capture_shape() {
+        let state = AppState::new();
+        handle_update_state(
+            &state,
+            &json!({
+                "MatchGuid": "",
+                "Players": [
+                    {
+                        "Name": "cyberPeng",
+                        "PrimaryId": "Steam|76561197981997358|0",
+                        "TeamNum": 0,
+                        "Boost": 100
+                    }
+                ],
+                "Game": {
+                    "Arena": "Park_Rainy_P",
+                    "bHasTarget": true,
+                    "Target": {"Name": "cyberPeng", "TeamNum": 0}
+                }
+            }),
+        );
+
+        let session = state.game.session.load();
+        assert_eq!(session.active_mode, crate::session::SessionMode::Freeplay);
+        assert_eq!(session.matches_played, 0);
+        assert!(session.mode_records.is_empty());
+    }
+
+    #[test]
+    fn test_private_match_with_target_records_update_state_winner() {
+        let state = AppState::new();
+        let base_players = json!([
+            {
+                "Name": "cyberPeng",
+                "PrimaryId": "Steam|76561197981997358|0",
+                "TeamNum": 0,
+                "Score": 124,
+                "Goals": 1,
+                "Touches": 18
+            },
+            {"Name": "Roundhouse", "PrimaryId": "Unknown|0|0", "TeamNum": 1},
+            {"Name": "Viper", "PrimaryId": "Unknown|0|0", "TeamNum": 1},
+            {"Name": "Jester", "PrimaryId": "Unknown|0|0", "TeamNum": 0},
+            {"Name": "Samara", "PrimaryId": "Unknown|0|0", "TeamNum": 0},
+            {"Name": "Caveman", "PrimaryId": "Unknown|0|0", "TeamNum": 1}
+        ]);
+
+        handle_update_state(
+            &state,
+            &json!({
+                "MatchGuid": "5D10ADA011F16578035ABBB9B9C3C4DE",
+                "Players": base_players.clone(),
+                "Game": {
+                    "Arena": "Park_Night_P",
+                    "Teams": [
+                        {"TeamNum": 0, "Score": 0},
+                        {"TeamNum": 1, "Score": 0}
+                    ],
+                    "bHasWinner": false,
+                    "Winner": "",
+                    "bHasTarget": true,
+                    "Target": {"Name": "cyberPeng", "TeamNum": 0}
+                }
+            }),
+        );
+        handle_update_state(
+            &state,
+            &json!({
+                "MatchGuid": "5D10ADA011F16578035ABBB9B9C3C4DE",
+                "Players": base_players,
+                "Game": {
+                    "Arena": "Park_Night_P",
+                    "Teams": [
+                        {"TeamNum": 0, "Score": 1},
+                        {"TeamNum": 1, "Score": 0}
+                    ],
+                    "bReplay": true,
+                    "bHasWinner": true,
+                    "Winner": "Blue",
+                    "bHasTarget": false
+                }
+            }),
+        );
+
+        let session = state.game.session.load();
+        assert_eq!(state.game.local_team.load(Ordering::SeqCst), 0);
+        assert_eq!(session.active_mode, crate::session::SessionMode::Threes);
+        assert_eq!(session.wins, 1);
+        assert_eq!(session.matches_played, 1);
+        assert_eq!(
+            session.mode_records[&crate::session::SessionMode::Threes].wins,
+            1
+        );
     }
 
     #[test]

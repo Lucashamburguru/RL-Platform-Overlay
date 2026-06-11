@@ -145,8 +145,6 @@ pub(crate) fn render_replays_settings_tab(
                 });
         });
 
-        ui.add_space(10.0);
-
         // Replays Directory
         setting_row(ui, "Replay Folder", |ui| {
             ui.horizontal(|ui| {
@@ -222,7 +220,7 @@ pub(crate) fn render_replays_settings_tab(
         status_text(
             ui,
             StatusTone::Warning,
-            "⚠ Note: Bulk uploading is rate-limited (30s delay per file) to respect Ballchasing.com limits.",
+            "⚠ Note: Bulk uploading waits 30s between files to respect Ballchasing.com limits.",
         );
         ui.add_space(6.0);
 
@@ -230,18 +228,34 @@ pub(crate) fn render_replays_settings_tab(
         ui.horizontal(|ui| {
             let api_key_empty = config_edit.ballchasing_api_key.trim().is_empty();
             let path_invalid = path_valid != Some(true);
+            let progress = state.replays.upload_progress.load();
+            let bulk_running = progress.running;
+            let bulk_paused = progress.paused;
 
             // Upload Existing
             let upload_btn = ui.add_enabled(
-                !api_key_empty && !path_invalid,
+                !api_key_empty && !path_invalid && !bulk_running,
                 egui::Button::new("Upload Existing Replays"),
             );
             if upload_btn.clicked() {
                 crate::replays::start_bulk_upload_task(state.clone());
             }
 
+            if bulk_running {
+                let pause_label = if bulk_paused { "Resume" } else { "Pause" };
+                if ui.button(pause_label).clicked() {
+                    crate::replays::set_bulk_upload_paused(state, !bulk_paused);
+                }
+                if ui.button("Stop").clicked() {
+                    crate::replays::stop_bulk_upload(state);
+                }
+            }
+
             // Sync Cache
-            let sync_btn = ui.add_enabled(!api_key_empty, egui::Button::new("Sync Uploaded Cache"));
+            let sync_btn = ui.add_enabled(
+                !api_key_empty && !bulk_running,
+                egui::Button::new("Sync Uploaded Cache"),
+            );
             if sync_btn.clicked() {
                 crate::replays::start_sync_replays_task(state.clone());
             }
@@ -254,6 +268,8 @@ pub(crate) fn render_replays_settings_tab(
         });
 
         ui.add_space(8.0);
+
+        render_upload_progress(ui, state);
 
         // Display Cloud Count & Local Cache
         let cloud_count = state
@@ -403,4 +419,71 @@ pub(crate) fn render_replays_settings_tab(
                 });
         }
     });
+}
+
+fn render_upload_progress(ui: &mut egui::Ui, state: &Arc<AppState>) {
+    let progress = state.replays.upload_progress.load();
+    if !progress.running && progress.total == 0 && progress.recent_events.is_empty() {
+        return;
+    }
+
+    ui.add_space(4.0);
+    let fraction = if progress.total == 0 {
+        0.0
+    } else {
+        (progress.processed as f32 / progress.total as f32).clamp(0.0, 1.0)
+    };
+    ui.add(egui::ProgressBar::new(fraction).text(format!(
+        "{}/{} processed | {} uploaded | {} skipped | {} failed",
+        progress.processed, progress.total, progress.uploaded, progress.skipped, progress.failed
+    )));
+
+    if progress.running {
+        if progress.paused {
+            status_text(ui, StatusTone::Warning, "Paused");
+        } else if !progress.current_file.is_empty() {
+            ui.label(helper_text(format!(
+                "Current file: {}",
+                progress.current_file
+            )));
+        }
+    }
+
+    if !progress.last_error.is_empty() {
+        status_text(
+            ui,
+            StatusTone::Error,
+            format!("Last error: {}", progress.last_error),
+        );
+    }
+
+    if !progress.recent_events.is_empty() {
+        egui::CollapsingHeader::new("Recent Upload Events")
+            .default_open(progress.running)
+            .show(ui, |ui| {
+                egui::ScrollArea::vertical()
+                    .max_height(96.0)
+                    .show(ui, |ui| {
+                        for event in progress.recent_events.iter().rev() {
+                            ui.label(
+                                egui::RichText::new(event)
+                                    .font(egui::FontId::monospace(10.0))
+                                    .color(
+                                        if event.starts_with("Failed")
+                                            || event.starts_with("Stopped")
+                                        {
+                                            egui::Color32::from_rgb(230, 120, 100)
+                                        } else if event.starts_with("Skipped") {
+                                            egui::Color32::from_rgb(225, 190, 90)
+                                        } else {
+                                            egui::Color32::from_gray(180)
+                                        },
+                                    ),
+                            );
+                        }
+                    });
+            });
+    }
+
+    ui.add_space(4.0);
 }
