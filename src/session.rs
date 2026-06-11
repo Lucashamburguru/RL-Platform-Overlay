@@ -133,6 +133,74 @@ pub struct SessionState {
 }
 
 impl SessionState {
+    pub fn would_change(
+        &self,
+        real_data: &Value,
+        local_team_hint: Option<u8>,
+        mode_hint: SessionMode,
+    ) -> bool {
+        if let Some(match_guid) = string_field(real_data, &["MatchGuid", "matchGuid"])
+            && self.active_match_id != match_guid
+        {
+            return true;
+        }
+
+        if mode_hint != SessionMode::Unknown && self.active_mode != mode_hint {
+            return true;
+        }
+
+        if local_team_hint.is_some() && self.local_team != local_team_hint {
+            return true;
+        }
+
+        if let Some(game) = real_data.get("Game").or_else(|| real_data.get("game")) {
+            if let Some(teams) = game
+                .get("Teams")
+                .or_else(|| game.get("teams"))
+                .and_then(Value::as_array)
+            {
+                for team in teams {
+                    let team_num = number_field(team, &["TeamNum", "teamNum", "Team", "team"]);
+                    let score = number_field(team, &["Score", "score"]);
+                    match (team_num, score) {
+                        (Some(0), Some(score)) if self.blue_score != score as u32 => {
+                            return true;
+                        }
+                        (Some(1), Some(score)) if self.orange_score != score as u32 => {
+                            return true;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+
+            let has_winner = bool_field(game, &["bHasWinner", "hasWinner"]).unwrap_or(false);
+            if has_winner && !self.result_recorded_for_match {
+                return true;
+            }
+        }
+
+        if !self.round_started
+            && let Some(players) = real_data
+                .get("Players")
+                .or_else(|| real_data.get("players"))
+                .and_then(Value::as_array)
+        {
+            for p in players {
+                let score = number_field(p, &["Score", "score"]).unwrap_or(0);
+                let touches = number_field(p, &["Touches", "touches"]).unwrap_or(0);
+                let goals = number_field(p, &["Goals", "goals"]).unwrap_or(0);
+                let saves = number_field(p, &["Saves", "saves"]).unwrap_or(0);
+                let demos = number_field(p, &["Demos", "demos"]).unwrap_or(0);
+                if score > 0 || touches > 0 || goals > 0 || saves > 0 || demos > 0 {
+                    return true;
+                }
+            }
+        }
+
+        false
+    }
+
     pub fn handle_update_state(
         &mut self,
         data: &Value,

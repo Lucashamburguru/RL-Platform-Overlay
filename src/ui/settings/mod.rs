@@ -28,7 +28,7 @@ pub(super) fn render_settings_tabs(
         ui.selectable_value(selected, SettingsTab::Setup, "Setup");
         ui.selectable_value(selected, SettingsTab::Overlay, "Lobby");
         ui.selectable_value(selected, SettingsTab::Session, "Session");
-        ui.selectable_value(selected, SettingsTab::Boost, "Boost");
+        ui.selectable_value(selected, SettingsTab::Boost, "Boost & Alpha");
         ui.selectable_value(selected, SettingsTab::Replays, "Replays");
         if debug_enabled {
             ui.selectable_value(selected, SettingsTab::Debug, "Debug");
@@ -38,11 +38,11 @@ pub(super) fn render_settings_tabs(
 }
 
 pub(super) fn render_update_notice(ui: &mut egui::Ui, state: &Arc<AppState>) {
-    let version_check = state.version_check.load();
+    let version_check = state.system.version_check.load();
     if !version_check.update_available {
         return;
     }
-    let auto_update_status = state.auto_update_status.load();
+    let auto_update_status = state.system.auto_update_status.load();
 
     let frame = egui::Frame::default()
         .fill(egui::Color32::from_rgb(55, 46, 18))
@@ -107,6 +107,7 @@ pub(super) fn render_launch_controls(
     is_launched: bool,
     config_edit: &mut crate::state::Config,
     changed: &mut bool,
+    confirm_modal: &mut Option<super::app::ConfirmAction>,
 ) {
     ui.horizontal(|ui| {
         ui.set_width(ui.available_width());
@@ -123,20 +124,25 @@ pub(super) fn render_launch_controls(
             .clicked()
         {
             let new_val = !is_launched;
-            state.is_launched.store(new_val, Ordering::SeqCst);
+            state.flags.is_launched.store(new_val, Ordering::SeqCst);
             if new_val {
-                state.is_settings_visible.store(false, Ordering::SeqCst);
+                state
+                    .flags
+                    .is_settings_visible
+                    .store(false, Ordering::SeqCst);
             }
         }
 
         ui.add_space(10.0);
-        let is_visible = state.is_visible.load(Ordering::SeqCst);
+        let is_visible = state.flags.is_visible.load(Ordering::SeqCst);
         ui.horizontal(|ui| {
             ui.label("HUD:");
-            if is_visible || is_launched {
-                ui.colored_label(status_color(StatusTone::Success), "ACTIVE");
+            if !is_launched {
+                ui.colored_label(status_color(StatusTone::Error), "STOPPED");
+            } else if !is_visible {
+                ui.colored_label(status_color(StatusTone::Warning), "HIDDEN");
             } else {
-                ui.colored_label(status_color(StatusTone::Error), "HIDDEN");
+                ui.colored_label(status_color(StatusTone::Success), "VISIBLE");
             }
         });
 
@@ -159,8 +165,7 @@ pub(super) fn render_launch_controls(
                 .add_sized([96.0, 24.0], egui::Button::new("Reset Config"))
                 .clicked()
             {
-                let default_config = crate::state::Config::default();
-                state.save_config(default_config);
+                *confirm_modal = Some(super::app::ConfirmAction::ResetConfig);
             }
             ui.label(
                 egui::RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))

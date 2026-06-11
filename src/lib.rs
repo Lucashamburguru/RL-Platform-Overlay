@@ -8,7 +8,7 @@ mod diagnostics;
 mod input;
 mod mmr;
 pub mod network;
-mod session;
+pub mod session;
 mod setup;
 pub mod state;
 mod ui;
@@ -30,7 +30,7 @@ pub async fn run(debug_enabled: bool) -> eframe::Result<()> {
 
     let state = AppState::new_with_debug(debug_enabled);
 
-    if state.local_player_identity.load().is_known() {
+    if state.game.local_player_identity.load().is_known() {
         mmr::start_local_mmr_refresh(state.clone());
     }
 

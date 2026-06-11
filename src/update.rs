@@ -7,7 +7,6 @@ use sha2::{Digest, Sha256};
 #[cfg(target_os = "windows")]
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
 
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 const LATEST_RELEASE_URL: &str =
@@ -38,7 +37,8 @@ Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue
 pub fn start_version_check(state: Arc<AppState>) {
     tokio::spawn(async move {
         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-        let version_check = match check_latest_release().await {
+        let client = state.system.http_client.clone();
+        let version_check = match check_latest_release(&client).await {
             Ok(check) => check,
             Err(error) => VersionCheck {
                 checked: true,
@@ -46,30 +46,36 @@ pub fn start_version_check(state: Arc<AppState>) {
                 ..Default::default()
             },
         };
-        state.version_check.store(Arc::new(version_check));
+        state.system.version_check.store(Arc::new(version_check));
     });
 }
 
 pub fn start_auto_update(state: Arc<AppState>) {
-    if state.auto_update_status.load().running {
+    if state.system.auto_update_status.load().running {
         return;
     }
 
-    state.auto_update_status.store(Arc::new(AutoUpdateStatus {
-        running: true,
-        message: "Preparing update...".to_string(),
-        error: String::new(),
-    }));
+    state
+        .system
+        .auto_update_status
+        .store(Arc::new(AutoUpdateStatus {
+            running: true,
+            message: "Preparing update...".to_string(),
+            error: String::new(),
+        }));
 
     tokio::spawn(async move {
         match download_and_apply_update(state.clone()).await {
             Ok(()) => {}
             Err(error) => {
-                state.auto_update_status.store(Arc::new(AutoUpdateStatus {
-                    running: false,
-                    message: String::new(),
-                    error,
-                }));
+                state
+                    .system
+                    .auto_update_status
+                    .store(Arc::new(AutoUpdateStatus {
+                        running: false,
+                        message: String::new(),
+                        error,
+                    }));
             }
         }
     });
@@ -84,7 +90,7 @@ async fn download_and_apply_update(state: Arc<AppState>) -> Result<(), String> {
 
     #[cfg(target_os = "windows")]
     {
-        let version_check = state.version_check.load();
+        let version_check = state.system.version_check.load();
         if !version_check.update_available {
             return Err("No update is currently available.".to_string());
         }
@@ -101,29 +107,40 @@ async fn download_and_apply_update(state: Arc<AppState>) -> Result<(), String> {
         drop(version_check);
 
         set_update_status(&state, true, "Downloading update...", "");
-        let client = wreq::Client::builder()
-            .timeout(Duration::from_secs(60))
-            .build()
-            .map_err(|error| format!("Could not create update client: {error}"))?;
+        let client = state.system.http_client.clone();
 
-        let checksum_text = client
+        let checksum_response = client
             .get(&checksum_url)
             .header("User-Agent", "RL-Platform-Overlay")
             .send()
             .await
-            .map_err(|error| format!("Checksum download failed: {error}"))?
+            .map_err(|error| format!("Checksum download failed: {error}"))?;
+        let checksum_status = checksum_response.status();
+        if !checksum_status.is_success() {
+            return Err(format!(
+                "Checksum download failed with status {checksum_status}."
+            ));
+        }
+        let checksum_text = checksum_response
             .text()
             .await
             .map_err(|error| format!("Could not read checksum: {error}"))?;
         let expected_sha = parse_checksum(&checksum_text, WINDOWS_ASSET_NAME)
             .ok_or_else(|| format!("Checksum file does not contain {WINDOWS_ASSET_NAME}."))?;
 
-        let bytes = client
+        let download_response = client
             .get(&download_url)
             .header("User-Agent", "RL-Platform-Overlay")
             .send()
             .await
-            .map_err(|error| format!("Update download failed: {error}"))?
+            .map_err(|error| format!("Update download failed: {error}"))?;
+        let download_status = download_response.status();
+        if !download_status.is_success() {
+            return Err(format!(
+                "Update download failed with status {download_status}."
+            ));
+        }
+        let bytes = download_response
             .bytes()
             .await
             .map_err(|error| format!("Could not read update download: {error}"))?;
@@ -156,11 +173,14 @@ async fn download_and_apply_update(state: Arc<AppState>) -> Result<(), String> {
 
 #[cfg(target_os = "windows")]
 fn set_update_status(state: &AppState, running: bool, message: &str, error: &str) {
-    state.auto_update_status.store(Arc::new(AutoUpdateStatus {
-        running,
-        message: message.to_string(),
-        error: error.to_string(),
-    }));
+    state
+        .system
+        .auto_update_status
+        .store(Arc::new(AutoUpdateStatus {
+            running,
+            message: message.to_string(),
+            error: error.to_string(),
+        }));
 }
 
 #[cfg(target_os = "windows")]
@@ -197,11 +217,7 @@ fn spawn_update_script(update_dir: &Path, staged_exe: &Path) -> std::io::Result<
     Ok(())
 }
 
-async fn check_latest_release() -> Result<VersionCheck, String> {
-    let client = wreq::Client::builder()
-        .timeout(Duration::from_secs(5))
-        .build()
-        .map_err(|error| error.to_string())?;
+async fn check_latest_release(client: &wreq::Client) -> Result<VersionCheck, String> {
     let response = client
         .get(LATEST_RELEASE_URL)
         .header("User-Agent", "RL-Platform-Overlay")
@@ -296,16 +312,36 @@ fn parse_version(version: &str) -> Option<Vec<u64>> {
 
 #[cfg(any(target_os = "windows", test))]
 fn parse_checksum(content: &str, asset_name: &str) -> Option<String> {
-    content.lines().find_map(|line| {
+    let content = content.trim_start_matches('\u{feff}');
+    let asset_lower = asset_name.to_lowercase();
+
+    // First, try to find a line containing the asset name and a 64-char hex hash
+    if let Some(hash) = content.lines().find_map(|line| {
         let trimmed = line.trim();
-        if trimmed.is_empty() || !trimmed.contains(asset_name) {
+        if trimmed.is_empty() {
+            return None;
+        }
+        let line_lower = trimmed.to_lowercase();
+        if !line_lower.contains(&asset_lower) {
             return None;
         }
         trimmed
             .split_whitespace()
-            .next()
-            .filter(|hash| hash.len() == 64 && hash.chars().all(|c| c.is_ascii_hexdigit()))
+            .find(|word| word.len() == 64 && word.chars().all(|c| c.is_ascii_hexdigit()))
             .map(str::to_string)
+    }) {
+        return Some(hash);
+    }
+
+    // Fallback: if there's no line containing the asset name, but a line consists entirely of a 64-char hex hash, return it.
+    // This is useful if the checksum file only contains the raw hash.
+    content.lines().find_map(|line| {
+        let trimmed = line.trim();
+        if trimmed.len() == 64 && trimmed.chars().all(|c| c.is_ascii_hexdigit()) {
+            Some(trimmed.to_string())
+        } else {
+            None
+        }
     })
 }
 
@@ -366,6 +402,42 @@ mod tests {
 
         assert_eq!(
             parse_checksum(checksum, WINDOWS_ASSET_NAME),
+            Some("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string())
+        );
+
+        // Case-insensitivity test
+        let checksum_caps = "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF  RL-PLATFORM-OVERLAY.EXE\n";
+        assert_eq!(
+            parse_checksum(checksum_caps, WINDOWS_ASSET_NAME),
+            Some("0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF".to_string())
+        );
+
+        // BOM test
+        let checksum_bom = "\u{feff}0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef  rl-platform-overlay.exe\n";
+        assert_eq!(
+            parse_checksum(checksum_bom, WINDOWS_ASSET_NAME),
+            Some("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string())
+        );
+
+        // BSD-style checksum
+        let checksum_bsd = "SHA256 (rl-platform-overlay.exe) = 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n";
+        assert_eq!(
+            parse_checksum(checksum_bsd, WINDOWS_ASSET_NAME),
+            Some("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string())
+        );
+
+        // Raw hash only (no filename)
+        let checksum_raw = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n";
+        assert_eq!(
+            parse_checksum(checksum_raw, WINDOWS_ASSET_NAME),
+            Some("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string())
+        );
+
+        // Raw hash only with BOM
+        let checksum_raw_bom =
+            "\u{feff}0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\r\n";
+        assert_eq!(
+            parse_checksum(checksum_raw_bom, WINDOWS_ASSET_NAME),
             Some("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string())
         );
     }

@@ -94,14 +94,18 @@ pub(super) fn persist_dragged_position(
     ctx.data_mut(|data| data.insert_temp(drag_position_id, new_panel_pos));
 
     let new_position = pos_to_normalized(ctx, new_panel_pos);
-    let mut config = (**state.config.load()).clone();
+    let mut config = (**state.system.config.load()).clone();
     match target {
         "lobby" => config.lobby_manual_position = Some(new_position),
         "boost" => config.teammate_boost_manual_position = Some(new_position),
         "session" => config.session_manual_position = Some(new_position),
         _ => return,
     }
-    state.save_config(config);
+    if drag_response.drag_stopped() {
+        state.save_config(config);
+    } else {
+        state.system.config.store(Arc::new(config));
+    }
     ctx.request_repaint();
 
     if drag_response.drag_stopped() {

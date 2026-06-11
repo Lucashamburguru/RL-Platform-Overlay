@@ -317,13 +317,13 @@ pub fn start_mmr_fetch_task(state: Arc<AppState>) {
                 cooldown_until = None;
             }
 
-            if !state.config.load().show_lobby_ranks {
+            if !state.system.config.load().show_lobby_ranks {
                 continue;
             }
 
             // Find a player that needs their MMR fetched
             let (cached_player, target_player) = {
-                let players = state.players.load();
+                let players = state.game.players.load();
                 select_next_player(
                     &players,
                     &mut mmr_cache,
@@ -333,7 +333,7 @@ pub fn start_mmr_fetch_task(state: Arc<AppState>) {
             };
 
             if let Some((name, snapshot)) = cached_player {
-                state.players.rcu(|players| {
+                state.game.players.rcu(|players| {
                     let mut players_map = (**players).clone();
                     if let Some(player_info) = players_map.get_mut(&name)
                         && !player_info.is_local
@@ -352,7 +352,7 @@ pub fn start_mmr_fetch_task(state: Arc<AppState>) {
                     &state,
                     format!("Fetching MMR for {} ({})", name, tracker_player.platform),
                 );
-                match fetch_tracker_snapshot(&state.mmr.mmr_client, &tracker_player).await {
+                match fetch_tracker_snapshot(&state.system.http_client, &tracker_player).await {
                     Ok(snapshot) => {
                         append_tracker_log(
                             &state,
@@ -370,7 +370,7 @@ pub fn start_mmr_fetch_task(state: Arc<AppState>) {
                                 fetched_at: Instant::now(),
                             },
                         );
-                        state.players.rcu(|players| {
+                        state.game.players.rcu(|players| {
                             let mut players_map = (**players).clone();
                             if let Some(player_info) = players_map.get_mut(&name) {
                                 player_info.mmr = Some(snapshot.clone());
@@ -398,7 +398,7 @@ pub fn start_mmr_fetch_task(state: Arc<AppState>) {
                                     fetched_at: Instant::now(),
                                 },
                             );
-                            state.players.rcu(|players| {
+                            state.game.players.rcu(|players| {
                                 let mut players_map = (**players).clone();
                                 if let Some(player_info) = players_map.get_mut(&name) {
                                     player_info.mmr = Some(snapshot.clone());
@@ -471,7 +471,7 @@ fn tracker_player_from_info(name: &str, info: &PlayerInfo) -> Option<(String, Tr
 }
 
 pub fn start_local_mmr_refresh(state: Arc<AppState>) {
-    if !state.config.load().show_lobby_ranks {
+    if !state.system.config.load().show_lobby_ranks {
         return;
     }
     let current_state = state.mmr.local_mmr.load();
@@ -479,7 +479,7 @@ pub fn start_local_mmr_refresh(state: Arc<AppState>) {
         return;
     }
 
-    let identity = (*state.local_player_identity.load()).clone();
+    let identity = (*state.game.local_player_identity.load()).clone();
     if !identity.is_known() {
         let mut local_mmr = (**current_state).clone();
         local_mmr.fetching = false;
@@ -520,7 +520,7 @@ pub fn start_local_mmr_refresh(state: Arc<AppState>) {
                 identity.name, identity.platform
             ),
         );
-        let result = fetch_tracker_snapshot(&state.mmr.mmr_client, &tracker_player).await;
+        let result = fetch_tracker_snapshot(&state.system.http_client, &tracker_player).await;
 
         let mut local_mmr = (**state.mmr.local_mmr.load()).clone();
         local_mmr.fetching = false;
@@ -674,6 +674,7 @@ mod tests {
     fn local_mmr_refresh_without_runtime_reports_error() {
         let state = AppState::new();
         state
+            .game
             .local_player_identity
             .store(Arc::new(LocalPlayerIdentity {
                 name: "Me".to_string(),
@@ -780,11 +781,12 @@ mod tests {
     #[test]
     fn local_mmr_refresh_skips_when_show_lobby_ranks_is_false() {
         let state = AppState::new();
-        let mut config = (**state.config.load()).clone();
+        let mut config = (**state.system.config.load()).clone();
         config.show_lobby_ranks = false;
-        state.config.store(Arc::new(config));
+        state.system.config.store(Arc::new(config));
 
         state
+            .game
             .local_player_identity
             .store(Arc::new(LocalPlayerIdentity {
                 name: "Me".to_string(),

@@ -297,7 +297,7 @@ pub fn start_folder_fix_task(state: Arc<AppState>) {
 /// Main execution routine to scan and fix the replays folder.
 async fn run_folder_fix(state: Arc<AppState>) {
     let folder_str = {
-        let config = state.config.load();
+        let config = state.system.config.load();
         config.replays_folder.trim().to_string()
     };
 
@@ -419,7 +419,7 @@ pub fn start_restore_backups_task(state: Arc<AppState>) {
 
 async fn run_restore_backups(state: Arc<AppState>) {
     let folder_str = {
-        let config = state.config.load();
+        let config = state.system.config.load();
         config.replays_folder.trim().to_string()
     };
 
@@ -491,7 +491,7 @@ pub fn start_delete_backups_task(state: Arc<AppState>) {
 
 async fn run_delete_backups(state: Arc<AppState>) {
     let folder_str = {
-        let config = state.config.load();
+        let config = state.system.config.load();
         config.replays_folder.trim().to_string()
     };
 

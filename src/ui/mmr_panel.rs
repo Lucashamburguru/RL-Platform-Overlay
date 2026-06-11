@@ -1,16 +1,34 @@
-use crate::state::AppState;
+use crate::state::{AppState, Config};
 use eframe::egui;
 use std::sync::Arc;
 
-use super::common::debug_status_row;
+use super::common::{SETTINGS_LABEL_TEXT_SIZE, debug_status_row};
 
-pub(super) fn render_local_mmr_panel(ui: &mut egui::Ui, state: &Arc<AppState>) {
-    let identity = state.local_player_identity.load();
+pub(super) fn render_local_mmr_panel(
+    ui: &mut egui::Ui,
+    state: &Arc<AppState>,
+    config_edit: &mut Config,
+    changed: &mut bool,
+) {
+    let identity = state.game.local_player_identity.load();
     let local_mmr = state.mmr.local_mmr.load();
 
-    ui.heading("Local MMR");
     if identity.is_known() {
-        debug_status_row(ui, "Player", identity.name.as_str());
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new("Player")
+                    .size(SETTINGS_LABEL_TEXT_SIZE)
+                    .color(egui::Color32::from_gray(178)),
+            );
+            ui.label(identity.name.as_str());
+            ui.add_space(8.0);
+            if ui
+                .checkbox(&mut config_edit.lock_local_player, "Lock")
+                .changed()
+            {
+                *changed = true;
+            }
+        });
         debug_status_row(ui, "Platform", identity.platform.as_str());
     } else {
         ui.colored_label(

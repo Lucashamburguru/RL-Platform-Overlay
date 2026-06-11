@@ -8,6 +8,7 @@ pub(crate) fn render_replays_settings_tab(
     state: &Arc<AppState>,
     config_edit: &mut Config,
     changed: &mut bool,
+    confirm_modal: &mut Option<crate::ui::app::ConfirmAction>,
 ) {
     settings_section(ui, "Ballchasing.com Replay Uploader", |ui| {
         if ui
@@ -76,8 +77,9 @@ pub(crate) fn render_replays_settings_tab(
 
                 ui.data_mut(|d| d.insert_temp(verify_status_id, "Checking...".to_string()));
 
+                let client = state.system.http_client.clone();
                 tokio::spawn(async move {
-                    let result = crate::replays::verify_token(&api_key).await;
+                    let result = crate::replays::verify_token(&client, &api_key).await;
                     let msg = match result {
                         Ok(()) => "✔ Token Valid".to_string(),
                         Err(e) => format!("❌ Invalid: {}", e),
@@ -158,11 +160,25 @@ pub(crate) fn render_replays_settings_tab(
                 {
                     *changed = true;
                 }
-                if ui.button("Auto-detect").clicked()
-                    && let Some(detected) = crate::state::detect_replays_path()
-                {
-                    config_edit.replays_folder = detected;
-                    *changed = true;
+                let auto_detect_btn = ui.button("Auto-detect");
+                if auto_detect_btn.clicked() {
+                    if let Some(detected) = crate::state::detect_replays_path() {
+                        config_edit.replays_folder = detected;
+                        *changed = true;
+                        ui.data_mut(|d| {
+                            d.insert_temp(
+                                ui.make_persistent_id("replay_path_autodetect_failed"),
+                                false,
+                            )
+                        });
+                    } else {
+                        ui.data_mut(|d| {
+                            d.insert_temp(
+                                ui.make_persistent_id("replay_path_autodetect_failed"),
+                                true,
+                            )
+                        });
+                    }
                 }
             });
         });
@@ -189,6 +205,17 @@ pub(crate) fn render_replays_settings_tab(
                     "⚠ Path unconfigured. Click Auto-detect.",
                 );
             }
+        }
+
+        if ui.data(|d| {
+            d.get_temp::<bool>(ui.make_persistent_id("replay_path_autodetect_failed"))
+                .unwrap_or(false)
+        }) {
+            status_text(
+                ui,
+                StatusTone::Error,
+                "❌ Auto-detection failed. Could not locate Rocket League replays folder. Please specify it manually.",
+            );
         }
 
         ui.add_space(6.0);
@@ -222,11 +249,7 @@ pub(crate) fn render_replays_settings_tab(
             // Clear Cache
             let clear_btn = ui.button("Clear Upload Cache");
             if clear_btn.clicked() {
-                config_edit.uploaded_replays.clear();
-                *changed = true;
-                if let Ok(mut status) = state.replays.ballchasing_status.lock() {
-                    *status = "Upload cache cleared.".to_string();
-                }
+                *confirm_modal = Some(crate::ui::app::ConfirmAction::ClearUploadCache);
             }
         });
 
@@ -326,7 +349,7 @@ pub(crate) fn render_replays_settings_tab(
                 egui::Button::new("Delete Backups"),
             );
             if delete_btn.clicked() {
-                crate::hoops_fixer::start_delete_backups_task(state.clone());
+                *confirm_modal = Some(crate::ui::app::ConfirmAction::DeleteBackups);
             }
         });
 

@@ -5,12 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 /// Verifies a Ballchasing.com API token by making a GET request to the validation endpoint.
-pub async fn verify_token(api_key: &str) -> Result<(), String> {
-    let client = wreq::Client::builder()
-        .timeout(Duration::from_secs(5))
-        .build()
-        .map_err(|e| format!("Failed to build HTTP client: {e}"))?;
-
+pub async fn verify_token(client: &wreq::Client, api_key: &str) -> Result<(), String> {
     let response = client
         .get("https://ballchasing.com/api/")
         .header("Authorization", api_key)
@@ -38,7 +33,7 @@ pub fn trigger_replay_upload(state: Arc<AppState>, scan_all_as_uploaded: bool) {
 /// Scans the replays folder and uploads new files to ballchasing.com.
 /// If `scan_all_as_uploaded` is true, scans all existing files and caches their names to skip uploading them.
 async fn run_replay_upload(state: Arc<AppState>, scan_all_as_uploaded: bool) -> Result<(), String> {
-    let config = state.config.load();
+    let config = state.system.config.load();
     let folder_str = config.replays_folder.trim();
     if folder_str.is_empty() {
         return Ok(());
@@ -94,9 +89,14 @@ async fn run_replay_upload(state: Arc<AppState>, scan_all_as_uploaded: bool) -> 
                     let Ok(file_bytes) = fs::read(&path) else {
                         continue;
                     };
-                    if let Ok(status_code) =
-                        upload_file_to_ballchasing(&api_key, &visibility, &filename, file_bytes)
-                            .await
+                    if let Ok(status_code) = upload_file_to_ballchasing(
+                        &state.system.http_client,
+                        &api_key,
+                        &visibility,
+                        &filename,
+                        file_bytes,
+                    )
+                    .await
                         && (status_code == 201 || status_code == 409)
                     {
                         mark_replays_uploaded(&state, std::slice::from_ref(&filename));
@@ -144,7 +144,15 @@ async fn run_replay_upload(state: Arc<AppState>, scan_all_as_uploaded: bool) -> 
             continue;
         };
 
-        match upload_file_to_ballchasing(&api_key, &visibility, &filename, file_bytes).await {
+        match upload_file_to_ballchasing(
+            &state.system.http_client,
+            &api_key,
+            &visibility,
+            &filename,
+            file_bytes,
+        )
+        .await
+        {
             Ok(status_code) => {
                 if status_code == 201 || status_code == 409 {
                     // Success or duplicate
@@ -181,16 +189,12 @@ async fn run_replay_upload(state: Arc<AppState>, scan_all_as_uploaded: bool) -> 
 
 /// Uploads a single file to ballchasing.com using multipart/form-data.
 async fn upload_file_to_ballchasing(
+    client: &wreq::Client,
     api_key: &str,
     visibility: &str,
     filename: &str,
     file_bytes: Vec<u8>,
 ) -> Result<u16, String> {
-    let client = wreq::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .build()
-        .map_err(|e| format!("Failed to build HTTP client: {e}"))?;
-
     let part = wreq::multipart::Part::bytes(file_bytes)
         .file_name(filename.to_string())
         .mime_str("application/octet-stream")
@@ -265,7 +269,7 @@ pub fn start_bulk_upload_task(state: Arc<AppState>) {
 }
 
 async fn run_bulk_upload(state: Arc<AppState>) -> Result<(), String> {
-    let config = state.config.load();
+    let config = state.system.config.load();
     let folder_str = config.replays_folder.trim();
     if folder_str.is_empty() {
         set_status(&state, "Error: Replays folder unconfigured");
@@ -299,7 +303,7 @@ async fn run_bulk_upload(state: Arc<AppState>) -> Result<(), String> {
         if path.is_file()
             && path.extension().and_then(|s| s.to_str()) == Some("replay")
             && let Some(filename) = path.file_name().and_then(|s| s.to_str())
-            && !uploaded_replays.contains(filename)
+            && !uploaded_replays.iter().any(|x| x == filename)
         {
             to_upload.push((filename.to_string(), path));
         }
@@ -318,7 +322,7 @@ async fn run_bulk_upload(state: Arc<AppState>) -> Result<(), String> {
 
     for (index, (filename, path)) in to_upload.into_iter().enumerate() {
         // Double check configuration key is not cleared mid-run
-        let current_config = state.config.load();
+        let current_config = state.system.config.load();
         if current_config.ballchasing_api_key.trim().is_empty() {
             set_status(&state, "Bulk upload stopped: API key cleared");
             break;
@@ -348,7 +352,15 @@ async fn run_bulk_upload(state: Arc<AppState>) -> Result<(), String> {
             continue;
         };
 
-        match upload_file_to_ballchasing(&api_key, &visibility, &filename, file_bytes).await {
+        match upload_file_to_ballchasing(
+            &state.system.http_client,
+            &api_key,
+            &visibility,
+            &filename,
+            file_bytes,
+        )
+        .await
+        {
             Ok(status_code) => {
                 if status_code == 201 || status_code == 409 {
                     // Success or Duplicate
@@ -379,7 +391,14 @@ async fn run_bulk_upload(state: Arc<AppState>) -> Result<(), String> {
         if index + 1 < total {
             for s in (1..=30).rev() {
                 // Check if key is cleared
-                if state.config.load().ballchasing_api_key.trim().is_empty() {
+                if state
+                    .system
+                    .config
+                    .load()
+                    .ballchasing_api_key
+                    .trim()
+                    .is_empty()
+                {
                     break;
                 }
                 set_status(
@@ -396,7 +415,7 @@ async fn run_bulk_upload(state: Arc<AppState>) -> Result<(), String> {
         }
     }
 
-    let final_config = state.config.load();
+    let final_config = state.system.config.load();
     let current_uploaded_count = final_config.uploaded_replays.len();
     set_status(
         &state,
@@ -417,7 +436,7 @@ pub fn start_sync_replays_task(state: Arc<AppState>) {
 }
 
 async fn run_sync_replays(state: Arc<AppState>) -> Result<(), String> {
-    let config = state.config.load();
+    let config = state.system.config.load();
     let api_key = config.ballchasing_api_key.trim().to_string();
     if api_key.is_empty() {
         set_status(&state, "Error: API key is empty");
@@ -426,10 +445,7 @@ async fn run_sync_replays(state: Arc<AppState>) -> Result<(), String> {
 
     set_status(&state, "Syncing from ballchasing.com...");
 
-    let client = wreq::Client::builder()
-        .timeout(Duration::from_secs(10))
-        .build()
-        .map_err(|e| format!("Failed to build HTTP client: {e}"))?;
+    let client = &state.system.http_client;
 
     let mut next_url =
         Some("https://ballchasing.com/api/replays?uploader=me&count=200".to_string());
@@ -502,22 +518,26 @@ async fn run_sync_replays(state: Arc<AppState>) -> Result<(), String> {
 }
 
 pub fn mark_replays_uploaded(state: &Arc<AppState>, filenames: &[String]) -> usize {
-    let config_current = state.config.load();
+    let config_current = state.system.config.load();
     let mut config_edit = (**config_current).clone();
     let mut added = 0;
     for filename in filenames {
-        if config_edit.uploaded_replays.insert(filename.clone()) {
+        if let Some(pos) = config_edit
+            .uploaded_replays
+            .iter()
+            .position(|x| x == filename)
+        {
+            config_edit.uploaded_replays.remove(pos);
+            config_edit.uploaded_replays.push(filename.clone());
+        } else {
+            config_edit.uploaded_replays.push(filename.clone());
             added += 1;
         }
     }
-    if added > 0 {
-        while config_edit.uploaded_replays.len() > 500 {
-            if let Some(to_remove) = config_edit.uploaded_replays.iter().next().cloned() {
-                config_edit.uploaded_replays.remove(&to_remove);
-            } else {
-                break;
-            }
-        }
+    while config_edit.uploaded_replays.len() > 500 {
+        config_edit.uploaded_replays.remove(0);
+    }
+    if !filenames.is_empty() {
         state.save_config(config_edit);
     }
     added

@@ -71,14 +71,16 @@ pub struct Config {
     pub session_manual_position: Option<[f32; 2]>,
     pub layout_mode: bool,
     pub cached_local_player_identity: LocalPlayerIdentity,
+    pub lock_local_player: bool,
     pub ballchasing_enabled: bool,
     pub ballchasing_api_key: String,
     pub ballchasing_visibility: String,
     pub replays_folder: String,
-    pub uploaded_replays: std::collections::HashSet<String>,
+    pub uploaded_replays: Vec<String>,
     pub auto_gg: bool,
     pub auto_gg_sequence: String,
     pub auto_freeplay: bool,
+    pub auto_freeplay_sequence: String,
 }
 
 pub fn detect_rocket_league_path() -> Option<String> {
@@ -219,14 +221,16 @@ impl Default for Config {
             session_manual_position: None,
             layout_mode: false,
             cached_local_player_identity: LocalPlayerIdentity::default(),
+            lock_local_player: false,
             ballchasing_enabled: false,
             ballchasing_api_key: "".to_string(),
             ballchasing_visibility: "public".to_string(),
             replays_folder: detect_replays_path().unwrap_or_default(),
-            uploaded_replays: std::collections::HashSet::new(),
+            uploaded_replays: Vec::new(),
             auto_gg: false,
             auto_gg_sequence: "T,G,G,Enter".to_string(),
             auto_freeplay: false,
+            auto_freeplay_sequence: "Escape,Delay400,Down,Delay200,Return,Delay200,Down,Delay200,Return,Delay600,Return,Delay200,Return,Delay200,Return,Delay200,Return".to_string(),
         }
     }
 }
@@ -269,11 +273,17 @@ fn load_config_file(path: &PathBuf) -> Result<Config, String> {
 
 fn config_path() -> PathBuf {
     if std::env::var("RL_OVERLAY_TEST").is_ok() {
-        return std::env::temp_dir().join("rl_platform_overlay_config_test.toml");
+        return std::env::temp_dir().join(format!(
+            "rl_platform_overlay_config_test_{}.toml",
+            std::process::id()
+        ));
     }
     #[cfg(test)]
     {
-        std::env::temp_dir().join("rl_platform_overlay_config_test.toml")
+        std::env::temp_dir().join(format!(
+            "rl_platform_overlay_config_test_{}.toml",
+            std::process::id()
+        ))
     }
     #[cfg(not(test))]
     {
@@ -337,6 +347,7 @@ mod tests {
     fn update_local_player_identity_reports_first_known_identity() {
         let state = AppState::new();
         state
+            .game
             .local_player_identity
             .store(Arc::new(LocalPlayerIdentity::default()));
         let first = LocalPlayerIdentity {
@@ -353,6 +364,32 @@ mod tests {
         assert!(state.update_local_player_identity(first.clone()));
         assert!(!state.update_local_player_identity(first));
         assert!(!state.update_local_player_identity(renamed));
+    }
+
+    #[test]
+    fn update_local_player_identity_ignores_updates_when_locked() {
+        let state = AppState::new();
+        let mut config = state.system.config.load().as_ref().clone();
+        config.lock_local_player = true;
+        state.save_config(config);
+
+        state
+            .game
+            .local_player_identity
+            .store(Arc::new(LocalPlayerIdentity {
+                name: "LockedPlayer".to_string(),
+                primary_id: "Steam|1|0".to_string(),
+                platform: "Steam".to_string(),
+            }));
+
+        let new_identity = LocalPlayerIdentity {
+            name: "NewPlayer".to_string(),
+            primary_id: "Epic|2|0".to_string(),
+            platform: "Epic".to_string(),
+        };
+
+        assert!(!state.update_local_player_identity(new_identity));
+        assert_eq!(state.game.local_player_identity.load().name, "LockedPlayer");
     }
 
     #[test]
@@ -452,6 +489,7 @@ pub struct LocalPlayerIdentity {
 impl LocalPlayerIdentity {
     pub fn is_known(&self) -> bool {
         !self.name.trim().is_empty()
+            && self.name.to_lowercase() != "player"
             && !self.primary_id.trim().is_empty()
             && !self.platform.trim().is_empty()
             && self.platform != "Unknown"
@@ -499,36 +537,52 @@ pub struct HoopsFixerState {
 }
 
 pub struct MmrState {
-    pub mmr_client: Arc<wreq::Client>,
     pub xuid_gamertag_cache: Arc<std::sync::Mutex<HashMap<String, String>>>,
     pub debug_scrape_status: Arc<std::sync::Mutex<String>>,
     pub debug_tracker_logs: Arc<std::sync::Mutex<Vec<String>>>,
     pub local_mmr: ArcSwap<LocalMmrState>,
 }
 
-pub struct AppState {
-    pub debug_enabled: bool,
+pub struct AppFlags {
     pub is_visible: AtomicBool,
     pub is_settings_visible: AtomicBool,
     pub is_connected: AtomicBool,
     pub is_launched: AtomicBool,
+}
+
+pub struct HotkeyRecordingState {
     pub is_recording_kb: AtomicBool,
     pub is_recording_ctrl: AtomicBool,
     pub is_recording_settings: AtomicBool,
     pub is_recording_launch: AtomicBool,
     pub last_settings_hotkey_unix_ms: AtomicU64,
     pub last_launch_hotkey_unix_ms: AtomicU64,
+}
+
+pub struct GameLobbyState {
     pub local_player_name: ArcSwap<String>,
     pub local_player_identity: ArcSwap<LocalPlayerIdentity>,
     pub local_team: std::sync::atomic::AtomicU8,
     pub players: ArcSwap<HashMap<String, PlayerInfo>>,
+    pub session: ArcSwap<SessionState>,
+}
+
+pub struct SystemState {
     pub config: ArcSwap<Config>,
     pub config_status: ArcSwap<ConfigStatus>,
     pub version_check: ArcSwap<VersionCheck>,
     pub auto_update_status: ArcSwap<AutoUpdateStatus>,
     pub network_diagnostics: ArcSwap<NetworkDiagnostics>,
     pub stats_api_setup_result: ArcSwap<StatsApiSetupResult>,
-    pub session: ArcSwap<SessionState>,
+    pub http_client: Arc<wreq::Client>,
+}
+
+pub struct AppState {
+    pub debug_enabled: bool,
+    pub flags: AppFlags,
+    pub hotkeys: HotkeyRecordingState,
+    pub game: GameLobbyState,
+    pub system: SystemState,
 
     // Grouped Sub-states
     pub diagnostics: DiagnosticsState,
@@ -536,6 +590,8 @@ pub struct AppState {
     pub boost: BoostState,
     pub hoops_fixer: HoopsFixerState,
     pub mmr: MmrState,
+
+    pub config_write_mutex: std::sync::Mutex<()>,
 }
 
 impl AppState {
@@ -548,11 +604,13 @@ impl AppState {
         let (config, config_status) = Config::load();
         let cached_local_player_identity = config.cached_local_player_identity.clone();
 
-        let mmr_client = wreq::Client::builder()
-            .timeout(std::time::Duration::from_secs(7))
-            .emulation(wreq_util::Emulation::Chrome128)
-            .build()
-            .expect("Failed to build MMR HTTP client with Chrome emulation");
+        let http_client = Arc::new(
+            wreq::Client::builder()
+                .timeout(std::time::Duration::from_secs(15))
+                .emulation(wreq_util::Emulation::Chrome128)
+                .build()
+                .expect("Failed to build shared HTTP client"),
+        );
 
         let resource_tracker = Arc::new(crate::diagnostics::ResourceTracker::new());
         let resource_poller = Arc::new(std::sync::Mutex::new(
@@ -561,27 +619,36 @@ impl AppState {
 
         Arc::new(Self {
             debug_enabled,
-            is_visible: AtomicBool::new(false),
-            is_settings_visible: AtomicBool::new(true),
-            is_connected: AtomicBool::new(false),
-            is_launched: AtomicBool::new(false),
-            is_recording_kb: AtomicBool::new(false),
-            is_recording_ctrl: AtomicBool::new(false),
-            is_recording_settings: AtomicBool::new(false),
-            is_recording_launch: AtomicBool::new(false),
-            last_settings_hotkey_unix_ms: AtomicU64::new(0),
-            last_launch_hotkey_unix_ms: AtomicU64::new(0),
-            local_player_name: ArcSwap::from_pointee("".to_string()),
-            local_player_identity: ArcSwap::from_pointee(cached_local_player_identity),
-            local_team: std::sync::atomic::AtomicU8::new(NO_TEAM),
-            players: ArcSwap::from_pointee(HashMap::new()),
-            config: ArcSwap::from_pointee(config),
-            config_status: ArcSwap::from_pointee(config_status),
-            version_check: ArcSwap::from_pointee(VersionCheck::default()),
-            auto_update_status: ArcSwap::from_pointee(AutoUpdateStatus::default()),
-            network_diagnostics: ArcSwap::from_pointee(NetworkDiagnostics::default()),
-            stats_api_setup_result: ArcSwap::from_pointee(StatsApiSetupResult::default()),
-            session: ArcSwap::from_pointee(SessionState::default()),
+            flags: AppFlags {
+                is_visible: AtomicBool::new(false),
+                is_settings_visible: AtomicBool::new(true),
+                is_connected: AtomicBool::new(false),
+                is_launched: AtomicBool::new(false),
+            },
+            hotkeys: HotkeyRecordingState {
+                is_recording_kb: AtomicBool::new(false),
+                is_recording_ctrl: AtomicBool::new(false),
+                is_recording_settings: AtomicBool::new(false),
+                is_recording_launch: AtomicBool::new(false),
+                last_settings_hotkey_unix_ms: AtomicU64::new(0),
+                last_launch_hotkey_unix_ms: AtomicU64::new(0),
+            },
+            game: GameLobbyState {
+                local_player_name: ArcSwap::from_pointee("".to_string()),
+                local_player_identity: ArcSwap::from_pointee(cached_local_player_identity),
+                local_team: std::sync::atomic::AtomicU8::new(NO_TEAM),
+                players: ArcSwap::from_pointee(HashMap::new()),
+                session: ArcSwap::from_pointee(SessionState::default()),
+            },
+            system: SystemState {
+                config: ArcSwap::from_pointee(config),
+                config_status: ArcSwap::from_pointee(config_status),
+                version_check: ArcSwap::from_pointee(VersionCheck::default()),
+                auto_update_status: ArcSwap::from_pointee(AutoUpdateStatus::default()),
+                network_diagnostics: ArcSwap::from_pointee(NetworkDiagnostics::default()),
+                stats_api_setup_result: ArcSwap::from_pointee(StatsApiSetupResult::default()),
+                http_client,
+            },
             diagnostics: DiagnosticsState {
                 frame_tracker: Arc::new(crate::diagnostics::SharedFrameTracker::new(60)),
                 foreground_tracker: Arc::new(crate::diagnostics::ForegroundTracker::new()),
@@ -602,22 +669,27 @@ impl AppState {
                 hoops_fixer_logs: Arc::new(std::sync::Mutex::new(Vec::new())),
             },
             mmr: MmrState {
-                mmr_client: Arc::new(mmr_client),
                 xuid_gamertag_cache: Arc::new(std::sync::Mutex::new(HashMap::new())),
                 debug_scrape_status: Arc::new(std::sync::Mutex::new("Idle".to_string())),
                 debug_tracker_logs: Arc::new(std::sync::Mutex::new(Vec::new())),
                 local_mmr: ArcSwap::from_pointee(LocalMmrState::default()),
             },
+            config_write_mutex: std::sync::Mutex::new(()),
         })
     }
 
-    pub fn save_config(&self, config: Config) {
+    fn save_config_impl(&self, config: Config) {
         let mut status = ConfigStatus::new(config_path());
         if let Err(error) = config.save() {
             status.last_error = error;
         }
-        self.config.store(Arc::new(config));
-        self.config_status.store(Arc::new(status));
+        self.system.config.store(Arc::new(config));
+        self.system.config_status.store(Arc::new(status));
+    }
+
+    pub fn save_config(&self, config: Config) {
+        let _guard = self.config_write_mutex.lock().unwrap();
+        self.save_config_impl(config);
     }
 
     pub fn update_local_player_identity(&self, identity: LocalPlayerIdentity) -> bool {
@@ -625,7 +697,14 @@ impl AppState {
             return false;
         }
 
-        let current_identity = self.local_player_identity.load();
+        let _guard = self.config_write_mutex.lock().unwrap();
+
+        let config = self.system.config.load();
+        if config.lock_local_player {
+            return false;
+        }
+
+        let current_identity = self.game.local_player_identity.load();
         if current_identity.is_known()
             && current_identity.same_account(&identity)
             && current_identity.name == identity.name
@@ -634,15 +713,17 @@ impl AppState {
         }
         let first_known_identity = !current_identity.is_known();
 
-        self.local_player_identity.store(Arc::new(identity.clone()));
+        self.game
+            .local_player_identity
+            .store(Arc::new(identity.clone()));
 
-        let mut config = (**self.config.load()).clone();
+        let mut config = (**self.system.config.load()).clone();
         if !config.cached_local_player_identity.is_known()
             || !config.cached_local_player_identity.same_account(&identity)
             || config.cached_local_player_identity.name != identity.name
         {
             config.cached_local_player_identity = identity;
-            self.save_config(config);
+            self.save_config_impl(config);
         }
 
         first_known_identity

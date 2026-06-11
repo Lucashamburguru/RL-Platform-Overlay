@@ -1,6 +1,5 @@
 use crate::state::{AppState, Config};
 use crate::ui::common::{setting_row, settings_section, settings_two_column};
-use crate::ui::hotkeys::render_hotkey_settings_section;
 use crate::ui::lobby_overlay::{
     draw_lobby_panel, lobby_display_mode_label, lobby_theme_label, preview_lobby_players,
 };
@@ -9,7 +8,7 @@ use std::sync::Arc;
 
 pub(crate) fn render_overlay_settings_tab(
     ui: &mut egui::Ui,
-    ctx: &egui::Context,
+    _ctx: &egui::Context,
     state: &Arc<AppState>,
     config: &Config,
     config_edit: &mut Config,
@@ -24,6 +23,7 @@ pub(crate) fn render_overlay_settings_tab(
                         [ui.available_width(), 20.0],
                         egui::Slider::new(&mut config_edit.transparency, 0..=255),
                     )
+                    .on_hover_text("Adjust the transparency of the lobby overlay panel (0 = fully transparent, 255 = fully solid)")
                     .changed()
                 {
                     *changed = true;
@@ -37,11 +37,22 @@ pub(crate) fn render_overlay_settings_tab(
                         [ui.available_width(), 20.0],
                         egui::Slider::new(&mut config_edit.ui_scale, 0.5..=2.5),
                     )
+                    .on_hover_text(
+                        "Adjust the sizing scale of the lobby overlay HUD (0.5x to 2.5x)",
+                    )
                     .changed()
                 {
                     *changed = true;
                 }
             });
+
+            if config_edit.lobby_manual_position.is_some() {
+                left.add_space(8.0);
+                if left.button("Reset Lobby Overlay Position").clicked() {
+                    config_edit.lobby_manual_position = None;
+                    *changed = true;
+                }
+            }
 
             left.add_space(8.0);
             setting_row(left, "Resolution", |ui| {
@@ -174,6 +185,7 @@ pub(crate) fn render_overlay_settings_tab(
             setting_row(right, "GG Keys", |ui| {
                 if ui
                     .text_edit_singleline(&mut config_edit.auto_gg_sequence)
+                    .on_hover_text("Key sequence format: keys separated by commas (e.g. T,G,G,Enter). Supports delay tokens like Delay400 or Wait200.")
                     .changed()
                 {
                     *changed = true;
@@ -196,19 +208,18 @@ pub(crate) fn render_overlay_settings_tab(
     });
 
     ui.add_space(10.0);
-    render_hotkey_settings_section(ui, ctx, state, config_edit, changed);
-
-    ui.add_space(10.0);
     settings_section(ui, "Live Preview", |ui| {
         let preview = preview_lobby_players(state);
-        let session = state.session.load();
+        let session = state.game.session.load();
+        let local_identity = state.game.local_player_identity.load();
+        let local_mmr = state.mmr.local_mmr.load();
         draw_lobby_panel(
             ui,
             &preview,
             config_edit,
             true,
-            None,
-            None,
+            Some(&local_identity),
+            local_mmr.current.as_ref(),
             session.active_mode,
             Some(config_edit.ui_scale.min(1.4)),
         );

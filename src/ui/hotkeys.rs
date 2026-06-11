@@ -42,23 +42,32 @@ fn render_keyboard_hotkey_row(
     config_edit: &mut crate::state::Config,
 ) {
     setting_row(ui, "Lobby Overlay Key", |ui| {
-        if state.is_recording_kb.load(Ordering::SeqCst) {
+        if state.hotkeys.is_recording_kb.load(Ordering::SeqCst) {
             ui.colored_label(egui::Color32::YELLOW, "Listening...");
             if ui.button("Cancel").clicked() {
-                state.is_recording_kb.store(false, Ordering::SeqCst);
+                state.hotkeys.is_recording_kb.store(false, Ordering::SeqCst);
             }
             if let Some(name) = capture_egui_key(ctx) {
                 config_edit.hotkey_kb = name;
                 state.save_config(config_edit.clone());
-                state.is_recording_kb.store(false, Ordering::SeqCst);
+                state.hotkeys.is_recording_kb.store(false, Ordering::SeqCst);
             }
         } else {
             ui.label(format!("[ {} ]", format_key_name(&config_edit.hotkey_kb)));
             if ui.button("Record").clicked() {
-                state.is_recording_kb.store(true, Ordering::SeqCst);
-                state.is_recording_ctrl.store(false, Ordering::SeqCst);
-                state.is_recording_settings.store(false, Ordering::SeqCst);
-                state.is_recording_launch.store(false, Ordering::SeqCst);
+                state.hotkeys.is_recording_kb.store(true, Ordering::SeqCst);
+                state
+                    .hotkeys
+                    .is_recording_ctrl
+                    .store(false, Ordering::SeqCst);
+                state
+                    .hotkeys
+                    .is_recording_settings
+                    .store(false, Ordering::SeqCst);
+                state
+                    .hotkeys
+                    .is_recording_launch
+                    .store(false, Ordering::SeqCst);
             }
         }
     });
@@ -70,18 +79,30 @@ fn render_controller_hotkey_row(
     config_edit: &crate::state::Config,
 ) {
     setting_row(ui, "Lobby Overlay Controller", |ui| {
-        if state.is_recording_ctrl.load(Ordering::SeqCst) {
+        if state.hotkeys.is_recording_ctrl.load(Ordering::SeqCst) {
             ui.colored_label(egui::Color32::YELLOW, "Listening...");
             if ui.button("Cancel").clicked() {
-                state.is_recording_ctrl.store(false, Ordering::SeqCst);
+                state
+                    .hotkeys
+                    .is_recording_ctrl
+                    .store(false, Ordering::SeqCst);
             }
         } else {
             ui.label(format!("[ {} ]", config_edit.hotkey_ctrl));
             if ui.button("Record").clicked() {
-                state.is_recording_ctrl.store(true, Ordering::SeqCst);
-                state.is_recording_kb.store(false, Ordering::SeqCst);
-                state.is_recording_settings.store(false, Ordering::SeqCst);
-                state.is_recording_launch.store(false, Ordering::SeqCst);
+                state
+                    .hotkeys
+                    .is_recording_ctrl
+                    .store(true, Ordering::SeqCst);
+                state.hotkeys.is_recording_kb.store(false, Ordering::SeqCst);
+                state
+                    .hotkeys
+                    .is_recording_settings
+                    .store(false, Ordering::SeqCst);
+                state
+                    .hotkeys
+                    .is_recording_launch
+                    .store(false, Ordering::SeqCst);
             }
         }
     });
@@ -94,15 +115,21 @@ fn render_settings_hotkey_row(
     config_edit: &mut crate::state::Config,
 ) {
     setting_row(ui, "Settings Panel Key", |ui| {
-        if state.is_recording_settings.load(Ordering::SeqCst) {
+        if state.hotkeys.is_recording_settings.load(Ordering::SeqCst) {
             ui.colored_label(egui::Color32::YELLOW, "Listening...");
             if ui.button("Cancel").clicked() {
-                state.is_recording_settings.store(false, Ordering::SeqCst);
+                state
+                    .hotkeys
+                    .is_recording_settings
+                    .store(false, Ordering::SeqCst);
             }
             if let Some(name) = capture_egui_key(ctx) {
                 config_edit.hotkey_settings = name;
                 state.save_config(config_edit.clone());
-                state.is_recording_settings.store(false, Ordering::SeqCst);
+                state
+                    .hotkeys
+                    .is_recording_settings
+                    .store(false, Ordering::SeqCst);
             }
         } else {
             ui.label(format!(
@@ -110,10 +137,19 @@ fn render_settings_hotkey_row(
                 format_key_name(&config_edit.hotkey_settings)
             ));
             if ui.button("Record").clicked() {
-                state.is_recording_settings.store(true, Ordering::SeqCst);
-                state.is_recording_kb.store(false, Ordering::SeqCst);
-                state.is_recording_ctrl.store(false, Ordering::SeqCst);
-                state.is_recording_launch.store(false, Ordering::SeqCst);
+                state
+                    .hotkeys
+                    .is_recording_settings
+                    .store(true, Ordering::SeqCst);
+                state.hotkeys.is_recording_kb.store(false, Ordering::SeqCst);
+                state
+                    .hotkeys
+                    .is_recording_ctrl
+                    .store(false, Ordering::SeqCst);
+                state
+                    .hotkeys
+                    .is_recording_launch
+                    .store(false, Ordering::SeqCst);
             }
         }
     });
@@ -126,15 +162,21 @@ fn render_launch_hotkey_row(
     config_edit: &mut crate::state::Config,
 ) {
     setting_row(ui, "Launch / Stop Key", |ui| {
-        if state.is_recording_launch.load(Ordering::SeqCst) {
+        if state.hotkeys.is_recording_launch.load(Ordering::SeqCst) {
             ui.colored_label(egui::Color32::YELLOW, "Listening...");
             if ui.button("Cancel").clicked() {
-                state.is_recording_launch.store(false, Ordering::SeqCst);
+                state
+                    .hotkeys
+                    .is_recording_launch
+                    .store(false, Ordering::SeqCst);
             }
             if let Some(name) = capture_egui_key(ctx) {
                 config_edit.hotkey_launch = name;
                 state.save_config(config_edit.clone());
-                state.is_recording_launch.store(false, Ordering::SeqCst);
+                state
+                    .hotkeys
+                    .is_recording_launch
+                    .store(false, Ordering::SeqCst);
             }
         } else {
             ui.label(format!(
@@ -142,10 +184,19 @@ fn render_launch_hotkey_row(
                 format_key_name(&config_edit.hotkey_launch)
             ));
             if ui.button("Record").clicked() {
-                state.is_recording_launch.store(true, Ordering::SeqCst);
-                state.is_recording_kb.store(false, Ordering::SeqCst);
-                state.is_recording_ctrl.store(false, Ordering::SeqCst);
-                state.is_recording_settings.store(false, Ordering::SeqCst);
+                state
+                    .hotkeys
+                    .is_recording_launch
+                    .store(true, Ordering::SeqCst);
+                state.hotkeys.is_recording_kb.store(false, Ordering::SeqCst);
+                state
+                    .hotkeys
+                    .is_recording_ctrl
+                    .store(false, Ordering::SeqCst);
+                state
+                    .hotkeys
+                    .is_recording_settings
+                    .store(false, Ordering::SeqCst);
             }
         }
     });

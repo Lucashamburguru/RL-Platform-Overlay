@@ -18,9 +18,9 @@ pub(super) fn teammate_boost_display_label(display: TeammateBoostDisplay) -> &'s
 }
 
 pub(super) fn preview_teammates(state: &Arc<AppState>) -> Vec<PlayerInfo> {
-    let players = state.players.load();
-    let local_name = state.local_player_name.load().trim().to_lowercase();
-    let local_team = state.local_team.load(Ordering::SeqCst);
+    let players = state.game.players.load();
+    let local_name = state.game.local_player_name.load().trim().to_lowercase();
+    let local_team = state.game.local_team.load(Ordering::SeqCst);
     let mut teammates: Vec<_> = players
         .values()
         .filter(|p| {
@@ -58,15 +58,15 @@ pub(super) fn preview_teammates(state: &Arc<AppState>) -> Vec<PlayerInfo> {
 }
 
 pub(super) fn render_teammate_boost(ctx: &egui::Context, state: &Arc<AppState>) {
-    let players = state.players.load();
-    let local_name_raw = state.local_player_name.load();
+    let players = state.game.players.load();
+    let local_name_raw = state.game.local_player_name.load();
     let local_name = local_name_raw.trim().to_lowercase();
-    let config = state.config.load();
+    let config = state.system.config.load();
 
     // Find our team (preferring the stabilized local_team from state)
     // Do not guess if not found, because a bad fallback shows the wrong team.
     let my_team = {
-        let stored_team = state.local_team.load(Ordering::SeqCst);
+        let stored_team = state.game.local_team.load(Ordering::SeqCst);
         if stored_team != crate::state::NO_TEAM {
             Some(stored_team)
         } else {
@@ -150,7 +150,7 @@ pub(super) fn render_teammate_boost_position_preview(
     state: &Arc<AppState>,
     draggable: bool,
 ) {
-    let config = state.config.load();
+    let config = state.system.config.load();
     let teammates = preview_teammates(state);
     let screen_rect = ctx.input(|i| i.screen_rect());
     let scale = config.teammate_hud_scale;

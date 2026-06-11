@@ -434,7 +434,7 @@ pub fn start_apply_alpha_boost(
         set_boost_status(&state_clone, "Initializing Alpha Boost swap...");
         match apply_alpha_boost(&rocket_league_path).await {
             Ok(()) => {
-                let mut config = (**state_clone.config.load()).clone();
+                let mut config = (**state_clone.system.config.load()).clone();
                 config.alpha_boost_enabled = true;
                 state_clone.save_config(config);
                 set_boost_status(&state_clone, "Success: Alpha Boost applied!");
@@ -487,7 +487,7 @@ pub fn start_restore_standard_boost(
         set_boost_status(&state_clone, "Restoring Standard Boost...");
         match restore_standard_boost(&rocket_league_path) {
             Ok(()) => {
-                let mut config = (**state_clone.config.load()).clone();
+                let mut config = (**state_clone.system.config.load()).clone();
                 config.alpha_boost_enabled = false;
                 state_clone.save_config(config);
                 set_boost_status(&state_clone, "Success: Standard Boost restored!");

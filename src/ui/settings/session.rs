@@ -54,7 +54,7 @@ pub(crate) fn render_session_settings_tab(
                         );
                     });
                 if config_edit.session_overlay_display
-                    != state.config.load().session_overlay_display
+                    != state.system.config.load().session_overlay_display
                 {
                     *changed = true;
                 }
@@ -66,6 +66,9 @@ pub(crate) fn render_session_settings_tab(
                     .add_sized(
                         [ui.available_width(), 20.0],
                         egui::Slider::new(&mut config_edit.session_overlay_scale, 0.6..=2.5),
+                    )
+                    .on_hover_text(
+                        "Adjust the sizing scale of the session tracking HUD (0.6x to 2.5x)",
                     )
                     .changed()
                 {
@@ -80,6 +83,7 @@ pub(crate) fn render_session_settings_tab(
                         [ui.available_width(), 20.0],
                         egui::Slider::new(&mut config_edit.session_overlay_opacity, 40..=255),
                     )
+                    .on_hover_text("Adjust the opacity of the session panel background (40 to 255)")
                     .changed()
                 {
                     *changed = true;
@@ -118,9 +122,17 @@ pub(crate) fn render_session_settings_tab(
                     }
                 });
             });
+
+            if config_edit.session_manual_position.is_some() {
+                ui.add_space(8.0);
+                if ui.button("Reset Session HUD Position").clicked() {
+                    config_edit.session_manual_position = None;
+                    *changed = true;
+                }
+            }
         });
         settings_section(right, "Local MMR", |ui| {
-            render_local_mmr_panel(ui, state);
+            render_local_mmr_panel(ui, state, config_edit, changed);
         });
     });
 
@@ -129,7 +141,7 @@ pub(crate) fn render_session_settings_tab(
         let local_mmr = state.mmr.local_mmr.load();
         draw_session_panel(
             ui,
-            &state.session.load(),
+            &state.game.session.load(),
             &local_mmr,
             config_edit.session_overlay_scale.min(1.4),
             config_edit.session_overlay_display,

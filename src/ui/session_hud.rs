@@ -12,7 +12,7 @@ use super::layout::{
 };
 
 pub(super) fn render_session_overlay(ctx: &egui::Context, state: &Arc<AppState>) {
-    let config = state.config.load();
+    let config = state.system.config.load();
     let position = active_layout_drag_position(ctx, "session").or_else(|| {
         config
             .session_manual_position
@@ -32,7 +32,7 @@ pub(super) fn render_session_overlay(ctx: &egui::Context, state: &Arc<AppState>)
     let response = area.show(ctx, |ui| {
         draw_session_panel(
             ui,
-            &state.session.load(),
+            &state.game.session.load(),
             &state.mmr.local_mmr.load(),
             config.session_overlay_scale,
             config.session_overlay_display,

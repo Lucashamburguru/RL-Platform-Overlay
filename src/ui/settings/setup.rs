@@ -1,11 +1,12 @@
 use crate::state::{AppState, Config};
 use crate::ui::common::{StatusTone, debug_status_row, setting_row, settings_section, status_text};
+use crate::ui::hotkeys::render_hotkey_settings_section;
 use eframe::egui;
 use std::sync::Arc;
 
 pub(crate) fn render_setup_settings_tab(
     ui: &mut egui::Ui,
-    _ctx: &egui::Context,
+    ctx: &egui::Context,
     state: &Arc<AppState>,
     config_edit: &mut Config,
     changed: &mut bool,
@@ -24,14 +25,33 @@ pub(crate) fn render_setup_settings_tab(
                 {
                     *changed = true;
                 }
-                if ui.button("Auto-detect").clicked()
-                    && let Some(path) = crate::state::detect_rocket_league_path()
-                {
-                    config_edit.rocket_league_path = path;
-                    *changed = true;
+                let auto_detect_btn = ui.button("Auto-detect");
+                if auto_detect_btn.clicked() {
+                    if let Some(path) = crate::state::detect_rocket_league_path() {
+                        config_edit.rocket_league_path = path;
+                        *changed = true;
+                        ui.data_mut(|d| {
+                            d.insert_temp(ui.make_persistent_id("rl_path_autodetect_failed"), false)
+                        });
+                    } else {
+                        ui.data_mut(|d| {
+                            d.insert_temp(ui.make_persistent_id("rl_path_autodetect_failed"), true)
+                        });
+                    }
                 }
             });
         });
+
+        if ui.data(|d| {
+            d.get_temp::<bool>(ui.make_persistent_id("rl_path_autodetect_failed"))
+                .unwrap_or(false)
+        }) {
+            status_text(
+                ui,
+                StatusTone::Error,
+                "❌ Auto-detection failed. Could not find common installation folders. Please select your Rocket League folder manually.",
+            );
+        }
 
         let status = crate::setup::inspect_stats_api_setup(&config_edit.rocket_league_path);
         ui.add_space(8.0);
@@ -75,8 +95,8 @@ pub(crate) fn render_setup_settings_tab(
             .clicked()
         {
             match crate::setup::ensure_stats_api_setup(&config_edit.rocket_league_path) {
-                Ok(result) => state.stats_api_setup_result.store(Arc::new(result)),
-                Err(error) => state.stats_api_setup_result.store(Arc::new(
+                Ok(result) => state.system.stats_api_setup_result.store(Arc::new(result)),
+                Err(error) => state.system.stats_api_setup_result.store(Arc::new(
                     crate::setup::StatsApiSetupResult {
                         message: error,
                         ..Default::default()
@@ -85,7 +105,7 @@ pub(crate) fn render_setup_settings_tab(
             }
         }
 
-        let result = state.stats_api_setup_result.load();
+        let result = state.system.stats_api_setup_result.load();
         if !result.message.is_empty() {
             ui.add_space(6.0);
             let tone = if result.changed {
@@ -108,43 +128,5 @@ pub(crate) fn render_setup_settings_tab(
     });
 
     ui.add_space(10.0);
-    render_positioning_settings_section(ui, config_edit, changed);
-}
-
-pub(super) fn render_positioning_settings_section(
-    ui: &mut egui::Ui,
-    config_edit: &mut Config,
-    changed: &mut bool,
-) {
-    settings_section(ui, "Overlay Positioning", |ui| {
-        if ui
-            .checkbox(&mut config_edit.layout_mode, "Enable Drag Positioning")
-            .changed()
-        {
-            *changed = true;
-        }
-
-        if config_edit.layout_mode {
-            status_text(
-                ui,
-                StatusTone::Warning,
-                "Drag the visible panels into place. Drag positioning will automatically turn off when settings are closed to restore game click-through.",
-            );
-        }
-
-        ui.horizontal_wrapped(|ui| {
-            if ui.button("Reset Lobby").clicked() {
-                config_edit.lobby_manual_position = None;
-                *changed = true;
-            }
-            if ui.button("Reset Boost").clicked() {
-                config_edit.teammate_boost_manual_position = None;
-                *changed = true;
-            }
-            if ui.button("Reset Session").clicked() {
-                config_edit.session_manual_position = None;
-                *changed = true;
-            }
-        });
-    });
+    render_hotkey_settings_section(ui, ctx, state, config_edit, changed);
 }

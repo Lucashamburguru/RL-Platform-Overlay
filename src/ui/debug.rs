@@ -22,7 +22,7 @@ pub(super) fn render_debug_settings_tab(
         debug_status_row(
             ui,
             "Connection",
-            if state.is_connected.load(Ordering::SeqCst) {
+            if state.flags.is_connected.load(Ordering::SeqCst) {
                 "Connected"
             } else {
                 "Disconnected"
@@ -40,9 +40,9 @@ pub(super) fn render_debug_settings_tab(
             format!("Not detected ({rl_process_detection_detail})")
         };
         debug_status_row(ui, "Rocket League Process", &process_status);
-        let local_name = state.local_player_name.load();
+        let local_name = state.game.local_player_name.load();
         debug_status_row(ui, "Local Player", local_name.as_str());
-        let local_team = state.local_team.load(Ordering::SeqCst);
+        let local_team = state.game.local_team.load(Ordering::SeqCst);
         let team_text = if local_team == crate::state::NO_TEAM {
             "Unknown".to_string()
         } else {
@@ -50,7 +50,7 @@ pub(super) fn render_debug_settings_tab(
         };
         debug_status_row(ui, "Local Team", &team_text);
 
-        let players = state.players.load();
+        let players = state.game.players.load();
         debug_status_row(ui, "Players", &players.len().to_string());
         debug_status_row(
             ui,
@@ -60,14 +60,17 @@ pub(super) fn render_debug_settings_tab(
         if ui.button("Clear Hotkey Log").clicked() {
             let path = crate::input::hotkey_debug_log_path();
             match std::fs::write(&path, "") {
-                Ok(()) => crate::input::append_hotkey_debug_log("hotkey_log_cleared"),
-                Err(error) => crate::input::append_hotkey_debug_log(format!(
-                    "hotkey_log_clear_failed error={error}"
-                )),
+                Ok(()) => {
+                    crate::input::append_hotkey_debug_log(state.debug_enabled, "hotkey_log_cleared")
+                }
+                Err(error) => crate::input::append_hotkey_debug_log(
+                    state.debug_enabled,
+                    format!("hotkey_log_clear_failed error={error}"),
+                ),
             }
         }
 
-        let diagnostics = state.network_diagnostics.load();
+        let diagnostics = state.system.network_diagnostics.load();
         debug_status_row(ui, "Transport", diagnostics.transport.label());
         debug_status_row(ui, "Last Event", diagnostics.last_event.as_str());
         debug_status_row(
@@ -91,7 +94,7 @@ pub(super) fn render_debug_settings_tab(
         }
 
         ui.separator();
-        let version_check = state.version_check.load();
+        let version_check = state.system.version_check.load();
         debug_status_row(ui, "Current Version", env!("CARGO_PKG_VERSION"));
         let version_status = if !version_check.checked {
             "Checking...".to_string()
@@ -104,7 +107,7 @@ pub(super) fn render_debug_settings_tab(
         };
         debug_status_row(ui, "Version Check", &version_status);
 
-        let config_status = state.config_status.load();
+        let config_status = state.system.config_status.load();
         debug_status_row(ui, "Config Path", &config_status.path);
         debug_status_row(
             ui,
@@ -414,7 +417,7 @@ fn render_performance_diagnostics(ui: &mut egui::Ui, state: &Arc<AppState>) {
                     if let Ok(mut status) = state.diagnostics.alt_tab_diagnostics_status.lock() {
                         *status = message.clone();
                     }
-                    crate::input::append_hotkey_debug_log(format!(
+                    crate::input::append_hotkey_debug_log(state.debug_enabled, format!(
                         "alt_tab_diagnostics_saved path={}",
                         path.display()
                     ));
@@ -423,7 +426,7 @@ fn render_performance_diagnostics(ui: &mut egui::Ui, state: &Arc<AppState>) {
                     if let Ok(mut status) = state.diagnostics.alt_tab_diagnostics_status.lock() {
                         *status = format!("Error: {error}");
                     }
-                    crate::input::append_hotkey_debug_log(format!(
+                    crate::input::append_hotkey_debug_log(state.debug_enabled, format!(
                         "alt_tab_diagnostics_save_failed error={error}"
                     ));
                 }
@@ -494,7 +497,7 @@ fn run_tracker_scrape_debug(state: Arc<AppState>, platform: String, player_name_
             player_id: player_name_or_id.clone(),
         };
 
-        let result = crate::mmr::fetch_tracker_snapshot(&state.mmr.mmr_client, &player).await;
+        let result = crate::mmr::fetch_tracker_snapshot(&state.system.http_client, &player).await;
 
         let status_msg = match result {
             Ok(snapshot) => {

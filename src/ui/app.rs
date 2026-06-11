@@ -15,6 +15,15 @@ use super::settings::{
     render_setup_settings_tab, render_update_notice,
 };
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConfirmAction {
+    ResetConfig,
+    ClearUploadCache,
+    AlphaBoostApply,
+    AlphaBoostRestore,
+    DeleteBackups,
+}
+
 pub struct MainApp {
     state: Arc<AppState>,
     settings_tab: SettingsTab,
@@ -28,6 +37,8 @@ pub struct MainApp {
     hwnd: Option<isize>,
     rocket_league_process_watcher: crate::assets::RocketLeagueProcessWatcher,
     launched_by_layout_mode: bool,
+    confirm_modal: Option<ConfirmAction>,
+    tos_accepted: bool,
 }
 
 impl MainApp {
@@ -45,6 +56,8 @@ impl MainApp {
             hwnd,
             rocket_league_process_watcher: crate::assets::RocketLeagueProcessWatcher::new(),
             launched_by_layout_mode: false,
+            confirm_modal: None,
+            tos_accepted: false,
         }
     }
 
@@ -73,7 +86,7 @@ pub(super) enum SettingsTab {
 
 impl eframe::App for MainApp {
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
-        let is_launched = self.state.is_launched.load(Ordering::SeqCst);
+        let is_launched = self.state.flags.is_launched.load(Ordering::SeqCst);
         if is_launched {
             [0.0, 0.0, 0.0, 0.0]
         } else {
@@ -82,28 +95,36 @@ impl eframe::App for MainApp {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        let is_launched = self.state.is_launched.load(Ordering::SeqCst);
-        let is_recording_any = self.state.is_recording_kb.load(Ordering::SeqCst)
-            || self.state.is_recording_ctrl.load(Ordering::SeqCst)
-            || self.state.is_recording_settings.load(Ordering::SeqCst)
-            || self.state.is_recording_launch.load(Ordering::SeqCst);
+        let is_launched = self.state.flags.is_launched.load(Ordering::SeqCst);
+        let is_recording_any = self.state.hotkeys.is_recording_kb.load(Ordering::SeqCst)
+            || self.state.hotkeys.is_recording_ctrl.load(Ordering::SeqCst)
+            || self
+                .state
+                .hotkeys
+                .is_recording_settings
+                .load(Ordering::SeqCst)
+            || self
+                .state
+                .hotkeys
+                .is_recording_launch
+                .load(Ordering::SeqCst);
         let show_settings =
-            self.state.is_settings_visible.load(Ordering::SeqCst) || is_recording_any;
+            self.state.flags.is_settings_visible.load(Ordering::SeqCst) || is_recording_any;
 
         // Auto-disable drag positioning when settings are closed or overlay is stopped to ensure click-through is restored
-        let mut config = self.state.config.load();
+        let mut config = self.state.system.config.load();
         if (!show_settings || !is_launched) && config.layout_mode {
             let mut config_edit = (**config).clone();
             config_edit.layout_mode = false;
             self.state.save_config(config_edit);
-            config = self.state.config.load();
+            config = self.state.system.config.load();
             if self.launched_by_layout_mode {
-                self.state.is_launched.store(false, Ordering::SeqCst);
+                self.state.flags.is_launched.store(false, Ordering::SeqCst);
                 self.launched_by_layout_mode = false;
             }
         }
 
-        let lobby_hotkey_visible = self.state.is_visible.load(Ordering::SeqCst);
+        let lobby_hotkey_visible = self.state.flags.is_visible.load(Ordering::SeqCst);
         let show_hud = is_launched && (lobby_hotkey_visible || config.layout_mode);
         let show_session_overlay = is_launched
             && config.session_overlay_enabled
@@ -207,13 +228,16 @@ impl eframe::App for MainApp {
                     }
 
                     if self.last_logged_show_settings != Some(show_settings) {
-                        crate::input::append_hotkey_debug_log(format!(
-                            "ui_show_settings visible={show_settings} launched={is_launched} recording_kb={} recording_ctrl={} recording_settings={} recording_launch={}",
-                            self.state.is_recording_kb.load(Ordering::SeqCst),
-                            self.state.is_recording_ctrl.load(Ordering::SeqCst),
-                            self.state.is_recording_settings.load(Ordering::SeqCst),
-                            self.state.is_recording_launch.load(Ordering::SeqCst)
-                        ));
+                        crate::input::append_hotkey_debug_log(
+                            self.state.debug_enabled,
+                            format!(
+                                "ui_show_settings visible={show_settings} launched={is_launched} recording_kb={} recording_ctrl={} recording_settings={} recording_launch={}",
+                                self.state.hotkeys.is_recording_kb.load(Ordering::SeqCst),
+                                self.state.hotkeys.is_recording_ctrl.load(Ordering::SeqCst),
+                                self.state.hotkeys.is_recording_settings.load(Ordering::SeqCst),
+                                self.state.hotkeys.is_recording_launch.load(Ordering::SeqCst)
+                            ),
+                        );
                         self.last_logged_show_settings = Some(show_settings);
                     }
 
@@ -249,9 +273,10 @@ impl eframe::App for MainApp {
                                     let btn = ui.add(egui::Button::new("⚙ Settings").frame(true));
                                     if btn.clicked() {
                                         crate::input::append_hotkey_debug_log(
+                                            self.state.debug_enabled,
                                             "gear_settings_button_clicked visible=true",
                                         );
-                                        self.state.is_settings_visible.store(true, Ordering::SeqCst);
+                                        self.state.flags.is_settings_visible.store(true, Ordering::SeqCst);
                                     }
                                 });
                         }
@@ -268,9 +293,12 @@ impl eframe::App for MainApp {
                                     && let Some(name) = egui_to_rdev_key(*key)
                                 {
                                     if *pressed && name == settings_hotkey {
-                                        crate::input::append_hotkey_debug_log(format!(
-                                            "egui_keypress key={name} settings_match=true"
-                                        ));
+                                        crate::input::append_hotkey_debug_log(
+                                            self.state.debug_enabled,
+                                            format!(
+                                                "egui_keypress key={name} settings_match=true"
+                                            ),
+                                        );
                                         crate::input::toggle_settings_hotkey(&self.state, "egui");
                                     }
 
@@ -278,17 +306,18 @@ impl eframe::App for MainApp {
                                         crate::input::toggle_launch_hotkey(&self.state, "egui");
                                     }
 
-                                    if show_settings && name == hud_hotkey {
+                                    if *pressed && name == hud_hotkey {
                                         if hotkey_toggle {
                                             if *pressed {
                                                 let curr =
-                                                    self.state.is_visible.load(Ordering::SeqCst);
+                                                    self.state.flags.is_visible.load(Ordering::SeqCst);
                                                 self.state
+                                                    .flags
                                                     .is_visible
                                                     .store(!curr, Ordering::SeqCst);
                                             }
                                         } else {
-                                            self.state.is_visible.store(*pressed, Ordering::SeqCst);
+                                            self.state.flags.is_visible.store(*pressed, Ordering::SeqCst);
                                         }
                                     }
                                 }
@@ -314,9 +343,11 @@ impl eframe::App for MainApp {
                             });
                         if !settings_open {
                             crate::input::append_hotkey_debug_log(
+                                self.state.debug_enabled,
                                 "settings_window_close_clicked visible=false",
                             );
                             self.state
+                                .flags
                                 .is_settings_visible
                                 .store(false, Ordering::SeqCst);
                         }
@@ -438,15 +469,19 @@ impl eframe::App for MainApp {
                                 .button(egui::RichText::new("Open Settings").heading())
                                 .clicked()
                             {
-                                self.state.is_settings_visible.store(true, Ordering::SeqCst);
+                                self.state
+                                    .flags
+                                    .is_settings_visible
+                                    .store(true, Ordering::SeqCst);
                             }
                             ui.add_space(10.0);
                             if ui
                                 .button(egui::RichText::new("Launch Overlay").heading())
                                 .clicked()
                             {
-                                self.state.is_launched.store(true, Ordering::SeqCst);
+                                self.state.flags.is_launched.store(true, Ordering::SeqCst);
                                 self.state
+                                    .flags
                                     .is_settings_visible
                                     .store(false, Ordering::SeqCst);
                             }
@@ -472,6 +507,97 @@ impl eframe::App for MainApp {
                         }
                     }
                 });
+            }
+        }
+
+        if let Some(action) = self.confirm_modal {
+            let mut open = true;
+            let mut close_modal = false;
+            let mut proceed = false;
+
+            egui::Window::new("Confirm Action")
+                .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+                .collapsible(false)
+                .resizable(false)
+                .movable(false)
+                .open(&mut open)
+                .show(ctx, |ui| {
+                    ui.spacing_mut().item_spacing.y = 10.0;
+                    match action {
+                        ConfirmAction::ResetConfig => {
+                            ui.label("Are you sure you want to reset all settings to default?");
+                            ui.label("This will revert your customized hotkeys, HUD scales, opacity, and other settings.");
+                        }
+                        ConfirmAction::ClearUploadCache => {
+                            ui.label("Are you sure you want to clear your uploaded replays cache?");
+                            ui.label("This will cause the auto-uploader to re-check and potentially re-upload local replays.");
+                        }
+                        ConfirmAction::AlphaBoostApply => {
+                            ui.heading("⚠️ Terms of Service Acknowledgment");
+                            ui.label("Applying Alpha Boost modifications edits local game files.");
+                            ui.label("Under Psyonix / Rocket League Terms of Service (ToS), modifying game files or cosmetics can technically be considered a violation and carries a risk of account suspension.");
+                            ui.add_space(4.0);
+                            ui.checkbox(&mut self.tos_accepted, "I read, understand, and accept the risks associated with this action.");
+                        }
+                        ConfirmAction::AlphaBoostRestore => {
+                            ui.label("Are you sure you want to restore original Rocket League boost files?");
+                            ui.label("This will revert any local file modifications made by Alpha Boost.");
+                        }
+                        ConfirmAction::DeleteBackups => {
+                            ui.label("Are you sure you want to permanently delete all hoops replay backup (.replay.bak) files?");
+                            ui.colored_label(egui::Color32::from_rgb(230, 80, 80), "⚠️ This action is irreversible!");
+                        }
+                    }
+
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        let confirm_enabled = match action {
+                            ConfirmAction::AlphaBoostApply => self.tos_accepted,
+                            _ => true,
+                        };
+
+                        if ui.add_enabled(confirm_enabled, egui::Button::new("Yes, Proceed")).clicked() {
+                            proceed = true;
+                            close_modal = true;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            close_modal = true;
+                        }
+                    });
+                });
+
+            if !open || close_modal {
+                self.confirm_modal = None;
+                self.tos_accepted = false;
+            }
+
+            if proceed {
+                match action {
+                    ConfirmAction::ResetConfig => {
+                        let default_config = crate::state::Config::default();
+                        self.state.save_config(default_config);
+                    }
+                    ConfirmAction::ClearUploadCache => {
+                        let config = self.state.system.config.load();
+                        let mut config_edit = (**config).clone();
+                        config_edit.uploaded_replays.clear();
+                        self.state.save_config(config_edit);
+                        if let Ok(mut status) = self.state.replays.ballchasing_status.lock() {
+                            *status = "Upload cache cleared.".to_string();
+                        }
+                    }
+                    ConfirmAction::AlphaBoostApply => {
+                        let rl_path = self.state.system.config.load().rocket_league_path.clone();
+                        crate::assets::start_apply_alpha_boost(self.state.clone(), rl_path);
+                    }
+                    ConfirmAction::AlphaBoostRestore => {
+                        let rl_path = self.state.system.config.load().rocket_league_path.clone();
+                        crate::assets::start_restore_standard_boost(self.state.clone(), rl_path);
+                    }
+                    ConfirmAction::DeleteBackups => {
+                        crate::hoops_fixer::start_delete_backups_task(self.state.clone());
+                    }
+                }
             }
         }
 
@@ -638,7 +764,7 @@ impl MainApp {
     ) {
         ui.add_space(5.0);
 
-        let config = self.state.config.load();
+        let config = self.state.system.config.load();
         let mut config_edit = (**config).clone();
         let mut changed = false;
         if !self.state.debug_enabled && self.settings_tab == SettingsTab::Debug {
@@ -678,10 +804,15 @@ impl MainApp {
                     &mut config_edit,
                     &mut changed,
                     self.is_rl_running,
+                    &mut self.confirm_modal,
                 ),
-                SettingsTab::Replays => {
-                    render_replays_settings_tab(ui, &self.state, &mut config_edit, &mut changed)
-                }
+                SettingsTab::Replays => render_replays_settings_tab(
+                    ui,
+                    &self.state,
+                    &mut config_edit,
+                    &mut changed,
+                    &mut self.confirm_modal,
+                ),
                 SettingsTab::Debug => render_debug_settings_tab(
                     ui,
                     &self.state,
@@ -701,13 +832,14 @@ impl MainApp {
             is_launched,
             &mut config_edit,
             &mut changed,
+            &mut self.confirm_modal,
         );
 
         if changed {
             // Auto-enable launch when drag positioning is turned on
             if config_edit.layout_mode && !config.layout_mode {
                 if !is_launched {
-                    self.state.is_launched.store(true, Ordering::SeqCst);
+                    self.state.flags.is_launched.store(true, Ordering::SeqCst);
                     self.launched_by_layout_mode = true;
                 }
             }
@@ -717,7 +849,7 @@ impl MainApp {
                 && is_launched
                 && self.launched_by_layout_mode
             {
-                self.state.is_launched.store(false, Ordering::SeqCst);
+                self.state.flags.is_launched.store(false, Ordering::SeqCst);
                 self.launched_by_layout_mode = false;
             }
             self.state.save_config(config_edit);

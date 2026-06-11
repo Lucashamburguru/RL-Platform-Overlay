@@ -12,17 +12,17 @@ use super::layout::{
 };
 
 pub(super) fn preview_lobby_players(state: &Arc<AppState>) -> Vec<PlayerInfo> {
-    let players = state.players.load();
+    let players = state.game.players.load();
     let mut lobby_players: Vec<PlayerInfo> = players.values().cloned().collect();
 
     if lobby_players.is_empty() {
-        let local_identity = state.local_player_identity.load();
+        let local_identity = state.game.local_player_identity.load();
         let local_mmr = state.mmr.local_mmr.load();
-        let session = state.session.load();
+        let session = state.game.session.load();
         let local_team = session
             .local_team
             .or_else(|| {
-                let team = state.local_team.load(Ordering::SeqCst);
+                let team = state.game.local_team.load(Ordering::SeqCst);
                 (team != crate::state::NO_TEAM).then_some(team)
             })
             .unwrap_or(0);
@@ -136,8 +136,8 @@ pub(super) fn lobby_display_mode_label(mode: crate::state::LobbyDisplayMode) -> 
 }
 
 pub(super) fn render_overlay(ctx: &egui::Context, state: &Arc<AppState>) {
-    let config = state.config.load();
-    let players = state.players.load();
+    let config = state.system.config.load();
+    let players = state.game.players.load();
 
     let area = egui::Area::new("overlay_area".into()).order(egui::Order::Foreground);
     let area = if let Some(position) = active_layout_drag_position(ctx, "lobby") {
@@ -158,14 +158,14 @@ pub(super) fn render_overlay(ctx: &egui::Context, state: &Arc<AppState>) {
         } else {
             players.values().cloned().collect()
         };
-        let local_identity = state.local_player_identity.load();
+        let local_identity = state.game.local_player_identity.load();
         let local_mmr = state.mmr.local_mmr.load();
-        let session = state.session.load();
+        let session = state.game.session.load();
         draw_lobby_panel(
             ui,
             &players_vec,
             &config,
-            state.is_connected.load(Ordering::SeqCst),
+            state.flags.is_connected.load(Ordering::SeqCst),
             Some(&local_identity),
             local_mmr.current.as_ref(),
             session.active_mode,
@@ -999,9 +999,9 @@ mod tests {
     #[test]
     fn preview_uses_session_local_team() {
         let state = AppState::new();
-        let mut session = (**state.session.load()).clone();
+        let mut session = (**state.game.session.load()).clone();
         session.local_team = Some(1);
-        state.session.store(Arc::new(session));
+        state.game.session.store(Arc::new(session));
 
         let preview = preview_lobby_players(&state);
         let local = preview.iter().find(|player| player.is_local).unwrap();

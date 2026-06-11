@@ -14,6 +14,7 @@ pub(crate) fn render_boost_settings_tab(
     config_edit: &mut Config,
     changed: &mut bool,
     is_rl_running: bool,
+    confirm_modal: &mut Option<crate::ui::app::ConfirmAction>,
 ) {
     settings_section(ui, "Teammate Boost HUD", |ui| {
         if ui
@@ -54,7 +55,9 @@ pub(crate) fn render_boost_settings_tab(
                         "Numbers",
                     );
                 });
-            if config_edit.teammate_boost_display != state.config.load().teammate_boost_display {
+            if config_edit.teammate_boost_display
+                != state.system.config.load().teammate_boost_display
+            {
                 *changed = true;
             }
         });
@@ -66,11 +69,20 @@ pub(crate) fn render_boost_settings_tab(
                     [ui.available_width(), 20.0],
                     egui::Slider::new(&mut config_edit.teammate_hud_scale, 0.5..=2.5),
                 )
+                .on_hover_text("Adjust the sizing scale of the teammate boost HUD (0.5x to 2.5x)")
                 .changed()
             {
                 *changed = true;
             }
         });
+
+        if config_edit.teammate_boost_manual_position.is_some() {
+            ui.add_space(8.0);
+            if ui.button("Reset Boost HUD Position").clicked() {
+                config_edit.teammate_boost_manual_position = None;
+                *changed = true;
+            }
+        }
     });
 
     ui.add_space(10.0);
@@ -91,31 +103,18 @@ pub(crate) fn render_boost_settings_tab(
 
     ui.add_space(12.0);
     settings_section(ui, "Alpha Boost (Gold Rush) Swap", |ui| {
-        // 1. Rocket League Folder Path Input
+        // 1. Rocket League Folder Path (Read-only)
         setting_row(ui, "Rocket League Folder", |ui| {
-            ui.horizontal(|ui| {
-                let input_width = (ui.available_width() - 96.0).max(160.0);
-                let path_edit = ui.add_sized(
-                    [input_width, 22.0],
-                    egui::TextEdit::singleline(&mut config_edit.rocket_league_path),
-                );
-                if path_edit.changed() {
-                    *changed = true;
-                }
-                if ui.button("Auto-detect").clicked()
-                    && let Some(detected) = crate::state::detect_rocket_league_path()
-                {
-                    config_edit.rocket_league_path = detected;
-                    *changed = true;
-                    let mut status = state
-                        .boost
-                        .boost_swap_status
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner());
-                    *status = "Idle".to_string();
-                }
-            });
+            ui.label(
+                egui::RichText::new(&config_edit.rocket_league_path)
+                    .monospace()
+                    .color(egui::Color32::from_gray(140)),
+            );
         });
+        ui.add_space(2.0);
+        ui.label(helper_text(
+            "This folder path is configured in the Setup tab.",
+        ));
 
         // Path validation feedback
         let path_valid = if config_edit.rocket_league_path.trim().is_empty() {
@@ -204,26 +203,20 @@ pub(crate) fn render_boost_settings_tab(
                     .boost_swap_status
                     .lock()
                     .unwrap_or_else(|e| e.into_inner());
-                *status = "Error: Configure your Rocket League path first.".to_string();
+                *status = "Error: Configure your Rocket League path first in Setup.".to_string();
             } else if path_valid != Some(true) {
                 let mut status = state
                     .boost
                     .boost_swap_status
                     .lock()
                     .unwrap_or_else(|e| e.into_inner());
-                *status = "Error: Invalid Rocket League directory. Check the path and try again."
+                *status = "Error: Invalid Rocket League directory. Check the path in Setup and try again."
                     .to_string();
             } else {
                 if enabled {
-                    crate::assets::start_apply_alpha_boost(
-                        state.clone(),
-                        config_edit.rocket_league_path.clone(),
-                    );
+                    *confirm_modal = Some(crate::ui::app::ConfirmAction::AlphaBoostApply);
                 } else {
-                    crate::assets::start_restore_standard_boost(
-                        state.clone(),
-                        config_edit.rocket_league_path.clone(),
-                    );
+                    *confirm_modal = Some(crate::ui::app::ConfirmAction::AlphaBoostRestore);
                 }
             }
         }
@@ -249,20 +242,17 @@ pub(crate) fn render_boost_settings_tab(
                     .boost_swap_status
                     .lock()
                     .unwrap_or_else(|e| e.into_inner());
-                *status = "Error: Configure your Rocket League path first.".to_string();
+                *status = "Error: Configure your Rocket League path first in Setup.".to_string();
             } else if path_valid != Some(true) {
                 let mut status = state
                     .boost
                     .boost_swap_status
                     .lock()
                     .unwrap_or_else(|e| e.into_inner());
-                *status = "Error: Invalid Rocket League directory. Check the path and try again."
+                *status = "Error: Invalid Rocket League directory. Check the path in Setup and try again."
                     .to_string();
             } else {
-                crate::assets::start_restore_standard_boost(
-                    state.clone(),
-                    config_edit.rocket_league_path.clone(),
-                );
+                *confirm_modal = Some(crate::ui::app::ConfirmAction::AlphaBoostRestore);
             }
         }
 
