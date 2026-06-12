@@ -94,20 +94,80 @@ pub(crate) fn render_setup_settings_tab(
         }
 
         ui.add_space(8.0);
-        if ui
-            .add_sized([140.0, 24.0], egui::Button::new("Enable Stats API"))
-            .clicked()
-        {
-            match crate::setup::ensure_stats_api_setup(&config_edit.rocket_league_path) {
-                Ok(result) => state.system.stats_api_setup_result.store(Arc::new(result)),
-                Err(error) => state.system.stats_api_setup_result.store(Arc::new(
-                    crate::setup::StatsApiSetupResult {
-                        message: error,
-                        ..Default::default()
-                    },
-                )),
+        ui.label(helper_text(
+            "Choose the periodic UpdateState rate. Lower rates reduce overhead; 30 Hz is best for the smoothest teammate boost.",
+        ));
+        ui.horizontal_wrapped(|ui| {
+            for rate in crate::setup::PACKET_SEND_RATE_OPTIONS {
+                let label = match rate {
+                    0 => "Turn Off",
+                    5 => "5 Hz Minimal",
+                    15 => "15 Hz Responsive",
+                    30 => "30 Hz Smooth",
+                    _ => "Custom",
+                };
+                let selected = status.packet_send_rate == Some(rate);
+                if ui
+                    .selectable_label(selected, label)
+                    .on_hover_text("Writes this PacketSendRate to DefaultStatsAPI.ini.")
+                    .clicked()
+                {
+                    apply_stats_api_setup_rate(state, &config_edit.rocket_league_path, rate);
+                }
             }
-        }
+        });
+
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.label("Enter own (Hz):");
+            let mut custom_rate_str = ui.data_mut(|d| {
+                d.get_temp::<String>(ui.make_persistent_id("custom_rate_input"))
+                    .unwrap_or_else(|| {
+                        if let Some(r) = status.packet_send_rate {
+                            if r != 0 && r != 5 && r != 15 && r != 30 {
+                                return r.to_string();
+                            }
+                        }
+                        "60".to_string()
+                    })
+            });
+
+            let response = ui.add(
+                egui::TextEdit::singleline(&mut custom_rate_str)
+                    .desired_width(40.0)
+            );
+            if response.changed() {
+                ui.data_mut(|d| {
+                    d.insert_temp(ui.make_persistent_id("custom_rate_input"), custom_rate_str.clone())
+                });
+            }
+
+            let is_custom_active = status.packet_send_rate.is_some_and(|r| {
+                r != 0 && r != 5 && r != 15 && r != 30
+            });
+
+            if ui
+                .button("Apply")
+                .on_hover_text("Writes your custom PacketSendRate to DefaultStatsAPI.ini.")
+                .clicked()
+            {
+                if let Ok(rate) = custom_rate_str.trim().parse::<u16>() {
+                    apply_stats_api_setup_rate(state, &config_edit.rocket_league_path, rate);
+                } else {
+                    state
+                        .system
+                        .stats_api_setup_result
+                        .store(Arc::new(crate::setup::StatsApiSetupResult {
+                            message: "Please enter a valid number between 0 and 120.".to_string(),
+                            ..Default::default()
+                        }));
+                }
+            }
+
+            if is_custom_active {
+                ui.label(egui::RichText::new("Active").color(egui::Color32::from_rgb(34, 197, 94)));
+            }
+        });
 
         let result = state.system.stats_api_setup_result.load();
         if !result.message.is_empty() {
@@ -143,6 +203,21 @@ pub(crate) fn render_setup_settings_tab(
 
     ui.add_space(10.0);
     render_hotkey_settings_section(ui, ctx, state, config_edit, changed);
+}
+
+fn apply_stats_api_setup_rate(state: &Arc<AppState>, rocket_league_path: &str, rate: u16) {
+    match crate::setup::ensure_stats_api_setup_with_rate(rocket_league_path, rate) {
+        Ok(result) => state.system.stats_api_setup_result.store(Arc::new(result)),
+        Err(error) => {
+            state
+                .system
+                .stats_api_setup_result
+                .store(Arc::new(crate::setup::StatsApiSetupResult {
+                    message: error,
+                    ..Default::default()
+                }))
+        }
+    }
 }
 
 fn render_support_diagnostics_section(

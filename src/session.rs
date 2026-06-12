@@ -1,4 +1,7 @@
 use crate::json_utils::{bool_field, decode_json_string_value, number_field, string_field};
+use crate::stats_api_parser::{
+    ResultSignature, result_from_score, result_from_winner, result_signature, team_scores,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -115,15 +118,6 @@ impl SessionModeRecord {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct RecordedResultFingerprint {
-    mode: SessionMode,
-    local_team: u8,
-    blue_score: u32,
-    orange_score: u32,
-    result: MatchResult,
-}
-
 #[derive(Clone, Debug, Default)]
 pub struct SessionState {
     pub wins: u32,
@@ -142,7 +136,7 @@ pub struct SessionState {
     pub round_started: bool,
     result_recorded_for_match: bool,
     last_recorded_match_id: String,
-    last_recorded_result: Option<RecordedResultFingerprint>,
+    last_recorded_result: Option<ResultSignature>,
 }
 
 impl SessionState {
@@ -390,7 +384,7 @@ impl SessionState {
         if !self.active_match_id.is_empty() {
             self.last_recorded_match_id = self.active_match_id.clone();
         }
-        self.last_recorded_result = Some(RecordedResultFingerprint {
+        self.last_recorded_result = Some(ResultSignature {
             mode: self.active_mode,
             local_team: self.local_team.unwrap_or(255),
             blue_score: self.blue_score,
@@ -432,7 +426,7 @@ impl SessionState {
                 && self.last_recorded_match_id == self.active_match_id)
     }
 
-    fn matches_last_recorded_result(
+    pub fn matches_last_recorded_result(
         &self,
         real_data: &Value,
         local_team_hint: Option<u8>,
@@ -447,12 +441,12 @@ impl SessionState {
             == Some(last_recorded)
     }
 
-    fn result_fingerprint(
+    pub fn result_fingerprint(
         &self,
         real_data: &Value,
         local_team_hint: Option<u8>,
         mode_hint: SessionMode,
-    ) -> Option<RecordedResultFingerprint> {
+    ) -> Option<ResultSignature> {
         let game = real_data.get("Game").or_else(|| real_data.get("game"))?;
         let local_team = local_team_hint.or(self.local_team)?;
         let mode = if mode_hint != SessionMode::Unknown {
@@ -461,35 +455,20 @@ impl SessionState {
             self.active_mode
         };
 
-        let mut blue_score = self.blue_score;
-        let mut orange_score = self.orange_score;
-        if let Some(teams) = game
-            .get("Teams")
-            .or_else(|| game.get("teams"))
-            .and_then(Value::as_array)
-        {
-            for team in teams {
-                let team_num = number_field(team, &["TeamNum", "teamNum", "Team", "team"]);
-                let score = number_field(team, &["Score", "score"]);
-                match (team_num, score) {
-                    (Some(0), Some(score)) => blue_score = score as u32,
-                    (Some(1), Some(score)) => orange_score = score as u32,
-                    _ => {}
-                }
-            }
-        }
+        let (payload_blue_score, payload_orange_score) = team_scores(game);
+        let blue_score = if payload_blue_score == 0 && payload_orange_score == 0 {
+            self.blue_score
+        } else {
+            payload_blue_score
+        };
+        let orange_score = if payload_blue_score == 0 && payload_orange_score == 0 {
+            self.orange_score
+        } else {
+            payload_orange_score
+        };
 
         let winner = string_field(game, &["Winner", "winner"]).unwrap_or("");
-        let result = result_from_winner(winner, local_team)
-            .or_else(|| result_from_score(blue_score, orange_score, local_team))?;
-
-        Some(RecordedResultFingerprint {
-            mode,
-            local_team,
-            blue_score,
-            orange_score,
-            result,
-        })
+        result_signature(mode, Some(local_team), blue_score, orange_score, winner)
     }
 }
 
@@ -500,35 +479,6 @@ pub fn format_win_rate(wins: u32, losses: u32) -> String {
     }
 
     format!("{}%", (wins as u64 * 100) / total as u64)
-}
-
-fn result_from_winner(winner: &str, local_team: u8) -> Option<MatchResult> {
-    let normalized = winner.trim().to_lowercase();
-    if normalized.is_empty() {
-        return None;
-    }
-    let winner_team = match normalized.as_str() {
-        "blue" => Some(0),
-        "orange" => Some(1),
-        _ => None,
-    }?;
-    Some(if winner_team == local_team {
-        MatchResult::Win
-    } else {
-        MatchResult::Loss
-    })
-}
-
-fn result_from_score(blue: u32, orange: u32, local_team: u8) -> Option<MatchResult> {
-    if blue == orange {
-        return None;
-    }
-    let local_won = (local_team == 0 && blue > orange) || (local_team == 1 && orange > blue);
-    Some(if local_won {
-        MatchResult::Win
-    } else {
-        MatchResult::Loss
-    })
 }
 
 #[cfg(test)]

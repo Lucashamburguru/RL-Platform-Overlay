@@ -301,14 +301,19 @@ fn config_path() -> PathBuf {
 }
 
 pub fn config_dir() -> Option<PathBuf> {
-    #[cfg(target_os = "windows")]
+    #[cfg(test)]
+    {
+        Some(std::env::temp_dir().join(format!("rl_platform_overlay_test_{}", std::process::id())))
+    }
+
+    #[cfg(all(not(test), target_os = "windows"))]
     {
         env::var_os("APPDATA")
             .map(PathBuf::from)
             .map(|path| path.join("RL-Platform-Overlay"))
     }
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(all(not(test), not(target_os = "windows")))]
     {
         if let Some(path) = env::var_os("XDG_CONFIG_HOME") {
             return Some(PathBuf::from(path).join("rl-platform-overlay"));
@@ -456,6 +461,11 @@ pub struct NetworkDiagnostics {
     pub transport: StatsApiTransport,
     pub last_event: String,
     pub last_event_unix_ms: u128,
+    pub last_event_rate_estimate: String,
+    pub last_roster_signature_change_unix_ms: u128,
+    pub last_match_guid: String,
+    pub last_result_signature: String,
+    pub last_duplicate_result_suppression_reason: String,
     pub last_parse_error: String,
     pub last_connection_error: String,
 }

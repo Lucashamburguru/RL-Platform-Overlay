@@ -1,7 +1,9 @@
-use crate::json_utils::{bool_field, decode_json_string_value, number_field, string_field};
 use crate::session::SessionMode;
-use crate::state::{AppState, LocalPlayerIdentity, PlayerInfo};
+use crate::state::{AppState, PlayerInfo};
 use crate::stats_api::{StatsApiTransport, TcpJsonSplitter};
+use crate::stats_api_parser::{
+    RosterSignature, StatsApiEvent, StatsApiParseContext, parse_stats_api_event,
+};
 use futures_util::StreamExt;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -215,6 +217,7 @@ fn handle_match_reset(state: &Arc<AppState>, early_leave: bool) {
         session.record_early_leave();
     }
     if session.matches_played > matches_before {
+        update_result_diagnostics(state, &session, "early_leave");
         crate::history::record_completed_match(state, &session);
     }
     session.handle_reset_event();
@@ -307,10 +310,10 @@ pub async fn start_network_task_with_addr(state: Arc<AppState>, addr: &str) {
 }
 
 fn handle_event(state: &Arc<AppState>, json: &Value) {
-    let event = json["Event"].as_str().unwrap_or("Unknown");
-    update_last_event(state, event);
-    match event {
-        "UpdateState" => handle_update_state(state, &json["Data"]),
+    let parsed_event = parse_event_for_state(state, json);
+    update_last_event(state, &parsed_event.event_name);
+    match parsed_event.event_name.as_str() {
+        "UpdateState" => handle_update_state(state, &parsed_event),
         "RoundStarted" | "ClockUpdatedSeconds" | "BallHit" | "GoalScored" | "StatfeedEvent" => {
             let current_session = state.game.session.load();
             if !current_session.round_started {
@@ -324,8 +327,9 @@ fn handle_event(state: &Arc<AppState>, json: &Value) {
             let local_team_hint = (local_team != crate::state::NO_TEAM).then_some(local_team);
             let mut session = (**state.game.session.load()).clone();
             let matches_before = session.matches_played;
-            session.handle_match_ended(&json["Data"], local_team_hint);
+            session.handle_match_ended(&parsed_event.data, local_team_hint);
             if session.matches_played > matches_before {
+                update_result_diagnostics(state, &session, "match_ended");
                 crate::history::record_completed_match(state, &session);
             }
             state.game.session.store(Arc::new(session));
@@ -359,225 +363,81 @@ fn handle_event(state: &Arc<AppState>, json: &Value) {
         "MatchDestroyed" | "LobbyEntered" => {
             handle_match_reset(state, true);
         }
-        _ => log::debug!("Received event: {}", event),
+        _ => log::debug!("Received event: {}", parsed_event.event_name),
     }
 }
 
-fn handle_update_state(state: &Arc<AppState>, data: &Value) {
-    let real_data = decode_json_string_value(data);
-    let mut game_hints = extract_game_hints(&real_data);
-
-    if let Some(local_name) = game_hints.local_name.take() {
-        state.game.local_player_name.store(Arc::new(local_name));
-    }
-
+fn parse_event_for_state(state: &Arc<AppState>, json: &Value) -> StatsApiEvent {
     let current_local_name = state.game.local_player_name.load();
-    let current_local_name = current_local_name.trim();
-    let has_known_local_name = !current_local_name.is_empty();
-    let target_name_hint_ref = game_hints.target_name.as_deref().unwrap_or("").trim();
-    let current_local_name = if current_local_name.is_empty() {
-        target_name_hint_ref
-    } else {
-        current_local_name
-    };
-    let parsed_update =
-        parse_update_players(&real_data, current_local_name, game_hints.has_target, state);
-    apply_local_player_update(state, &parsed_update);
+    let cached_identity = state.game.local_player_identity.load();
+    let previous_players = state.game.players.load();
+    parse_stats_api_event(
+        json,
+        StatsApiParseContext {
+            current_local_name: current_local_name.trim(),
+            cached_identity: &cached_identity,
+            previous_players: &previous_players,
+        },
+    )
+}
+
+fn handle_update_state(state: &Arc<AppState>, parsed_event: &StatsApiEvent) {
+    let has_known_local_name = !state.game.local_player_name.load().trim().is_empty();
+    apply_local_player_update(state, parsed_event);
 
     if !has_known_local_name
-        && parsed_update.local_name.is_none()
-        && let Some(target_name) = game_hints.target_name
+        && parsed_event.local_player_hint.is_none()
+        && let Some(target_name) = parsed_event.target_name.as_ref()
     {
-        state.game.local_player_name.store(Arc::new(target_name));
+        state
+            .game
+            .local_player_name
+            .store(Arc::new(target_name.clone()));
     }
 
     if state.game.local_team.load(Ordering::SeqCst) == crate::state::NO_TEAM
-        && parsed_update.local_team.is_none()
-        && let Some(target_team) = game_hints.target_team
+        && parsed_event.local_player_hint.is_none()
+        && let Some(target_team) = parsed_event.target_team
     {
         state.game.local_team.store(target_team, Ordering::SeqCst);
     }
 
-    if !parsed_update.players.is_empty() {
+    update_match_guid_diagnostics(state, parsed_event.match_guid.as_deref().unwrap_or(""));
+
+    if !parsed_event.players.is_empty() {
         // println!("State Updated: {} players in lobby", new_players.len());
     }
-    store_players_preserving_mmr(state, parsed_update.players);
+    let roster_changed = store_players_preserving_mmr(state, parsed_event.players.clone());
 
-    update_session_from_payload(state, &real_data, parsed_update.player_count);
+    update_session_from_event(state, parsed_event, roster_changed);
 }
 
-#[derive(Default)]
-struct GameHints {
-    local_name: Option<String>,
-    target_name: Option<String>,
-    target_team: Option<u8>,
-    has_target: bool,
-}
-
-struct ParsedUpdateState {
-    players: HashMap<String, PlayerInfo>,
-    player_count: Option<usize>,
-    local_name: Option<String>,
-    local_team: Option<u8>,
-}
-
-fn extract_game_hints(data: &Value) -> GameHints {
-    let mut hints = GameHints::default();
-    let Some(game) = data.get("game").or_else(|| data.get("Game")) else {
-        return hints;
-    };
-
-    hints.has_target = bool_field(game, &["bHasTarget", "hasTarget"]).unwrap_or(false);
-    if let Some(client) = string_field(game, &["client", "Client"]) {
-        hints.local_name = Some(client.to_string());
-    } else if let Some(me) = string_field(game, &["me", "Me"]) {
-        hints.local_name = Some(me.to_string());
-    }
-
-    if let Some(target) = game.get("target").or_else(|| game.get("Target")) {
-        hints.target_name = string_field(target, &["Name", "name"]).map(str::to_string);
-        hints.target_team =
-            number_field(target, &["TeamNum", "teamNum", "Team", "team"]).map(|team| team as u8);
-    }
-
-    hints
-}
-
-fn parse_update_players(
-    data: &Value,
-    current_local_name: &str,
-    has_target: bool,
-    state: &Arc<AppState>,
-) -> ParsedUpdateState {
-    let players_val = data
-        .get("Players")
-        .or_else(|| data.get("players"))
-        .unwrap_or(data);
-    let Some(players) = players_val.as_array() else {
-        return ParsedUpdateState {
-            players: HashMap::new(),
-            player_count: None,
-            local_name: None,
-            local_team: None,
-        };
-    };
-
-    let previous_players = state.game.players.load();
-    let cached_identity = state.game.local_player_identity.load();
-    let mut parsed = ParsedUpdateState {
-        players: HashMap::new(),
-        player_count: Some(0),
-        local_name: None,
-        local_team: None,
-    };
-
-    for player_payload in players {
-        let Some(player) = parse_player_info(
-            player_payload,
-            current_local_name,
-            has_target,
-            &cached_identity,
-            &previous_players,
-        ) else {
-            continue;
-        };
-
-        if player.is_local {
-            parsed.local_name = Some(player.name.clone());
-            parsed.local_team = Some(player.team);
-        }
-        parsed.player_count = parsed.player_count.map(|count| count + 1);
-        parsed.players.insert(player.name.clone(), player);
-    }
-
-    parsed
-}
-
-fn parse_player_info(
-    player_payload: &Value,
-    current_local_name: &str,
-    has_target: bool,
-    cached_identity: &LocalPlayerIdentity,
-    previous_players: &HashMap<String, PlayerInfo>,
-) -> Option<PlayerInfo> {
-    let name = string_field(player_payload, &["Name", "name"])
-        .unwrap_or("")
-        .trim()
-        .to_string();
-    if name.is_empty() {
-        return None;
-    }
-
-    let primary_id =
-        string_field(player_payload, &["PrimaryId", "primaryId", "primary_id"]).unwrap_or("");
-    let (platform, is_bot) = parse_platform(primary_id);
-    let player_identity = LocalPlayerIdentity {
-        name: name.clone(),
-        primary_id: primary_id.to_string(),
-        platform: platform.clone(),
-    };
-    let mut is_local = player_payload["IsLocalPlayer"].as_bool().unwrap_or(false)
-        || player_payload["isLocalPlayer"].as_bool().unwrap_or(false)
-        || player_payload["isMe"].as_bool().unwrap_or(false)
-        || (!current_local_name.is_empty() && name.eq_ignore_ascii_case(current_local_name))
-        || (cached_identity.is_known() && cached_identity.same_account(&player_identity));
-
-    if has_target && cached_identity.is_known() && !name.eq_ignore_ascii_case(&cached_identity.name)
-    {
-        is_local = false;
-    }
-
-    let team =
-        number_field(player_payload, &["TeamNum", "teamNum", "Team", "team"]).unwrap_or(0) as u8;
-
-    Some(PlayerInfo {
-        name: name.clone(),
-        primary_id: primary_id.to_string(),
-        platform,
-        team,
-        is_bot,
-        is_local,
-        boost: number_field(player_payload, &["Boost", "boost"]).unwrap_or(0) as u8,
-        score: number_field(player_payload, &["Score", "score"]).unwrap_or(0) as u32,
-        goals: number_field(player_payload, &["Goals", "goals"]).unwrap_or(0) as u32,
-        saves: number_field(player_payload, &["Saves", "saves"]).unwrap_or(0) as u32,
-        touches: number_field(player_payload, &["Touches", "touches"]).unwrap_or(0) as u32,
-        car_touches: number_field(player_payload, &["CarTouches", "carTouches", "car_touches"])
-            .unwrap_or(0) as u32,
-        demos: number_field(player_payload, &["Demos", "demos"]).unwrap_or(0) as u32,
-        mmr: previous_players
-            .get(&name)
-            .and_then(|prev| prev.mmr.clone()),
-    })
-}
-
-fn apply_local_player_update(state: &Arc<AppState>, parsed_update: &ParsedUpdateState) {
-    let Some(local_name) = parsed_update.local_name.as_ref() else {
-        return;
-    };
-    let Some(local_player) = parsed_update.players.get(local_name) else {
+fn apply_local_player_update(state: &Arc<AppState>, parsed_event: &StatsApiEvent) {
+    let Some(local_player) = parsed_event.local_player_hint.as_ref() else {
         return;
     };
 
     state
         .game
         .local_player_name
-        .store(Arc::new(local_name.clone()));
+        .store(Arc::new(local_player.name.clone()));
     state
         .game
         .local_team
         .store(local_player.team, Ordering::SeqCst);
-    let first_known_identity = state.update_local_player_identity(LocalPlayerIdentity {
-        name: local_player.name.clone(),
-        primary_id: local_player.primary_id.clone(),
-        platform: local_player.platform.clone(),
-    });
+    let first_known_identity = state.update_local_player_identity(local_player.identity.clone());
     if first_known_identity {
         crate::mmr::start_local_mmr_refresh(state.clone());
     }
 }
 
-fn store_players_preserving_mmr(state: &Arc<AppState>, players: HashMap<String, PlayerInfo>) {
+fn store_players_preserving_mmr(
+    state: &Arc<AppState>,
+    players: HashMap<String, PlayerInfo>,
+) -> bool {
+    let previous_players = state.game.players.load();
+    let history_roster_changed =
+        RosterSignature::from_players(&previous_players) != RosterSignature::from_players(&players);
     let new_players_arc = Arc::new(players);
     state.game.players.rcu(|current_players| {
         let needs_merge = current_players.iter().any(|(name, player)| {
@@ -601,73 +461,70 @@ fn store_players_preserving_mmr(state: &Arc<AppState>, players: HashMap<String, 
         }
         Arc::new(final_players)
     });
-    crate::history::refresh_lobby_history(state);
+    if history_roster_changed {
+        update_roster_change_diagnostics(state);
+        crate::history::refresh_lobby_history(state);
+    }
+    history_roster_changed
 }
 
-fn update_session_from_payload(
+fn update_session_from_event(
     state: &Arc<AppState>,
-    real_data: &Value,
-    player_count: Option<usize>,
+    parsed_event: &StatsApiEvent,
+    roster_changed: bool,
 ) {
     let local_team = state.game.local_team.load(Ordering::SeqCst);
     let local_team_hint = (local_team != crate::state::NO_TEAM).then_some(local_team);
-    let mode_hint = real_data
-        .get("Game")
-        .or_else(|| real_data.get("game"))
-        .and_then(session_mode_hint_from_game);
-    let session_mode = infer_session_mode(real_data, mode_hint, player_count);
+    let session_mode = parsed_event.mode.session_mode();
     let current_session = state.game.session.load();
-    if current_session.would_change(real_data, local_team_hint, session_mode) {
+    let score_changed = current_session.blue_score != parsed_event.score.blue_score
+        || current_session.orange_score != parsed_event.score.orange_score;
+    let result_pending = parsed_event.has_winner
+        && !current_session.matches_last_recorded_result(
+            &parsed_event.data,
+            local_team_hint,
+            session_mode,
+        );
+    let mode_changed = current_session.active_match_id != parsed_event.mode.match_guid
+        || (session_mode != SessionMode::Unknown && current_session.active_mode != session_mode)
+        || (local_team_hint.is_some() && current_session.local_team != local_team_hint);
+    let round_start_relevant =
+        !current_session.round_started && players_have_round_stats(parsed_event);
+
+    if roster_changed
+        || score_changed
+        || result_pending
+        || mode_changed
+        || round_start_relevant
+        || current_session.would_change(&parsed_event.data, local_team_hint, session_mode)
+    {
         let mut session = (**current_session).clone();
         let matches_before = session.matches_played;
-        session.handle_update_state(real_data, local_team_hint, session_mode);
+        session.handle_update_state(&parsed_event.data, local_team_hint, session_mode);
         if session.matches_played > matches_before {
+            update_result_diagnostics(state, &session, "update_state");
             crate::history::record_completed_match(state, &session);
+        } else if parsed_event.has_winner
+            && session.matches_last_recorded_result(
+                &parsed_event.data,
+                local_team_hint,
+                session_mode,
+            )
+        {
+            update_duplicate_result_diagnostics(state, "duplicate_result_signature");
         }
         state.game.session.store(Arc::new(session));
     }
 }
 
-fn infer_session_mode(
-    real_data: &Value,
-    mode_hint: Option<&str>,
-    player_count: Option<usize>,
-) -> SessionMode {
-    if string_field(real_data, &["MatchGuid", "matchGuid"]).is_some_and(str::is_empty)
-        && player_count == Some(1)
-    {
-        return SessionMode::Freeplay;
-    }
-
-    SessionMode::infer(mode_hint, player_count)
-}
-
-fn session_mode_hint_from_game(game: &Value) -> Option<&str> {
-    string_field(
-        game,
-        &[
-            "Arena",
-            "arena",
-            "Map",
-            "map",
-            "MapName",
-            "mapName",
-            "GameMode",
-            "gameMode",
-            "GameInfo",
-            "gameInfo",
-            "Playlist",
-            "playlist",
-            "PlaylistName",
-            "playlistName",
-            "Mutator",
-            "mutator",
-            "MutatorName",
-            "mutatorName",
-            "Rules",
-            "rules",
-        ],
-    )
+fn players_have_round_stats(parsed_event: &StatsApiEvent) -> bool {
+    parsed_event.players.values().any(|player| {
+        player.score > 0
+            || player.touches > 0
+            || player.goals > 0
+            || player.saves > 0
+            || player.demos > 0
+    })
 }
 
 fn update_transport(state: &Arc<AppState>, transport: StatsApiTransport) {
@@ -683,17 +540,71 @@ fn update_transport(state: &Arc<AppState>, transport: StatsApiTransport) {
 fn update_last_event(state: &Arc<AppState>, event: &str) {
     let current = state.system.network_diagnostics.load();
     let now = crate::stats_api::now_ms();
-    if current.last_event == event
-        && current.last_parse_error.is_empty()
-        && now.saturating_sub(current.last_event_unix_ms) < 1000
-    {
+    let elapsed_ms = now.saturating_sub(current.last_event_unix_ms);
+    if current.last_event == event && current.last_parse_error.is_empty() && elapsed_ms < 1000 {
         return;
     }
 
     let mut diagnostics = (**current).clone();
     diagnostics.last_event = event.to_string();
     diagnostics.last_event_unix_ms = now;
+    diagnostics.last_event_rate_estimate = if elapsed_ms > 0 && elapsed_ms < 10_000 {
+        format!("{:.1}/s", 1000.0 / elapsed_ms as f64)
+    } else {
+        String::new()
+    };
     diagnostics.last_parse_error.clear();
+    state
+        .system
+        .network_diagnostics
+        .store(Arc::new(diagnostics));
+}
+
+fn update_roster_change_diagnostics(state: &Arc<AppState>) {
+    let mut diagnostics = (**state.system.network_diagnostics.load()).clone();
+    diagnostics.last_roster_signature_change_unix_ms = crate::stats_api::now_ms();
+    state
+        .system
+        .network_diagnostics
+        .store(Arc::new(diagnostics));
+}
+
+fn update_match_guid_diagnostics(state: &Arc<AppState>, match_guid: &str) {
+    let mut diagnostics = (**state.system.network_diagnostics.load()).clone();
+    diagnostics.last_match_guid = match_guid.to_string();
+    state
+        .system
+        .network_diagnostics
+        .store(Arc::new(diagnostics));
+}
+
+fn update_result_diagnostics(
+    state: &Arc<AppState>,
+    session: &crate::session::SessionState,
+    source: &str,
+) {
+    let mut diagnostics = (**state.system.network_diagnostics.load()).clone();
+    diagnostics.last_result_signature = format!(
+        "source={source}, mode={}, local_team={}, blue={}, orange={}, result={}",
+        session.active_mode.label(),
+        session
+            .local_team
+            .map(|team| team.to_string())
+            .unwrap_or_else(|| "Unknown".to_string()),
+        session.blue_score,
+        session.orange_score,
+        session.last_result.label()
+    );
+    diagnostics.last_duplicate_result_suppression_reason.clear();
+    state
+        .system
+        .network_diagnostics
+        .store(Arc::new(diagnostics));
+}
+
+fn update_duplicate_result_diagnostics(state: &Arc<AppState>, reason: &str) {
+    let mut diagnostics = (**state.system.network_diagnostics.load()).clone();
+    diagnostics.last_duplicate_result_suppression_reason = reason.to_string();
     state
         .system
         .network_diagnostics
@@ -718,31 +629,16 @@ fn update_connection_error(state: &Arc<AppState>, error: String) {
         .store(Arc::new(diagnostics));
 }
 
-fn parse_platform(id: &str) -> (String, bool) {
-    if id.is_empty() {
-        return ("Unknown".to_string(), false);
-    }
-    if id == "Unknown|0|0" {
-        return ("BOT".to_string(), true);
-    }
-    let parts: Vec<&str> = id.split('|').collect();
-    let platform = parts.first().copied().unwrap_or("Unknown");
-    match platform {
-        "Steam" => ("Steam".to_string(), false),
-        "Epic" => ("Epic".to_string(), false),
-        "Ps4" | "Ps5" | "PlayStation" | "PSN" => ("PlayStation".to_string(), false),
-        "Xbox" | "XBoxOne" | "XBL" => ("Xbox".to_string(), false),
-        "Switch" | "Nintendo" => ("Switch".to_string(), false),
-        "Bot" => ("BOT".to_string(), true),
-        _ => (platform.to_string(), false),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::stats_api_parser::parse_platform;
     use serde_json::json;
     use std::sync::atomic::Ordering;
+
+    fn handle_update_state_payload(state: &Arc<AppState>, data: &Value) {
+        handle_event(state, &json!({ "Event": "UpdateState", "Data": data }));
+    }
 
     #[test]
     fn test_parse_platform() {
@@ -838,7 +734,7 @@ mod tests {
             ]
         });
 
-        handle_update_state(&state, &data);
+        handle_update_state_payload(&state, &data);
 
         let players = state.game.players.load();
         assert_eq!(&**state.game.local_player_name.load(), "Me");
@@ -881,7 +777,7 @@ mod tests {
             }
         });
 
-        handle_update_state(&state, &data);
+        handle_update_state_payload(&state, &data);
 
         let players = state.game.players.load();
         assert_eq!(&**state.game.local_player_name.load(), "cyberPeng");
@@ -913,7 +809,7 @@ mod tests {
             ]
         });
 
-        handle_update_state(&state, &data);
+        handle_update_state_payload(&state, &data);
 
         let players = state.game.players.load();
         assert!(players["CachedName"].is_local);
@@ -952,7 +848,7 @@ mod tests {
             ]
         });
 
-        handle_update_state(&state, &data);
+        handle_update_state_payload(&state, &data);
 
         let players = state.game.players.load();
         // The spectated player should not be marked as local
@@ -965,7 +861,7 @@ mod tests {
     #[test]
     fn test_lobby_event_clears_websocket_state() {
         let state = AppState::new();
-        handle_update_state(
+        handle_update_state_payload(
             &state,
             &json!({
                 "Players": [
@@ -989,7 +885,7 @@ mod tests {
     #[test]
     fn test_lobby_event_keeps_local_identity_for_manual_mmr_refresh() {
         let state = AppState::new();
-        handle_update_state(
+        handle_update_state_payload(
             &state,
             &json!({
                 "Players": [
@@ -1022,7 +918,7 @@ mod tests {
     #[test]
     fn test_early_leave_online_match_records_loss() {
         let state = AppState::new();
-        handle_update_state(
+        handle_update_state_payload(
             &state,
             &json!({
                 "MatchGuid": "guid123",
@@ -1068,7 +964,7 @@ mod tests {
     #[test]
     fn test_early_leave_offline_match_ignored() {
         let state = AppState::new();
-        handle_update_state(
+        handle_update_state_payload(
             &state,
             &json!({
                 "MatchGuid": "guid123",
@@ -1104,7 +1000,7 @@ mod tests {
     #[test]
     fn test_update_state_infers_session_mode_from_total_players() {
         let state = AppState::new();
-        handle_update_state(
+        handle_update_state_payload(
             &state,
             &json!({
                 "MatchGuid": "guid123",
@@ -1126,7 +1022,7 @@ mod tests {
     #[test]
     fn test_update_state_without_players_uses_unknown_session_mode() {
         let state = AppState::new();
-        handle_update_state(
+        handle_update_state_payload(
             &state,
             &json!({
                 "MatchGuid": "guid123",
@@ -1150,7 +1046,7 @@ mod tests {
     #[test]
     fn test_update_state_detects_freeplay_capture_shape() {
         let state = AppState::new();
-        handle_update_state(
+        handle_update_state_payload(
             &state,
             &json!({
                 "MatchGuid": "",
@@ -1195,7 +1091,7 @@ mod tests {
             {"Name": "Caveman", "PrimaryId": "Unknown|0|0", "TeamNum": 1}
         ]);
 
-        handle_update_state(
+        handle_update_state_payload(
             &state,
             &json!({
                 "MatchGuid": "5D10ADA011F16578035ABBB9B9C3C4DE",
@@ -1213,7 +1109,7 @@ mod tests {
                 }
             }),
         );
-        handle_update_state(
+        handle_update_state_payload(
             &state,
             &json!({
                 "MatchGuid": "5D10ADA011F16578035ABBB9B9C3C4DE",
@@ -1246,7 +1142,7 @@ mod tests {
     #[test]
     fn test_update_state_prefers_arena_mode_over_player_count() {
         let state = AppState::new();
-        handle_update_state(
+        handle_update_state_payload(
             &state,
             &json!({
                 "MatchGuid": "guid123",
@@ -1279,7 +1175,7 @@ mod tests {
     #[test]
     fn test_offline_extra_mode_does_not_fall_back_to_ones() {
         let state = AppState::new();
-        handle_update_state(
+        handle_update_state_payload(
             &state,
             &json!({
                 "MatchGuid": "guid123",
@@ -1304,7 +1200,7 @@ mod tests {
     #[test]
     fn test_standard_offline_uses_total_player_count_for_mode() {
         let state = AppState::new();
-        handle_update_state(
+        handle_update_state_payload(
             &state,
             &json!({
                 "MatchGuid": "guid123",
@@ -1323,7 +1219,7 @@ mod tests {
             crate::session::SessionMode::Ones
         );
 
-        handle_update_state(
+        handle_update_state_payload(
             &state,
             &json!({
                 "MatchGuid": "guid456",
@@ -1348,7 +1244,7 @@ mod tests {
     #[test]
     fn test_targeted_opponent_at_match_end_does_not_turn_hoops_loss_into_win() {
         let state = AppState::new();
-        handle_update_state(
+        handle_update_state_payload(
             &state,
             &json!({
                 "MatchGuid": "guid123",
@@ -1372,7 +1268,7 @@ mod tests {
             }),
         );
 
-        handle_update_state(
+        handle_update_state_payload(
             &state,
             &json!({
                 "MatchGuid": "guid123",
@@ -1411,7 +1307,7 @@ mod tests {
     #[test]
     fn test_match_ended_event_records_hoops_loss_from_winner_team_num() {
         let state = AppState::new();
-        handle_update_state(
+        handle_update_state_payload(
             &state,
             &json!({
                 "MatchGuid": "guid123",
@@ -1453,5 +1349,202 @@ mod tests {
             1
         );
         assert!(session.active_match_id.is_empty());
+    }
+
+    #[test]
+    fn test_stat_only_frames_do_not_change_roster_signature_diagnostics() {
+        let state = AppState::new();
+        handle_update_state_payload(
+            &state,
+            &json!({
+                "MatchGuid": "guid123",
+                "Players": [
+                    {"Name": "Me", "PrimaryId": "Steam|1|0", "TeamNum": 0, "IsLocalPlayer": true, "Boost": 10, "Score": 0},
+                    {"Name": "Opponent", "PrimaryId": "Epic|2|0", "TeamNum": 1, "Boost": 20, "Score": 0}
+                ],
+                "Game": {
+                    "Teams": [
+                        {"TeamNum": 0, "Score": 0},
+                        {"TeamNum": 1, "Score": 0}
+                    ]
+                }
+            }),
+        );
+        let first_roster_change = state
+            .system
+            .network_diagnostics
+            .load()
+            .last_roster_signature_change_unix_ms;
+
+        handle_update_state_payload(
+            &state,
+            &json!({
+                "MatchGuid": "guid123",
+                "Players": [
+                    {"Name": "Me", "PrimaryId": "Steam|1|0", "TeamNum": 0, "IsLocalPlayer": true, "Boost": 99, "Score": 300, "Touches": 12},
+                    {"Name": "Opponent", "PrimaryId": "Epic|2|0", "TeamNum": 1, "Boost": 0, "Score": 100, "Touches": 6}
+                ],
+                "Game": {
+                    "Teams": [
+                        {"TeamNum": 0, "Score": 0},
+                        {"TeamNum": 1, "Score": 0}
+                    ]
+                }
+            }),
+        );
+
+        let diagnostics = state.system.network_diagnostics.load();
+        assert_eq!(
+            diagnostics.last_roster_signature_change_unix_ms,
+            first_roster_change
+        );
+        let players = state.game.players.load();
+        assert_eq!(players["Me"].boost, 99);
+        assert_eq!(players["Me"].score, 300);
+    }
+
+    #[test]
+    fn test_match_ended_then_final_update_state_records_one_result() {
+        let state = AppState::new();
+        handle_update_state_payload(
+            &state,
+            &json!({
+                "MatchGuid": "guid123",
+                "Players": [
+                    {"Name": "Me", "PrimaryId": "Steam|1|0", "TeamNum": 0, "IsLocalPlayer": true},
+                    {"Name": "Opponent", "PrimaryId": "Epic|2|0", "TeamNum": 1}
+                ],
+                "Game": {
+                    "Teams": [
+                        {"TeamNum": 0, "Score": 3},
+                        {"TeamNum": 1, "Score": 2}
+                    ]
+                }
+            }),
+        );
+
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let _guard = runtime.enter();
+        handle_event(
+            &state,
+            &json!({
+                "Event": "MatchEnded",
+                "Data": {"MatchGuid": "guid123", "WinnerTeamNum": 0}
+            }),
+        );
+        handle_update_state_payload(
+            &state,
+            &json!({
+                "MatchGuid": "guid123",
+                "Players": [
+                    {"Name": "Me", "PrimaryId": "Steam|1|0", "TeamNum": 0, "IsLocalPlayer": true},
+                    {"Name": "Opponent", "PrimaryId": "Epic|2|0", "TeamNum": 1}
+                ],
+                "Game": {
+                    "Teams": [
+                        {"TeamNum": 0, "Score": 3},
+                        {"TeamNum": 1, "Score": 2}
+                    ],
+                    "bHasWinner": true,
+                    "Winner": "Blue"
+                }
+            }),
+        );
+
+        let session = state.game.session.load();
+        assert_eq!(session.wins, 1);
+        assert_eq!(session.matches_played, 1);
+    }
+
+    #[test]
+    fn test_ready_up_new_guid_with_same_final_result_records_one_result() {
+        let state = AppState::new();
+        handle_update_state_payload(
+            &state,
+            &json!({
+                "MatchGuid": "old-guid",
+                "Players": [
+                    {"Name": "Me", "PrimaryId": "Steam|1|0", "TeamNum": 0, "IsLocalPlayer": true},
+                    {"Name": "Opponent", "PrimaryId": "Epic|2|0", "TeamNum": 1}
+                ],
+                "Game": {
+                    "Teams": [
+                        {"TeamNum": 0, "Score": 1},
+                        {"TeamNum": 1, "Score": 0}
+                    ],
+                    "bHasWinner": true,
+                    "Winner": "Blue"
+                }
+            }),
+        );
+        handle_update_state_payload(
+            &state,
+            &json!({
+                "MatchGuid": "new-guid",
+                "Players": [
+                    {"Name": "Me", "PrimaryId": "Steam|1|0", "TeamNum": 0, "IsLocalPlayer": true},
+                    {"Name": "Opponent", "PrimaryId": "Epic|2|0", "TeamNum": 1}
+                ],
+                "Game": {
+                    "Teams": [
+                        {"TeamNum": 0, "Score": 1},
+                        {"TeamNum": 1, "Score": 0}
+                    ],
+                    "bHasWinner": true,
+                    "Winner": "Blue"
+                }
+            }),
+        );
+
+        let session = state.game.session.load();
+        assert_eq!(session.wins, 1);
+        assert_eq!(session.matches_played, 1);
+        assert_eq!(session.active_match_id, "old-guid");
+    }
+
+    #[test]
+    fn test_match_destroyed_followed_by_stale_frames_does_not_double_count() {
+        let state = AppState::new();
+        handle_update_state_payload(
+            &state,
+            &json!({
+                "MatchGuid": "guid123",
+                "Players": [
+                    {"Name": "Me", "PrimaryId": "Steam|1|0", "TeamNum": 0, "IsLocalPlayer": true},
+                    {"Name": "Opponent", "PrimaryId": "Epic|2|0", "TeamNum": 1}
+                ],
+                "Game": {
+                    "Teams": [
+                        {"TeamNum": 0, "Score": 2},
+                        {"TeamNum": 1, "Score": 1}
+                    ],
+                    "bHasWinner": true,
+                    "Winner": "Blue"
+                }
+            }),
+        );
+        handle_event(&state, &json!({"Event": "MatchDestroyed"}));
+        handle_update_state_payload(
+            &state,
+            &json!({
+                "MatchGuid": "guid123",
+                "Players": [
+                    {"Name": "Me", "PrimaryId": "Steam|1|0", "TeamNum": 0, "IsLocalPlayer": true},
+                    {"Name": "Opponent", "PrimaryId": "Epic|2|0", "TeamNum": 1}
+                ],
+                "Game": {
+                    "Teams": [
+                        {"TeamNum": 0, "Score": 2},
+                        {"TeamNum": 1, "Score": 1}
+                    ],
+                    "bHasWinner": true,
+                    "Winner": "Blue"
+                }
+            }),
+        );
+
+        let session = state.game.session.load();
+        assert_eq!(session.wins, 1);
+        assert_eq!(session.matches_played, 1);
     }
 }

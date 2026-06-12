@@ -798,6 +798,26 @@ pub fn support_diagnostics_bundle(
         diagnostics.last_event_unix_ms
     ));
     lines.push(format!(
+        "last_event_rate_estimate={}",
+        empty_label(&diagnostics.last_event_rate_estimate)
+    ));
+    lines.push(format!(
+        "last_roster_signature_change_unix_ms={}",
+        diagnostics.last_roster_signature_change_unix_ms
+    ));
+    lines.push(format!(
+        "last_match_guid={}",
+        empty_label(&diagnostics.last_match_guid)
+    ));
+    lines.push(format!(
+        "last_result_signature={}",
+        empty_label(&diagnostics.last_result_signature)
+    ));
+    lines.push(format!(
+        "last_duplicate_result_suppression_reason={}",
+        empty_label(&diagnostics.last_duplicate_result_suppression_reason)
+    ));
+    lines.push(format!(
         "last_parse_error={}",
         empty_label(&diagnostics.last_parse_error)
     ));
