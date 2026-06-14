@@ -552,6 +552,9 @@ pub struct ReplaysState {
     pub upload_progress: ArcSwap<ReplayUploadProgress>,
     pub upload_paused: AtomicBool,
     pub upload_stop_requested: AtomicBool,
+    pub metadata_cache: ArcSwap<crate::replay_metadata::ReplayMetadataSnapshot>,
+    pub metadata_scan_running: AtomicBool,
+    pub metadata_status: Arc<std::sync::Mutex<String>>,
 }
 
 pub struct BoostState {
@@ -721,6 +724,11 @@ impl AppState {
                 upload_progress: ArcSwap::from_pointee(ReplayUploadProgress::default()),
                 upload_paused: AtomicBool::new(false),
                 upload_stop_requested: AtomicBool::new(false),
+                metadata_cache: ArcSwap::from_pointee(
+                    crate::replay_metadata::ReplayMetadataSnapshot::default(),
+                ),
+                metadata_scan_running: AtomicBool::new(false),
+                metadata_status: Arc::new(std::sync::Mutex::new("Not scanned".to_string())),
             },
             boost: BoostState {
                 boost_swap_status: Arc::new(std::sync::Mutex::new("Idle".to_string())),

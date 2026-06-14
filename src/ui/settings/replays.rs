@@ -2,6 +2,7 @@ use crate::state::{AppState, Config};
 use crate::ui::common::{StatusTone, helper_text, setting_row, settings_section, status_text};
 use eframe::egui;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 pub(crate) fn render_replays_settings_tab(
     ui: &mut egui::Ui,
@@ -189,6 +190,10 @@ pub(crate) fn render_replays_settings_tab(
             Some(path.exists() && path.is_dir())
         };
 
+        if path_valid == Some(true) {
+            maybe_start_metadata_scan(state, &config_edit.replays_folder);
+        }
+
         match path_valid {
             Some(true) => {
                 status_text(ui, StatusTone::Success, "✔ Valid replay directory.");
@@ -271,37 +276,7 @@ pub(crate) fn render_replays_settings_tab(
 
         render_upload_progress(ui, state);
 
-        // Display Cloud Count & Local Cache
-        let cloud_count = state
-            .replays
-            .ballchasing_cloud_count
-            .load(std::sync::atomic::Ordering::SeqCst);
-        if cloud_count > 0 {
-            ui.label(format!("Replays on Ballchasing.com: {}", cloud_count));
-            ui.add_space(4.0);
-        }
-
-        let cached_count = config_edit.uploaded_replays.len();
-        if cached_count > 0 {
-            egui::CollapsingHeader::new(format!("Locally Cached Uploads ({} files)", cached_count))
-                .show(ui, |ui| {
-                    egui::ScrollArea::vertical()
-                        .max_height(100.0)
-                        .show(ui, |ui| {
-                            let mut sorted_replays: Vec<&String> =
-                                config_edit.uploaded_replays.iter().collect();
-                            sorted_replays.sort();
-                            for filename in sorted_replays {
-                                ui.label(
-                                    egui::RichText::new(filename)
-                                        .font(egui::FontId::monospace(9.0))
-                                        .color(egui::Color32::from_gray(160)),
-                                );
-                            }
-                        });
-                });
-            ui.add_space(4.0);
-        }
+        render_replay_cache(ui, state, config_edit, path_valid == Some(true));
 
         ui.separator();
         ui.add_space(6.0);
@@ -421,6 +396,310 @@ pub(crate) fn render_replays_settings_tab(
     });
 }
 
+fn maybe_start_metadata_scan(state: &Arc<AppState>, folder: &str) {
+    let snapshot = state.replays.metadata_cache.load();
+    let scan_running = state.replays.metadata_scan_running.load(Ordering::SeqCst);
+    if snapshot.folder != folder && !scan_running {
+        crate::replay_metadata::start_metadata_scan(state.clone(), folder.to_string());
+    }
+}
+
+fn render_replay_cache(
+    ui: &mut egui::Ui,
+    state: &Arc<AppState>,
+    config_edit: &Config,
+    path_valid: bool,
+) {
+    ui.separator();
+    ui.add_space(6.0);
+    ui.label(
+        egui::RichText::new("Replay Cache")
+            .size(14.0)
+            .strong()
+            .color(egui::Color32::from_rgb(225, 227, 235)),
+    );
+    ui.add_space(4.0);
+
+    let snapshot = state.replays.metadata_cache.load();
+    let scan_running = state.replays.metadata_scan_running.load(Ordering::SeqCst);
+    let metadata_status = state
+        .replays
+        .metadata_status
+        .lock()
+        .map(|status| status.clone())
+        .unwrap_or_else(|_| "Metadata status unavailable".to_string());
+    let cloud_count = state.replays.ballchasing_cloud_count.load(Ordering::SeqCst);
+
+    ui.horizontal_wrapped(|ui| {
+        ui.label(helper_text(format!(
+            "{} cached uploads",
+            config_edit.uploaded_replays.len()
+        )));
+        if cloud_count > 0 {
+            ui.label(helper_text(format!("{} on Ballchasing.com", cloud_count)));
+        }
+        if snapshot.total_files > 0 {
+            ui.label(helper_text(format!(
+                "{} local metadata entries",
+                snapshot.parsed
+            )));
+        }
+        if scan_running {
+            ui.add(egui::Spinner::new());
+        }
+        ui.label(helper_text(metadata_status));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let refresh = ui
+                .add_enabled(
+                    path_valid && !scan_running,
+                    egui::Button::new("Refresh Metadata"),
+                )
+                .on_disabled_hover_text(
+                    "Configure a valid replay folder before refreshing metadata.",
+                );
+            if refresh.clicked() {
+                crate::replay_metadata::start_metadata_scan(
+                    state.clone(),
+                    config_edit.replays_folder.clone(),
+                );
+            }
+        });
+    });
+
+    let cached_count = config_edit.uploaded_replays.len();
+    if cached_count == 0 {
+        ui.add_space(4.0);
+        ui.label(helper_text(
+            "No uploaded replay cache entries yet. Upload or sync replays to populate this list.",
+        ));
+        return;
+    }
+
+    let search_id = ui.make_persistent_id("replay_cache_search");
+    let mut search = ui
+        .data(|data| data.get_temp::<String>(search_id))
+        .unwrap_or_default();
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        ui.label(helper_text("Search"));
+        if ui
+            .add_sized(
+                [ui.available_width().min(260.0), 22.0],
+                egui::TextEdit::singleline(&mut search).hint_text("name, map, date, filename"),
+            )
+            .changed()
+        {
+            ui.data_mut(|data| data.insert_temp(search_id, search.clone()));
+        }
+    });
+
+    let rows = replay_cache_rows(&config_edit.uploaded_replays, &snapshot.entries, &search);
+    ui.add_space(4.0);
+    egui::ScrollArea::vertical()
+        .max_height(210.0)
+        .show(ui, |ui| {
+            egui::Grid::new("replay_cache_grid")
+                .striped(true)
+                .num_columns(6)
+                .min_col_width(68.0)
+                .show(ui, |ui| {
+                    ui.strong("Replay");
+                    ui.strong("Date");
+                    ui.strong("Map");
+                    ui.strong("Score");
+                    ui.strong("Players");
+                    ui.strong("Source");
+                    ui.end_row();
+
+                    for row in rows {
+                        ui.label(row.primary.clone())
+                            .on_hover_text(row.hover.clone());
+                        ui.label(
+                            egui::RichText::new(row.date.clone())
+                                .size(11.0)
+                                .color(egui::Color32::from_gray(178)),
+                        )
+                        .on_hover_text(row.hover.clone());
+                        ui.label(
+                            egui::RichText::new(row.map.clone())
+                                .size(11.0)
+                                .color(egui::Color32::from_gray(178)),
+                        )
+                        .on_hover_text(row.hover.clone());
+                        ui.label(
+                            egui::RichText::new(row.score.clone())
+                                .size(11.0)
+                                .color(egui::Color32::from_gray(178)),
+                        )
+                        .on_hover_text(row.hover.clone());
+                        ui.label(
+                            egui::RichText::new(row.players.clone())
+                                .size(11.0)
+                                .color(egui::Color32::from_gray(178)),
+                        )
+                        .on_hover_text(row.hover.clone());
+                        ui.label(
+                            egui::RichText::new(row.source_label)
+                                .size(11.0)
+                                .color(row.source_color),
+                        )
+                        .on_hover_text(row.hover);
+                        ui.end_row();
+                    }
+                });
+        });
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct ReplayCacheRow {
+    primary: String,
+    date: String,
+    map: String,
+    score: String,
+    players: String,
+    source_label: &'static str,
+    source_color: egui::Color32,
+    hover: String,
+}
+
+fn replay_cache_rows(
+    uploaded_replays: &[String],
+    metadata: &std::collections::HashMap<String, crate::replay_metadata::ReplayMetadataEntry>,
+    search: &str,
+) -> Vec<ReplayCacheRow> {
+    let query = search.trim().to_lowercase();
+    uploaded_replays
+        .iter()
+        .rev()
+        .filter_map(|filename| {
+            let entry = find_metadata_entry(metadata, filename);
+            let row = replay_cache_row(filename, entry);
+            if query.is_empty() || row_matches_query(&row, &query) {
+                Some(row)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn find_metadata_entry<'a>(
+    metadata: &'a std::collections::HashMap<String, crate::replay_metadata::ReplayMetadataEntry>,
+    filename: &str,
+) -> Option<&'a crate::replay_metadata::ReplayMetadataEntry> {
+    metadata.get(filename).or_else(|| {
+        metadata
+            .iter()
+            .find(|(candidate, _)| candidate.eq_ignore_ascii_case(filename))
+            .map(|(_, entry)| entry)
+    })
+}
+
+fn replay_cache_row(
+    filename: &str,
+    entry: Option<&crate::replay_metadata::ReplayMetadataEntry>,
+) -> ReplayCacheRow {
+    match entry {
+        Some(entry) if entry.has_metadata() => {
+            let primary = shorten_text(&entry.display_name, 36);
+            ReplayCacheRow {
+                primary,
+                date: display_or_dash(&entry.date),
+                map: display_or_dash(&entry.map_name),
+                score: score_label(entry),
+                players: players_label(entry),
+                source_label: "Local metadata",
+                source_color: egui::Color32::from_rgb(100, 220, 120),
+                hover: metadata_hover(filename, entry),
+            }
+        }
+        Some(entry) => ReplayCacheRow {
+            primary: shorten_text(filename.trim_end_matches(".replay"), 36),
+            date: "-".to_string(),
+            map: "-".to_string(),
+            score: "-".to_string(),
+            players: "-".to_string(),
+            source_label: "Parse failed",
+            source_color: egui::Color32::from_rgb(230, 95, 85),
+            hover: format!("{}\n{}", filename, entry.error),
+        },
+        None => ReplayCacheRow {
+            primary: shorten_text(filename.trim_end_matches(".replay"), 36),
+            date: "-".to_string(),
+            map: "-".to_string(),
+            score: "-".to_string(),
+            players: "-".to_string(),
+            source_label: "Cache only",
+            source_color: egui::Color32::from_gray(165),
+            hover: format!("{filename}\nNo matching local replay file for metadata."),
+        },
+    }
+}
+
+fn display_or_dash(value: &str) -> String {
+    let value = value.trim();
+    if value.is_empty() {
+        "-".to_string()
+    } else {
+        shorten_text(value, 22)
+    }
+}
+
+fn score_label(entry: &crate::replay_metadata::ReplayMetadataEntry) -> String {
+    if let (Some(team0), Some(team1)) = (entry.team0_score, entry.team1_score) {
+        format!("{team0}-{team1}")
+    } else {
+        "-".to_string()
+    }
+}
+
+fn players_label(entry: &crate::replay_metadata::ReplayMetadataEntry) -> String {
+    if entry.player_names.is_empty() {
+        "-".to_string()
+    } else if entry.player_names.len() == 1 {
+        shorten_text(&entry.player_names[0], 22)
+    } else {
+        shorten_text(
+            &format!(
+                "{} + {}",
+                entry.player_names[0],
+                entry.player_names.len() - 1
+            ),
+            22,
+        )
+    }
+}
+
+fn metadata_hover(filename: &str, entry: &crate::replay_metadata::ReplayMetadataEntry) -> String {
+    let mut lines = vec![format!("File: {filename}")];
+    if !entry.replay_id.trim().is_empty() {
+        lines.push(format!("Replay ID: {}", entry.replay_id));
+    }
+    if !entry.player_names.is_empty() {
+        lines.push(format!("Players: {}", entry.player_names.join(", ")));
+    }
+    lines.join("\n")
+}
+
+fn row_matches_query(row: &ReplayCacheRow, query: &str) -> bool {
+    row.primary.to_lowercase().contains(query)
+        || row.date.to_lowercase().contains(query)
+        || row.map.to_lowercase().contains(query)
+        || row.score.to_lowercase().contains(query)
+        || row.players.to_lowercase().contains(query)
+        || row.hover.to_lowercase().contains(query)
+        || row.source_label.to_lowercase().contains(query)
+}
+
+fn shorten_text(text: &str, max_chars: usize) -> String {
+    let trimmed = text.trim();
+    if trimmed.chars().count() <= max_chars {
+        return trimmed.to_string();
+    }
+    let keep = max_chars.saturating_sub(1);
+    format!("{}...", trimmed.chars().take(keep).collect::<String>())
+}
+
 fn render_upload_progress(ui: &mut egui::Ui, state: &Arc<AppState>) {
     let progress = state.replays.upload_progress.load();
     if !progress.running && progress.total == 0 && progress.recent_events.is_empty() {
@@ -486,4 +765,83 @@ fn render_upload_progress(ui: &mut egui::Ui, state: &Arc<AppState>) {
     }
 
     ui.add_space(4.0);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn metadata_entry(
+        filename: &str,
+        display_name: &str,
+    ) -> crate::replay_metadata::ReplayMetadataEntry {
+        crate::replay_metadata::ReplayMetadataEntry {
+            filename: filename.to_string(),
+            display_name: display_name.to_string(),
+            date: "2026-06-14:20-15".to_string(),
+            map_name: "Stadium_P".to_string(),
+            team0_score: Some(3),
+            team1_score: Some(2),
+            player_names: vec!["One".to_string(), "Two".to_string()],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn replay_cache_rows_use_newest_cached_first() {
+        let uploaded = vec!["old.replay".to_string(), "new.replay".to_string()];
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            "old.replay".to_string(),
+            metadata_entry("old.replay", "Old Match"),
+        );
+        metadata.insert(
+            "new.replay".to_string(),
+            metadata_entry("new.replay", "New Match"),
+        );
+
+        let rows = replay_cache_rows(&uploaded, &metadata, "");
+
+        assert_eq!(rows[0].primary, "New Match");
+        assert_eq!(rows[1].primary, "Old Match");
+    }
+
+    #[test]
+    fn replay_cache_row_uses_local_metadata_when_available() {
+        let entry = metadata_entry("match.replay", "Ranked Doubles");
+
+        let row = replay_cache_row("match.replay", Some(&entry));
+
+        assert_eq!(row.primary, "Ranked Doubles");
+        assert_eq!(row.source_label, "Local metadata");
+        assert_eq!(row.map, "Stadium_P");
+        assert_eq!(row.score, "3-2");
+        assert_eq!(row.players, "One + 1");
+    }
+
+    #[test]
+    fn replay_cache_row_keeps_cache_only_entries_visible() {
+        let row = replay_cache_row("abcdef.replay", None);
+
+        assert_eq!(row.primary, "abcdef");
+        assert_eq!(row.source_label, "Cache only");
+        assert_eq!(row.map, "-");
+        assert!(row.hover.contains("No matching local replay"));
+    }
+
+    #[test]
+    fn replay_cache_rows_filter_by_metadata_detail() {
+        let uploaded = vec!["match.replay".to_string()];
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            "match.replay".to_string(),
+            metadata_entry("match.replay", "Ranked Doubles"),
+        );
+
+        let rows = replay_cache_rows(&uploaded, &metadata, "stadium");
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].primary, "Ranked Doubles");
+    }
 }

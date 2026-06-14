@@ -2,6 +2,7 @@ pub mod automation;
 pub mod history;
 pub mod hoops_fixer;
 pub mod json_utils;
+pub mod replay_metadata;
 pub mod replays;
 pub mod stats_api;
 pub mod stats_api_parser;
