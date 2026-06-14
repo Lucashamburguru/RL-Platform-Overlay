@@ -9,6 +9,7 @@ pub(crate) fn render_history_settings_tab(
     config_edit: &mut Config,
     changed: &mut bool,
     confirm_modal: &mut Option<crate::ui::app::ConfirmAction>,
+    history_players: Option<&Result<Vec<crate::history::PlayerHistorySummary>, String>>,
 ) {
     settings_section(ui, "Player History", |ui| {
         setting_row(ui, "Storage", |ui| {
@@ -60,7 +61,6 @@ pub(crate) fn render_history_settings_tab(
             return;
         }
 
-        crate::history::refresh_totals(state);
         let totals = state.history.totals.load();
         ui.horizontal(|ui| {
             ui.label(format!("Matches: {}", totals.matches));
@@ -83,11 +83,16 @@ pub(crate) fn render_history_settings_tab(
             return;
         }
 
-        match crate::history::load_all_player_summaries() {
+        let Some(history_players) = history_players else {
+            ui.label(helper_text("Loading history..."));
+            return;
+        };
+
+        match history_players {
             Ok(players) if players.is_empty() => {
                 ui.label(helper_text("No completed matches have been stored yet."));
             }
-            Ok(players) => render_player_table(ui, &players),
+            Ok(players) => render_player_table(ui, players),
             Err(error) => {
                 status_text(
                     ui,

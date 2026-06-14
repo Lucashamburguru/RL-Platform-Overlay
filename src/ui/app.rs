@@ -28,6 +28,8 @@ pub enum ConfirmAction {
 pub struct MainApp {
     state: Arc<AppState>,
     settings_tab: SettingsTab,
+    history_players_cache: Option<Result<Vec<crate::history::PlayerHistorySummary>, String>>,
+    history_players_cache_revision: u64,
     is_rl_running: bool,
     rl_process_detection_detail: String,
     last_rl_check: std::time::Instant,
@@ -47,6 +49,8 @@ impl MainApp {
         Self {
             state,
             settings_tab: SettingsTab::Overlay,
+            history_players_cache: None,
+            history_players_cache_revision: 0,
             is_rl_running: false,
             rl_process_detection_detail: "not checked".to_string(),
             last_rl_check: std::time::Instant::now()
@@ -73,6 +77,21 @@ impl MainApp {
         self.rl_process_detection_detail = detection.detail;
         self.last_rl_check = now;
     }
+
+    fn refresh_history_players_cache_if_needed(&mut self) {
+        let revision = self.state.history.revision.load(Ordering::SeqCst);
+        if self.history_players_cache.is_some() && self.history_players_cache_revision == revision {
+            return;
+        }
+
+        self.history_players_cache =
+            Some(crate::history::load_all_player_summaries(&self.state).map_err(|e| e.to_string()));
+        self.history_players_cache_revision = revision;
+    }
+
+    fn invalidate_history_players_cache(&mut self) {
+        self.history_players_cache = None;
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -97,6 +116,11 @@ impl eframe::App for MainApp {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if self.state.flags.should_exit.load(Ordering::SeqCst) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            return;
+        }
+
         let is_launched = self.state.flags.is_launched.load(Ordering::SeqCst);
         let is_recording_any = self.state.hotkeys.is_recording_kb.load(Ordering::SeqCst)
             || self.state.hotkeys.is_recording_ctrl.load(Ordering::SeqCst)
@@ -687,6 +711,9 @@ impl MainApp {
         render_update_notice(ui, &self.state);
         render_settings_tabs(ui, &mut self.settings_tab, self.state.debug_enabled);
         self.refresh_rocket_league_process_detection();
+        if self.settings_tab == SettingsTab::History && config_edit.history_enabled {
+            self.refresh_history_players_cache_if_needed();
+        }
 
         egui::ScrollArea::vertical()
             .max_height(ui.available_height() - 40.0 * ui.ctx().pixels_per_point().min(1.2))
@@ -733,6 +760,7 @@ impl MainApp {
                     &mut config_edit,
                     &mut changed,
                     &mut self.confirm_modal,
+                    self.history_players_cache.as_ref(),
                 ),
                 SettingsTab::Debug => render_debug_settings_tab(
                     ui,
@@ -776,6 +804,7 @@ impl MainApp {
             let history_enabled = config_edit.history_enabled;
             let history_indicators_enabled = config_edit.lobby_history_indicators_enabled;
             self.state.save_config(config_edit);
+            self.invalidate_history_players_cache();
             if history_enabled {
                 crate::history::refresh_totals(&self.state);
                 if history_indicators_enabled {
@@ -909,8 +938,10 @@ impl MainApp {
             ConfirmAction::DeleteBackups => {
                 crate::hoops_fixer::start_delete_backups_task(self.state.clone());
             }
-            ConfirmAction::ClearHistory => match crate::history::clear_history() {
+            ConfirmAction::ClearHistory => match crate::history::clear_history(&self.state) {
                 Ok(()) => {
+                    self.state.history.revision.fetch_add(1, Ordering::SeqCst);
+                    self.invalidate_history_players_cache();
                     self.state
                         .history
                         .player_summaries

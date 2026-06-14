@@ -1,3 +1,4 @@
+pub mod automation;
 pub mod history;
 pub mod hoops_fixer;
 pub mod json_utils;
@@ -38,12 +39,8 @@ pub async fn run(debug_enabled: bool) -> eframe::Result<()> {
 
     let net_state = state.clone();
     tokio::spawn(async move {
-        let network_task =
-            tokio::spawn(async move { network::start_network_task(net_state).await });
-        match network_task.await {
-            Ok(()) => log::error!("Network task exited unexpectedly."),
-            Err(error) => log::error!("Network task failed: {error}"),
-        }
+        network::start_network_task(net_state).await;
+        log::error!("Network task exited unexpectedly.");
     });
 
     mmr::start_mmr_fetch_task(state.clone());

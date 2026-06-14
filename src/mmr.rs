@@ -62,20 +62,50 @@ fn tracker_api_url(player: &TrackerPlayer) -> String {
     )
 }
 
-pub async fn resolve_xuid_to_gamertag(client: &wreq::Client, xuid: &str) -> Result<String, String> {
+#[derive(thiserror::Error, Debug)]
+pub enum MmrError {
+    #[error("XUID resolution request failed: {0}")]
+    XuidRequest(String),
+    #[error("XUID resolution returned non-200 status: {0}")]
+    XuidStatus(u16),
+    #[error("XUID resolution decode error: {0}")]
+    XuidDecode(String),
+    #[error("XUID resolution json error: {0}")]
+    XuidJson(String),
+    #[error("API request error: {0}")]
+    ApiRequest(#[from] wreq::Error),
+    #[error("HTTP status error: {0}")]
+    HttpStatus(u16),
+    #[error("Decode error: {0}")]
+    Decode(String),
+    #[error("JSON error: {0}")]
+    Json(#[from] serde_json::Error),
+    #[error("Failed to extract stats")]
+    ExtractStats,
+}
+
+pub async fn resolve_xuid_to_gamertag(
+    client: &wreq::Client,
+    cache: Option<&std::sync::Mutex<HashMap<String, String>>>,
+    xuid: &str,
+) -> Result<String, MmrError> {
+    if let Some(gamertag) = cache
+        .and_then(|c| c.lock().ok())
+        .and_then(|g| g.get(xuid).cloned())
+    {
+        return Ok(gamertag);
+    }
+
     let url = format!("https://api.geysermc.org/v2/xbox/gamertag/{}", xuid);
     let response = client
         .get(&url)
         .send()
         .await
-        .map_err(|e| format!("XUID resolution request failed: {}", e))?;
+        .map_err(|e| MmrError::XuidRequest(e.to_string()))?;
 
     let status = response.status();
     if !status.is_success() {
-        return Err(format!(
-            "XUID resolution returned non-200 status: {}",
-            status
-        ));
+        return Err(MmrError::XuidStatus(status.as_u16()));
     }
 
     #[derive(Deserialize)]
@@ -86,18 +116,36 @@ pub async fn resolve_xuid_to_gamertag(client: &wreq::Client, xuid: &str) -> Resu
     let text = response
         .text()
         .await
-        .map_err(|e| format!("decode error: {}", e))?;
+        .map_err(|e| MmrError::XuidDecode(e.to_string()))?;
 
-    let res: GeyserResponse = serde_json::from_str(&text)
-        .map_err(|e| format!("Failed to parse Geyser response: {}", e))?;
+    let res: GeyserResponse =
+        serde_json::from_str(&text).map_err(|e| MmrError::XuidJson(e.to_string()))?;
+
+    if let Some(mut guard) = cache.and_then(|c| c.lock().ok()) {
+        guard.insert(xuid.to_string(), res.gamertag.clone());
+    }
 
     Ok(res.gamertag)
 }
 
+async fn send_tracker_request(
+    client: &wreq::Client,
+    url: &str,
+) -> Result<wreq::Response, wreq::Error> {
+    client.get(url)
+        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36")
+        .header("Accept-Language", "en-US,en;q=0.9")
+        .header("Accept", "application/json, text/plain, */*")
+        .header("Referer", "https://rocketleague.tracker.network/")
+        .send()
+        .await
+}
+
 pub async fn fetch_tracker_snapshot(
     client: &wreq::Client,
+    cache: Option<&std::sync::Mutex<HashMap<String, String>>>,
     player: &TrackerPlayer,
-) -> Result<TrackerSnapshot, String> {
+) -> Result<TrackerSnapshot, MmrError> {
     let mut resolved_player = player.clone();
     let platform_lower = player.platform.to_lowercase();
     if (platform_lower == "xbox"
@@ -106,7 +154,7 @@ pub async fn fetch_tracker_snapshot(
         || platform_lower == "xboxseries")
         && player.player_id.parse::<u64>().is_ok()
     {
-        match resolve_xuid_to_gamertag(client, &player.player_id).await {
+        match resolve_xuid_to_gamertag(client, cache, &player.player_id).await {
             Ok(gamertag) => {
                 resolved_player.player_name = gamertag;
             }
@@ -122,14 +170,7 @@ pub async fn fetch_tracker_snapshot(
     }
 
     let api_url = tracker_api_url(&resolved_player);
-    let mut response = client.get(&api_url)
-        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36")
-        .header("Accept-Language", "en-US,en;q=0.9")
-        .header("Accept", "application/json, text/plain, */*")
-        .header("Referer", "https://rocketleague.tracker.network/")
-        .send()
-        .await
-        .map_err(|e| format!("api request error: {}", e))?;
+    let mut response = send_tracker_request(client, &api_url).await?;
 
     let mut status = response.status();
     if status.as_u16() == 404
@@ -139,14 +180,7 @@ pub async fn fetch_tracker_snapshot(
         let mut fallback_player = resolved_player.clone();
         fallback_player.player_id = fallback_player.player_name.clone();
         let fallback_url = tracker_api_url(&fallback_player);
-        if let Ok(resp) = client.get(&fallback_url)
-            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36")
-            .header("Accept-Language", "en-US,en;q=0.9")
-            .header("Accept", "application/json, text/plain, */*")
-            .header("Referer", "https://rocketleague.tracker.network/")
-            .send()
-            .await
-        {
+        if let Ok(resp) = send_tracker_request(client, &fallback_url).await {
             let fallback_status = resp.status();
             if fallback_status.is_success() {
                 response = resp;
@@ -156,16 +190,16 @@ pub async fn fetch_tracker_snapshot(
     }
 
     if !status.is_success() {
-        return Err(format!("non-200 status: {}", status));
+        return Err(MmrError::HttpStatus(status.as_u16()));
     }
 
     let text = response
         .text()
         .await
-        .map_err(|e| format!("decode error: {}", e))?;
-    let payload: Value = serde_json::from_str(&text).map_err(|e| format!("json error: {}", e))?;
+        .map_err(|e| MmrError::Decode(e.to_string()))?;
+    let payload: Value = serde_json::from_str(&text)?;
 
-    extract_tracker_stats(&payload).ok_or_else(|| "Failed to extract stats".to_string())
+    extract_tracker_stats(&payload).ok_or(MmrError::ExtractStats)
 }
 
 fn extract_tracker_stats(payload: &Value) -> Option<TrackerSnapshot> {
@@ -273,8 +307,12 @@ fn select_next_player(
 
         if let Some(cache_entry) = mmr_cache.get(&cache_key) {
             if cache_entry.fetched_at.elapsed() < MMR_CACHE_TTL {
-                cached_player = Some((name.clone(), cache_entry.snapshot.clone()));
-                break;
+                if info.mmr.is_none() {
+                    cached_player = Some((name.clone(), cache_entry.snapshot.clone()));
+                    break;
+                } else {
+                    continue;
+                }
             }
             mmr_cache.remove(&cache_key);
             fetching_players.remove(&cache_key);
@@ -294,6 +332,24 @@ fn select_next_player(
         break;
     }
     (cached_player, target_player)
+}
+
+fn apply_player_mmr(
+    state: &AppState,
+    name: &str,
+    snapshot: TrackerSnapshot,
+    only_if_missing: bool,
+) {
+    state.game.players.rcu(|players| {
+        let mut players_map = (**players).clone();
+        if let Some(player_info) = players_map
+            .get_mut(name)
+            .filter(|p| !p.is_local && (!only_if_missing || p.mmr.is_none()))
+        {
+            player_info.mmr = Some(snapshot.clone());
+        }
+        Arc::new(players_map)
+    });
 }
 
 pub fn start_mmr_fetch_task(state: Arc<AppState>) {
@@ -333,16 +389,7 @@ pub fn start_mmr_fetch_task(state: Arc<AppState>) {
             };
 
             if let Some((name, snapshot)) = cached_player {
-                state.game.players.rcu(|players| {
-                    let mut players_map = (**players).clone();
-                    if let Some(player_info) = players_map.get_mut(&name)
-                        && !player_info.is_local
-                        && player_info.mmr.is_none()
-                    {
-                        player_info.mmr = Some(snapshot.clone());
-                    }
-                    Arc::new(players_map)
-                });
+                apply_player_mmr(&state, &name, snapshot, true);
                 continue;
             }
 
@@ -352,7 +399,13 @@ pub fn start_mmr_fetch_task(state: Arc<AppState>) {
                     &state,
                     format!("Fetching MMR for {} ({})", name, tracker_player.platform),
                 );
-                match fetch_tracker_snapshot(&state.system.http_client, &tracker_player).await {
+                match fetch_tracker_snapshot(
+                    &state.system.http_client,
+                    Some(&state.mmr.xuid_gamertag_cache),
+                    &tracker_player,
+                )
+                .await
+                {
                     Ok(snapshot) => {
                         append_tracker_log(
                             &state,
@@ -370,69 +423,85 @@ pub fn start_mmr_fetch_task(state: Arc<AppState>) {
                                 fetched_at: Instant::now(),
                             },
                         );
-                        state.game.players.rcu(|players| {
-                            let mut players_map = (**players).clone();
-                            if let Some(player_info) = players_map.get_mut(&name) {
-                                player_info.mmr = Some(snapshot.clone());
-                            }
-                            Arc::new(players_map)
-                        });
+                        apply_player_mmr(&state, &name, snapshot, false);
                         fetching_players.remove(&cache_key);
                     }
                     Err(e) => {
-                        if e.contains("404") {
-                            // Profile not found or private on tracker.gg.
-                            // Cache an empty MMR snapshot so we don't query this player again.
-                            append_tracker_log(
-                                &state,
-                                format!(
-                                    "Cached empty MMR (404/not found) for {} ({})",
-                                    name, tracker_player.platform
-                                ),
-                            );
-                            let snapshot = TrackerSnapshot::default();
-                            mmr_cache.insert(
-                                cache_key.clone(),
-                                MmrCacheEntry {
-                                    snapshot: snapshot.clone(),
-                                    fetched_at: Instant::now(),
-                                },
-                            );
-                            state.game.players.rcu(|players| {
-                                let mut players_map = (**players).clone();
-                                if let Some(player_info) = players_map.get_mut(&name) {
-                                    player_info.mmr = Some(snapshot.clone());
-                                }
-                                Arc::new(players_map)
-                            });
-                            fetching_players.remove(&cache_key);
-                        } else {
-                            // Temporary error (rate limit, timeout, 403, etc.).
-                            append_tracker_log(
-                                &state,
-                                format!(
-                                    "Error fetching {} ({}): {}",
-                                    name, tracker_player.platform, e
-                                ),
-                            );
-                            if e.contains("429") || e.contains("403") {
+                        match e {
+                            MmrError::HttpStatus(404) => {
+                                // Profile not found or private on tracker.gg.
+                                // Cache an empty MMR snapshot so we don't query this player again.
+                                append_tracker_log(
+                                    &state,
+                                    format!(
+                                        "Cached empty MMR (404/not found) for {} ({})",
+                                        name, tracker_player.platform
+                                    ),
+                                );
+                                let snapshot = TrackerSnapshot::default();
+                                mmr_cache.insert(
+                                    cache_key.clone(),
+                                    MmrCacheEntry {
+                                        snapshot: snapshot.clone(),
+                                        fetched_at: Instant::now(),
+                                    },
+                                );
+                                apply_player_mmr(&state, &name, snapshot, false);
+                                fetching_players.remove(&cache_key);
+                            }
+                            MmrError::HttpStatus(429) => {
+                                append_tracker_log(
+                                    &state,
+                                    format!(
+                                        "Error fetching {} ({}): Rate limited (429)",
+                                        name, tracker_player.platform
+                                    ),
+                                );
                                 log::warn!(
-                                    "MMR fetching rate limited or blocked: {e}. Cooling down for 60 seconds."
+                                    "MMR fetching rate limited: 429. Cooling down for 60 seconds."
                                 );
                                 cooldown_until = Some(Instant::now() + Duration::from_secs(60));
                                 failed_fetches.insert(
                                     cache_key.clone(),
                                     Instant::now() + Duration::from_secs(300),
                                 );
-                            } else {
+                                fetching_players.remove(&cache_key);
+                            }
+                            MmrError::HttpStatus(403) => {
+                                append_tracker_log(
+                                    &state,
+                                    format!(
+                                        "Error fetching {} ({}): Blocked (403)",
+                                        name, tracker_player.platform
+                                    ),
+                                );
+                                log::warn!(
+                                    "MMR fetching blocked: 403. Cooling down for 60 seconds."
+                                );
+                                cooldown_until = Some(Instant::now() + Duration::from_secs(60));
+                                failed_fetches.insert(
+                                    cache_key.clone(),
+                                    Instant::now() + Duration::from_secs(300),
+                                );
+                                fetching_players.remove(&cache_key);
+                            }
+                            other => {
+                                let err_str = other.to_string();
+                                append_tracker_log(
+                                    &state,
+                                    format!(
+                                        "Error fetching {} ({}): {}",
+                                        name, tracker_player.platform, err_str
+                                    ),
+                                );
                                 // For other errors (like timeouts), back off for 5 seconds globally.
                                 cooldown_until = Some(Instant::now() + Duration::from_secs(5));
                                 failed_fetches.insert(
                                     cache_key.clone(),
                                     Instant::now() + Duration::from_secs(120),
                                 );
+                                fetching_players.remove(&cache_key);
                             }
-                            fetching_players.remove(&cache_key);
                         }
                     }
                 }
@@ -520,7 +589,12 @@ pub fn start_local_mmr_refresh(state: Arc<AppState>) {
                 identity.name, identity.platform
             ),
         );
-        let result = fetch_tracker_snapshot(&state.system.http_client, &tracker_player).await;
+        let result = fetch_tracker_snapshot(
+            &state.system.http_client,
+            Some(&state.mmr.xuid_gamertag_cache),
+            &tracker_player,
+        )
+        .await;
 
         let mut local_mmr = (**state.mmr.local_mmr.load()).clone();
         local_mmr.fetching = false;
@@ -541,14 +615,15 @@ pub fn start_local_mmr_refresh(state: Arc<AppState>) {
                 local_mmr.error.clear();
             }
             Err(error) => {
+                let err_str = error.to_string();
                 append_tracker_log(
                     &state,
                     format!(
                         "Error fetching local player {} ({}): {}",
-                        identity.name, identity.platform, error
+                        identity.name, identity.platform, err_str
                     ),
                 );
-                local_mmr.error = error;
+                local_mmr.error = err_str;
             }
         }
         state.mmr.local_mmr.store(Arc::new(local_mmr));
@@ -604,7 +679,7 @@ mod tests {
             .emulation(wreq_util::Emulation::Chrome128)
             .build()
             .unwrap();
-        match fetch_tracker_snapshot(&client, &player).await {
+        match fetch_tracker_snapshot(&client, None, &player).await {
             Ok(snapshot) => {
                 println!("Got snapshot with {} playlists", snapshot.playlists.len());
                 for (id, pl) in snapshot.playlists {
@@ -651,7 +726,7 @@ mod tests {
                 "Fetching MMR for {}/{}...",
                 player.platform, player.player_name
             );
-            match fetch_tracker_snapshot(&client, &player).await {
+            match fetch_tracker_snapshot(&client, None, &player).await {
                 Ok(snapshot) => {
                     println!(
                         "Got snapshot with {} playlists for {}",
@@ -808,7 +883,7 @@ mod tests {
             .emulation(wreq_util::Emulation::Chrome128)
             .build()
             .unwrap();
-        let res = resolve_xuid_to_gamertag(&client, "2535432196048835").await;
+        let res = resolve_xuid_to_gamertag(&client, None, "2535432196048835").await;
         assert_eq!(res.unwrap(), "Tim203");
     }
 }

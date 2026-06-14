@@ -86,8 +86,12 @@ async fn run_replay_upload(state: Arc<AppState>, scan_all_as_uploaded: bool) -> 
         return Ok(());
     }
 
-    let Ok(found_files) = replay_files_in_dir(&replays_dir) else {
-        return Ok(());
+    let found_files = match replay_files_in_dir(&replays_dir) {
+        Ok(files) => files,
+        Err(error) => {
+            log::error!("Failed to scan replays directory: {error}");
+            return Ok(());
+        }
     };
 
     if scan_all_as_uploaded {
@@ -892,4 +896,89 @@ pub fn mark_replays_uploaded(state: &Arc<AppState>, filenames: &[String]) -> usi
         state.save_config(config_edit);
     }
     added
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::AppState;
+    use std::fs;
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "rl_overlay_replays_test_{name}_{}",
+            crate::stats_api::now_ms()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    #[test]
+    fn test_mark_replays_uploaded() {
+        unsafe {
+            std::env::set_var("RL_OVERLAY_TEST", "1");
+        }
+        let state = AppState::new();
+
+        // Initially config should be empty
+        {
+            let config = state.system.config.load();
+            assert!(config.uploaded_replays.is_empty());
+        }
+
+        // Add two replays
+        let added =
+            mark_replays_uploaded(&state, &["a.replay".to_string(), "b.replay".to_string()]);
+        assert_eq!(added, 2);
+
+        {
+            let config = state.system.config.load();
+            assert_eq!(config.uploaded_replays.len(), 2);
+            assert!(config.uploaded_replays.contains(&"a.replay".to_string()));
+            assert!(config.uploaded_replays.contains(&"b.replay".to_string()));
+        }
+
+        // Adding duplicate replays
+        let added_dup = mark_replays_uploaded(&state, &["a.replay".to_string()]);
+        assert_eq!(added_dup, 0);
+
+        {
+            let config = state.system.config.load();
+            assert_eq!(config.uploaded_replays.len(), 2);
+        }
+
+        // Max limit of 500 replays
+        let mut massive_list = Vec::new();
+        for i in 0..600 {
+            massive_list.push(format!("r{i}.replay"));
+        }
+        mark_replays_uploaded(&state, &massive_list);
+
+        {
+            let config = state.system.config.load();
+            assert_eq!(config.uploaded_replays.len(), 500);
+            // Verify newer ones exist
+            assert!(config.uploaded_replays.contains(&"r599.replay".to_string()));
+            // Verify older ones were pruned
+            assert!(!config.uploaded_replays.contains(&"r0.replay".to_string()));
+        }
+    }
+
+    #[test]
+    fn test_pending_replay_files() {
+        let root = temp_dir("pending");
+
+        // Create a fake replay file and a regular file
+        let replay_path = root.join("match1.replay");
+        fs::write(&replay_path, b"fake-replay-data").unwrap();
+        fs::write(root.join("not_a_replay.txt"), b"some-text").unwrap();
+
+        // Verify replay_files_in_dir finds it
+        let files = replay_files_in_dir(&root).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, replay_path);
+
+        let _ = fs::remove_dir_all(root);
+    }
 }

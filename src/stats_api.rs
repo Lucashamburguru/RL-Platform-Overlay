@@ -38,42 +38,43 @@ impl StatsApiTransport {
 /// top-level `{ ... }` JSON objects.
 #[derive(Clone, Debug, Default)]
 pub struct TcpJsonSplitter {
-    leftover: String,
+    leftover: Vec<u8>,
 }
 
 impl TcpJsonSplitter {
-    /// Feeds a new text chunk from the TCP stream and returns any completed JSON payloads.
+    /// Feeds a new byte chunk from the TCP stream and returns any completed JSON payloads.
     ///
-    /// If a JSON object is only partially received, its characters are retained in an internal
+    /// If a JSON object is only partially received, its bytes are retained in an internal
     /// buffer (`leftover`) and will be completed by subsequent calls to `push`.
-    pub fn push(&mut self, chunk: &str) -> Vec<String> {
-        let text = format!("{}{}", self.leftover, chunk);
-        self.leftover.clear();
-
+    pub fn push(&mut self, chunk: &[u8]) -> Vec<String> {
+        self.leftover.extend_from_slice(chunk);
         let mut payloads = Vec::new();
         let mut start = 0;
         let mut depth = 0;
         let mut in_string = false;
         let mut escaped = false;
 
-        for (i, c) in text.char_indices() {
+        for i in 0..self.leftover.len() {
+            let b = self.leftover[i];
             if escaped {
                 escaped = false;
                 continue;
             }
-            match c {
-                '\\' if in_string => escaped = true,
-                '"' => in_string = !in_string,
-                '{' if !in_string => {
+            match b {
+                b'\\' if in_string => escaped = true,
+                b'"' => in_string = !in_string,
+                b'{' if !in_string => {
                     if depth == 0 {
                         start = i;
                     }
                     depth += 1;
                 }
-                '}' if !in_string && depth > 0 => {
+                b'}' if !in_string && depth > 0 => {
                     depth -= 1;
                     if depth == 0 {
-                        payloads.push(text[start..=i].to_string());
+                        let bytes = &self.leftover[start..=i];
+                        let s = String::from_utf8_lossy(bytes).into_owned();
+                        payloads.push(s);
                     }
                 }
                 _ => {}
@@ -81,7 +82,9 @@ impl TcpJsonSplitter {
         }
 
         if depth > 0 {
-            self.leftover = text[start..].to_string();
+            self.leftover = self.leftover[start..].to_vec();
+        } else {
+            self.leftover.clear();
         }
 
         payloads
@@ -121,7 +124,14 @@ pub async fn capture_to_file(output: &Path, seconds: u64) -> io::Result<()> {
             writeln!(file, "connected_transport=websocket")?;
             capture_websocket(ws_stream, &mut file, deadline).await?;
         }
-        Err(error) if error.to_string().contains("invalid HTTP version") => {
+        Err(error)
+            if matches!(
+                error,
+                tokio_tungstenite::tungstenite::Error::Protocol(
+                    tokio_tungstenite::tungstenite::error::ProtocolError::HttparseError(_)
+                )
+            ) =>
+        {
             writeln!(file, "websocket_probe_error={error}")?;
             writeln!(file, "connected_transport=tcp")?;
             capture_tcp(&mut file, deadline).await?;
@@ -193,8 +203,7 @@ async fn capture_tcp(file: &mut File, deadline: tokio::time::Instant) -> io::Res
             Err(_) => return Ok(()),
         };
 
-        let chunk = String::from_utf8_lossy(&buffer[..n]);
-        for payload in splitter.push(&chunk) {
+        for payload in splitter.push(&buffer[..n]) {
             write_payload(file, "tcp-json-object", &payload)?;
         }
     }
@@ -235,8 +244,8 @@ mod tests {
     #[test]
     fn tcp_splitter_handles_split_payloads() {
         let mut splitter = TcpJsonSplitter::default();
-        assert!(splitter.push(r#"{"Event":"Update"#).is_empty());
-        let payloads = splitter.push(r#"State","Data":{"Players":[]}}"#);
+        assert!(splitter.push(b"{\"Event\":\"Update").is_empty());
+        let payloads = splitter.push(b"State\",\"Data\":{\"Players\":[]}}");
         assert_eq!(payloads.len(), 1);
         assert_eq!(
             payloads[0],
@@ -247,7 +256,7 @@ mod tests {
     #[test]
     fn tcp_splitter_handles_braces_inside_strings() {
         let mut splitter = TcpJsonSplitter::default();
-        let payloads = splitter.push(r#"{"Event":"UpdateState","Data":{"Name":"A } B"}}"#);
+        let payloads = splitter.push(b"{\"Event\":\"UpdateState\",\"Data\":{\"Name\":\"A } B\"}}");
         assert_eq!(payloads.len(), 1);
     }
 }

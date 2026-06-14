@@ -13,203 +13,18 @@ use tokio::io::AsyncReadExt;
 use tokio::net::TcpStream;
 use tokio_tungstenite::connect_async;
 
-async fn simulate_key_tap(key: rdev::Key) -> Result<(), rdev::SimulateError> {
-    rdev::simulate(&rdev::EventType::KeyPress(key))?;
-    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-    rdev::simulate(&rdev::EventType::KeyRelease(key))?;
-    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-    Ok(())
-}
-
-async fn simulate_auto_key_tap(key: rdev::Key, action: &str) -> bool {
-    if !rocket_league_accepts_auto_input() {
-        log::info!("{action} skipped: Rocket League is not the foreground window.");
-        return false;
-    }
-
-    if let Err(error) = simulate_key_tap(key).await {
-        log::error!("{action} key simulation failed: {error:?}");
-        return false;
-    }
-
-    true
-}
-
-async fn simulate_sequence(sequence: &str, action: &str, default_delay_ms: u64) {
-    let steps = parse_sequence(sequence, default_delay_ms);
-    if steps.is_empty() {
-        log::error!("{action} skipped: no valid steps in sequence '{sequence}'.");
-        return;
-    }
-
-    for step in steps {
-        match step {
-            SequenceStep::Key(key) => {
-                if !simulate_auto_key_tap(key, action).await {
-                    return;
-                }
-            }
-            SequenceStep::Delay(dur) => {
-                tokio::time::sleep(dur).await;
-            }
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SequenceStep {
-    Key(rdev::Key),
-    Delay(std::time::Duration),
-}
-
-fn parse_sequence(seq: &str, default_delay_ms: u64) -> Vec<SequenceStep> {
-    let mut steps = Vec::new();
-    let tokens = seq.split([',', ' ', '+']);
-    for token in tokens {
-        let token = token.trim();
-        if token.is_empty() {
-            continue;
-        }
-        let token_lower = token.to_lowercase();
-        if token_lower.starts_with("delay") || token_lower.starts_with("wait") {
-            let ms: u64 = token_lower
-                .chars()
-                .filter(|c| c.is_ascii_digit())
-                .collect::<String>()
-                .parse()
-                .unwrap_or(default_delay_ms);
-            steps.push(SequenceStep::Delay(std::time::Duration::from_millis(ms)));
-        } else if let Some(key) = parse_auto_key(token) {
-            steps.push(SequenceStep::Key(key));
-            if default_delay_ms > 0 {
-                steps.push(SequenceStep::Delay(std::time::Duration::from_millis(
-                    default_delay_ms,
-                )));
-            }
-        }
-    }
-    steps
-}
-
-fn parse_auto_key(token: &str) -> Option<rdev::Key> {
-    let mut normalized = token
-        .trim()
-        .trim_matches(['[', ']'])
-        .to_ascii_lowercase()
-        .replace(['-', '_'], "");
-    if normalized.is_empty() {
-        return None;
-    }
-    if normalized.starts_with("key") && normalized.len() == 4 {
-        normalized = normalized[3..].to_string();
-    }
-
-    match normalized.as_str() {
-        "enter" | "return" => Some(rdev::Key::Return),
-        "escape" | "esc" => Some(rdev::Key::Escape),
-        "space" => Some(rdev::Key::Space),
-        "tab" => Some(rdev::Key::Tab),
-        "backspace" => Some(rdev::Key::Backspace),
-        "uparrow" | "up" => Some(rdev::Key::UpArrow),
-        "downarrow" | "down" => Some(rdev::Key::DownArrow),
-        "leftarrow" | "left" => Some(rdev::Key::LeftArrow),
-        "rightarrow" | "right" => Some(rdev::Key::RightArrow),
-        "0" | "num0" | "key0" => Some(rdev::Key::Num0),
-        "1" | "num1" | "key1" => Some(rdev::Key::Num1),
-        "2" | "num2" | "key2" => Some(rdev::Key::Num2),
-        "3" | "num3" | "key3" => Some(rdev::Key::Num3),
-        "4" | "num4" | "key4" => Some(rdev::Key::Num4),
-        "5" | "num5" | "key5" => Some(rdev::Key::Num5),
-        "6" | "num6" | "key6" => Some(rdev::Key::Num6),
-        "7" | "num7" | "key7" => Some(rdev::Key::Num7),
-        "8" | "num8" | "key8" => Some(rdev::Key::Num8),
-        "9" | "num9" | "key9" => Some(rdev::Key::Num9),
-        "kp0" | "numpad0" => Some(rdev::Key::Kp0),
-        "kp1" | "numpad1" => Some(rdev::Key::Kp1),
-        "kp2" | "numpad2" => Some(rdev::Key::Kp2),
-        "kp3" | "numpad3" => Some(rdev::Key::Kp3),
-        "kp4" | "numpad4" => Some(rdev::Key::Kp4),
-        "kp5" | "numpad5" => Some(rdev::Key::Kp5),
-        "kp6" | "numpad6" => Some(rdev::Key::Kp6),
-        "kp7" | "numpad7" => Some(rdev::Key::Kp7),
-        "kp8" | "numpad8" => Some(rdev::Key::Kp8),
-        "kp9" | "numpad9" => Some(rdev::Key::Kp9),
-        "kpenter" | "numpadenter" => Some(rdev::Key::KpReturn),
-        letter if letter.len() == 1 => match letter.as_bytes()[0] {
-            b'a' => Some(rdev::Key::KeyA),
-            b'b' => Some(rdev::Key::KeyB),
-            b'c' => Some(rdev::Key::KeyC),
-            b'd' => Some(rdev::Key::KeyD),
-            b'e' => Some(rdev::Key::KeyE),
-            b'f' => Some(rdev::Key::KeyF),
-            b'g' => Some(rdev::Key::KeyG),
-            b'h' => Some(rdev::Key::KeyH),
-            b'i' => Some(rdev::Key::KeyI),
-            b'j' => Some(rdev::Key::KeyJ),
-            b'k' => Some(rdev::Key::KeyK),
-            b'l' => Some(rdev::Key::KeyL),
-            b'm' => Some(rdev::Key::KeyM),
-            b'n' => Some(rdev::Key::KeyN),
-            b'o' => Some(rdev::Key::KeyO),
-            b'p' => Some(rdev::Key::KeyP),
-            b'q' => Some(rdev::Key::KeyQ),
-            b'r' => Some(rdev::Key::KeyR),
-            b's' => Some(rdev::Key::KeyS),
-            b't' => Some(rdev::Key::KeyT),
-            b'u' => Some(rdev::Key::KeyU),
-            b'v' => Some(rdev::Key::KeyV),
-            b'w' => Some(rdev::Key::KeyW),
-            b'x' => Some(rdev::Key::KeyX),
-            b'y' => Some(rdev::Key::KeyY),
-            b'z' => Some(rdev::Key::KeyZ),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-fn rocket_league_accepts_auto_input() -> bool {
-    #[cfg(target_os = "windows")]
-    {
-        is_rocket_league_foreground_window()
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        true
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn is_rocket_league_foreground_window() -> bool {
-    use sysinfo::{Pid, ProcessesToUpdate, System};
-    use winapi::um::winuser::{GetForegroundWindow, GetWindowThreadProcessId};
-
-    unsafe {
-        let hwnd = GetForegroundWindow();
-        if hwnd.is_null() {
-            return false;
-        }
-
-        let mut process_id = 0;
-        GetWindowThreadProcessId(hwnd, &mut process_id);
-        if process_id == 0 {
-            return false;
-        }
-
-        let pid = Pid::from_u32(process_id);
-        let mut system = System::new();
-        system.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
-
-        system
-            .process(pid)
-            .is_some_and(|process| crate::assets::is_rocket_league_name(process.name()))
-    }
+fn clear_lobby_state(state: &AppState) {
+    state.game.players.store(Arc::new(HashMap::new()));
+    state.game.match_roster.store(Arc::new(HashMap::new()));
+    state.game.match_roster_guid.store(Arc::new(String::new()));
+    state.game.local_player_name.store(Arc::new("".to_string()));
 }
 
 fn handle_match_reset(state: &Arc<AppState>, early_leave: bool) {
     let players = state.game.players.load();
-    let is_online = players.values().any(|p| !p.is_local && !p.is_bot);
+    let match_roster = state.game.match_roster.load();
+    let is_online =
+        players.values().any(is_online_player) || match_roster.values().any(is_online_player);
 
     let mut session = (**state.game.session.load()).clone();
     let matches_before = session.matches_played;
@@ -223,8 +38,7 @@ fn handle_match_reset(state: &Arc<AppState>, early_leave: bool) {
     session.handle_reset_event();
     state.game.session.store(Arc::new(session));
 
-    state.game.players.store(Arc::new(HashMap::new()));
-    state.game.local_player_name.store(Arc::new("".to_string()));
+    clear_lobby_state(state);
     state
         .game
         .local_team
@@ -257,11 +71,15 @@ pub async fn start_network_task_with_addr(state: Arc<AppState>, addr: &str) {
                     }
                 }
                 state.flags.is_connected.store(false, Ordering::SeqCst);
-                state.game.players.store(Arc::new(HashMap::new()));
-                state.game.local_player_name.store(Arc::new("".to_string()));
+                clear_lobby_state(&state);
             }
             Err(e) => {
-                if format!("{}", e).contains("invalid HTTP version") {
+                if matches!(
+                    e,
+                    tokio_tungstenite::tungstenite::Error::Protocol(
+                        tokio_tungstenite::tungstenite::error::ProtocolError::HttparseError(_)
+                    )
+                ) {
                     log::info!("Detected raw TCP traffic. Switching to TCP mode...");
                     if let Ok(mut stream) = TcpStream::connect(addr).await {
                         log::info!("Connected to Rocket League via TCP!");
@@ -273,8 +91,7 @@ pub async fn start_network_task_with_addr(state: Arc<AppState>, addr: &str) {
                             match stream.read(&mut buffer).await {
                                 Ok(0) => break, // EOF
                                 Ok(n) => {
-                                    let text = String::from_utf8_lossy(&buffer[..n]);
-                                    for json_str in splitter.push(&text) {
+                                    for json_str in splitter.push(&buffer[..n]) {
                                         match serde_json::from_str::<Value>(&json_str) {
                                             Ok(json) => handle_event(&state, &json),
                                             Err(error) => {
@@ -292,8 +109,7 @@ pub async fn start_network_task_with_addr(state: Arc<AppState>, addr: &str) {
                             }
                         }
                         state.flags.is_connected.store(false, Ordering::SeqCst);
-                        state.game.players.store(Arc::new(HashMap::new()));
-                        state.game.local_player_name.store(Arc::new("".to_string()));
+                        clear_lobby_state(&state);
                     } else {
                         state.flags.is_connected.store(false, Ordering::SeqCst);
                         update_connection_error(&state, "Could not connect via TCP.".to_string());
@@ -339,16 +155,30 @@ fn handle_event(state: &Arc<AppState>, json: &Value) {
             let state_clone = state.clone();
             tokio::spawn(async move {
                 let config = state_clone.system.config.load();
+                let mut system = sysinfo::System::new();
+
                 if config.auto_gg {
                     tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
                     log::info!("Auto-GG: sending configured key sequence...");
-                    simulate_sequence(&config.auto_gg_sequence, "Auto-GG", 125).await;
+                    crate::automation::simulate_sequence(
+                        &config.auto_gg_sequence,
+                        "Auto-GG",
+                        125,
+                        &mut system,
+                    )
+                    .await;
                 }
 
                 if config.auto_freeplay {
                     tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
                     log::info!("Auto-Freeplay: Navigating to Free Play...");
-                    simulate_sequence(&config.auto_freeplay_sequence, "Auto-Freeplay", 0).await;
+                    crate::automation::simulate_sequence(
+                        &config.auto_freeplay_sequence,
+                        "Auto-Freeplay",
+                        0,
+                        &mut system,
+                    )
+                    .await;
                 }
             });
 
@@ -408,8 +238,50 @@ fn handle_update_state(state: &Arc<AppState>, parsed_event: &StatsApiEvent) {
         // println!("State Updated: {} players in lobby", new_players.len());
     }
     let roster_changed = store_players_preserving_mmr(state, parsed_event.players.clone());
+    update_match_roster(state, parsed_event);
 
     update_session_from_event(state, parsed_event, roster_changed);
+}
+
+fn update_match_roster(state: &Arc<AppState>, parsed_event: &StatsApiEvent) {
+    let match_guid = parsed_event.mode.match_guid.trim();
+    if match_guid.is_empty() || parsed_event.players.is_empty() {
+        return;
+    }
+
+    let frame_roster: HashMap<String, PlayerInfo> = parsed_event
+        .players
+        .values()
+        .filter_map(|player| {
+            crate::history::player_key(player).map(|key| (key.as_str().to_string(), player.clone()))
+        })
+        .collect();
+    if frame_roster.is_empty() {
+        return;
+    }
+
+    let current_guid = state.game.match_roster_guid.load();
+    if current_guid.as_str() != match_guid {
+        state
+            .game
+            .match_roster_guid
+            .store(Arc::new(match_guid.to_string()));
+        state.game.match_roster.store(Arc::new(frame_roster));
+        return;
+    }
+    drop(current_guid);
+
+    state.game.match_roster.rcu(|current_roster| {
+        let mut merged = (**current_roster).clone();
+        for (key, player) in &frame_roster {
+            merged.insert(key.clone(), player.clone());
+        }
+        Arc::new(merged)
+    });
+}
+
+fn is_online_player(player: &PlayerInfo) -> bool {
+    !player.is_local && !player.is_bot
 }
 
 fn apply_local_player_update(state: &Arc<AppState>, parsed_event: &StatsApiEvent) {
@@ -527,111 +399,101 @@ fn players_have_round_stats(parsed_event: &StatsApiEvent) -> bool {
     })
 }
 
-fn update_transport(state: &Arc<AppState>, transport: StatsApiTransport) {
-    let mut diagnostics = (**state.system.network_diagnostics.load()).clone();
-    diagnostics.transport = transport;
-    diagnostics.last_connection_error.clear();
-    state
-        .system
-        .network_diagnostics
-        .store(Arc::new(diagnostics));
+fn update_diagnostics<F>(state: &AppState, mut f: F)
+where
+    F: FnMut(&mut crate::state::NetworkDiagnostics),
+{
+    let f_ref = &mut f;
+    state.system.network_diagnostics.rcu(|d| {
+        let mut d_clone = (**d).clone();
+        f_ref(&mut d_clone);
+        Arc::new(d_clone)
+    });
 }
 
-fn update_last_event(state: &Arc<AppState>, event: &str) {
+fn update_transport(state: &AppState, transport: StatsApiTransport) {
+    update_diagnostics(state, |d| {
+        d.transport = transport;
+        d.last_connection_error.clear();
+    });
+}
+
+fn update_last_event(state: &AppState, event: &str) {
     let current = state.system.network_diagnostics.load();
     let now = crate::stats_api::now_ms();
     let elapsed_ms = now.saturating_sub(current.last_event_unix_ms);
     if current.last_event == event && current.last_parse_error.is_empty() && elapsed_ms < 1000 {
         return;
     }
+    drop(current);
 
-    let mut diagnostics = (**current).clone();
-    diagnostics.last_event = event.to_string();
-    diagnostics.last_event_unix_ms = now;
-    diagnostics.last_event_rate_estimate = if elapsed_ms > 0 && elapsed_ms < 10_000 {
-        format!("{:.1}/s", 1000.0 / elapsed_ms as f64)
-    } else {
-        String::new()
-    };
-    diagnostics.last_parse_error.clear();
-    state
-        .system
-        .network_diagnostics
-        .store(Arc::new(diagnostics));
+    update_diagnostics(state, |d| {
+        d.last_event = event.to_string();
+        d.last_event_unix_ms = now;
+        d.last_event_rate_estimate = if elapsed_ms > 0 && elapsed_ms < 10_000 {
+            format!("{:.1}/s", 1000.0 / elapsed_ms as f64)
+        } else {
+            String::new()
+        };
+        d.last_parse_error.clear();
+    });
 }
 
-fn update_roster_change_diagnostics(state: &Arc<AppState>) {
-    let mut diagnostics = (**state.system.network_diagnostics.load()).clone();
-    diagnostics.last_roster_signature_change_unix_ms = crate::stats_api::now_ms();
-    state
-        .system
-        .network_diagnostics
-        .store(Arc::new(diagnostics));
+fn update_roster_change_diagnostics(state: &AppState) {
+    update_diagnostics(state, |d| {
+        d.last_roster_signature_change_unix_ms = crate::stats_api::now_ms();
+    });
 }
 
-fn update_match_guid_diagnostics(state: &Arc<AppState>, match_guid: &str) {
-    let mut diagnostics = (**state.system.network_diagnostics.load()).clone();
-    diagnostics.last_match_guid = match_guid.to_string();
-    state
-        .system
-        .network_diagnostics
-        .store(Arc::new(diagnostics));
+fn update_match_guid_diagnostics(state: &AppState, match_guid: &str) {
+    update_diagnostics(state, |d| {
+        d.last_match_guid = match_guid.to_string();
+    });
 }
 
 fn update_result_diagnostics(
-    state: &Arc<AppState>,
+    state: &AppState,
     session: &crate::session::SessionState,
     source: &str,
 ) {
-    let mut diagnostics = (**state.system.network_diagnostics.load()).clone();
-    diagnostics.last_result_signature = format!(
-        "source={source}, mode={}, local_team={}, blue={}, orange={}, result={}",
-        session.active_mode.label(),
-        session
-            .local_team
-            .map(|team| team.to_string())
-            .unwrap_or_else(|| "Unknown".to_string()),
-        session.blue_score,
-        session.orange_score,
-        session.last_result.label()
-    );
-    diagnostics.last_duplicate_result_suppression_reason.clear();
-    state
-        .system
-        .network_diagnostics
-        .store(Arc::new(diagnostics));
+    update_diagnostics(state, |d| {
+        d.last_result_signature = format!(
+            "source={source}, mode={}, local_team={}, blue={}, orange={}, result={}",
+            session.active_mode.label(),
+            session
+                .local_team
+                .map(|team| team.to_string())
+                .unwrap_or_else(|| "Unknown".to_string()),
+            session.blue_score,
+            session.orange_score,
+            session.last_result.label()
+        );
+        d.last_duplicate_result_suppression_reason.clear();
+    });
 }
 
-fn update_duplicate_result_diagnostics(state: &Arc<AppState>, reason: &str) {
-    let mut diagnostics = (**state.system.network_diagnostics.load()).clone();
-    diagnostics.last_duplicate_result_suppression_reason = reason.to_string();
-    state
-        .system
-        .network_diagnostics
-        .store(Arc::new(diagnostics));
+fn update_duplicate_result_diagnostics(state: &AppState, reason: &str) {
+    update_diagnostics(state, |d| {
+        d.last_duplicate_result_suppression_reason = reason.to_string();
+    });
 }
 
-fn update_parse_error(state: &Arc<AppState>, error: String) {
-    let mut diagnostics = (**state.system.network_diagnostics.load()).clone();
-    diagnostics.last_parse_error = error;
-    state
-        .system
-        .network_diagnostics
-        .store(Arc::new(diagnostics));
+fn update_parse_error(state: &AppState, error: String) {
+    update_diagnostics(state, |d| {
+        d.last_parse_error = error.clone();
+    });
 }
 
-fn update_connection_error(state: &Arc<AppState>, error: String) {
-    let mut diagnostics = (**state.system.network_diagnostics.load()).clone();
-    diagnostics.last_connection_error = error;
-    state
-        .system
-        .network_diagnostics
-        .store(Arc::new(diagnostics));
+fn update_connection_error(state: &AppState, error: String) {
+    update_diagnostics(state, |d| {
+        d.last_connection_error = error.clone();
+    });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::automation::{SequenceStep, parse_sequence};
     use crate::stats_api_parser::parse_platform;
     use serde_json::json;
     use std::sync::atomic::Ordering;
@@ -1454,6 +1316,62 @@ mod tests {
         let session = state.game.session.load();
         assert_eq!(session.wins, 1);
         assert_eq!(session.matches_played, 1);
+    }
+
+    #[test]
+    fn test_history_records_player_who_left_before_final_frame() {
+        let state = AppState::new();
+        let _ = crate::history::clear_history(&state);
+        let mut config = state.system.config.load().as_ref().clone();
+        config.history_enabled = true;
+        state.save_config(config);
+
+        handle_update_state_payload(
+            &state,
+            &json!({
+                "MatchGuid": "guid-left",
+                "Players": [
+                    {"Name": "Me", "PrimaryId": "Steam|1|0", "TeamNum": 0, "IsLocalPlayer": true},
+                    {"Name": "Stayed", "PrimaryId": "Epic|2|0", "TeamNum": 1},
+                    {"Name": "LeftEarly", "PrimaryId": "Xbox|3|0", "TeamNum": 1}
+                ],
+                "Game": {
+                    "Teams": [
+                        {"TeamNum": 0, "Score": 0},
+                        {"TeamNum": 1, "Score": 0}
+                    ]
+                }
+            }),
+        );
+        handle_update_state_payload(
+            &state,
+            &json!({
+                "MatchGuid": "guid-left",
+                "Players": [
+                    {"Name": "Me", "PrimaryId": "Steam|1|0", "TeamNum": 0, "IsLocalPlayer": true},
+                    {"Name": "Stayed", "PrimaryId": "Epic|2|0", "TeamNum": 1}
+                ],
+                "Game": {
+                    "Teams": [
+                        {"TeamNum": 0, "Score": 2},
+                        {"TeamNum": 1, "Score": 1}
+                    ],
+                    "bHasWinner": true,
+                    "Winner": "Blue"
+                }
+            }),
+        );
+
+        let summaries = crate::history::load_all_player_summaries(&state).unwrap();
+        let names: Vec<_> = summaries
+            .iter()
+            .map(|summary| summary.name.as_str())
+            .collect();
+        assert!(names.contains(&"Stayed"));
+        assert!(names.contains(&"LeftEarly"));
+        assert!(!names.contains(&"Me"));
+
+        let _ = crate::history::clear_history(&state);
     }
 
     #[test]

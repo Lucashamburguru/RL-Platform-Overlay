@@ -46,7 +46,14 @@ async fn main() -> io::Result<()> {
             writeln!(file, "connected_transport=websocket")?;
             capture_websocket(ws_stream, &mut file, deadline).await?;
         }
-        Err(error) if error.to_string().contains("invalid HTTP version") => {
+        Err(error)
+            if matches!(
+                error,
+                tokio_tungstenite::tungstenite::Error::Protocol(
+                    tokio_tungstenite::tungstenite::error::ProtocolError::HttparseError(_)
+                )
+            ) =>
+        {
             println!("Stats API appears to be raw TCP. Connecting via TCP.");
             writeln!(file, "websocket_probe_error={error}")?;
             writeln!(file, "connected_transport=tcp")?;
@@ -188,7 +195,7 @@ async fn capture_tcp(
             writeln!(file, "{chunk}")?;
         }
 
-        for payload in splitter.push(&chunk) {
+        for payload in splitter.push(&buffer[..n]) {
             write_payload(file, "tcp-json-object", &payload)?;
         }
     }

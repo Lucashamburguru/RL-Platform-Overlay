@@ -123,28 +123,32 @@ pub(crate) fn render_setup_settings_tab(
             let mut custom_rate_str = ui.data_mut(|d| {
                 d.get_temp::<String>(ui.make_persistent_id("custom_rate_input"))
                     .unwrap_or_else(|| {
-                        if let Some(r) = status.packet_send_rate {
-                            if r != 0 && r != 5 && r != 15 && r != 30 {
-                                return r.to_string();
-                            }
+                        if let Some(r) = status.packet_send_rate
+                            && r != 0
+                            && r != 5
+                            && r != 15
+                            && r != 30
+                        {
+                            return r.to_string();
                         }
                         "60".to_string()
                     })
             });
 
-            let response = ui.add(
-                egui::TextEdit::singleline(&mut custom_rate_str)
-                    .desired_width(40.0)
-            );
+            let response =
+                ui.add(egui::TextEdit::singleline(&mut custom_rate_str).desired_width(40.0));
             if response.changed() {
                 ui.data_mut(|d| {
-                    d.insert_temp(ui.make_persistent_id("custom_rate_input"), custom_rate_str.clone())
+                    d.insert_temp(
+                        ui.make_persistent_id("custom_rate_input"),
+                        custom_rate_str.clone(),
+                    )
                 });
             }
 
-            let is_custom_active = status.packet_send_rate.is_some_and(|r| {
-                r != 0 && r != 5 && r != 15 && r != 30
-            });
+            let is_custom_active = status
+                .packet_send_rate
+                .is_some_and(|r| r != 0 && r != 5 && r != 15 && r != 30);
 
             if ui
                 .button("Apply")
@@ -154,13 +158,12 @@ pub(crate) fn render_setup_settings_tab(
                 if let Ok(rate) = custom_rate_str.trim().parse::<u16>() {
                     apply_stats_api_setup_rate(state, &config_edit.rocket_league_path, rate);
                 } else {
-                    state
-                        .system
-                        .stats_api_setup_result
-                        .store(Arc::new(crate::setup::StatsApiSetupResult {
+                    state.system.stats_api_setup_result.store(Arc::new(
+                        crate::setup::StatsApiSetupResult {
                             message: "Please enter a valid number between 0 and 120.".to_string(),
                             ..Default::default()
-                        }));
+                        },
+                    ));
                 }
             }
 

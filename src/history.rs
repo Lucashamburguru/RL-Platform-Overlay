@@ -1,10 +1,23 @@
 use crate::session::{MatchResult, SessionMode, SessionState};
 use crate::state::{AppState, NO_TEAM, PlayerInfo, config_dir};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, params};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+#[derive(thiserror::Error, Debug)]
+pub enum HistoryError {
+    #[error("Database error: {0}")]
+    Database(#[from] rusqlite::Error),
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("Config directory error: {0}")]
+    ConfigDir(String),
+    #[error("Mutex lock poisoned: {0}")]
+    MutexPoisoned(String),
+}
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PlayerHistorySummary {
@@ -66,6 +79,65 @@ pub fn player_key(player: &PlayerInfo) -> Option<PlayerKey> {
     )))
 }
 
+fn with_connection<F, T>(state: &AppState, f: F) -> Result<T, HistoryError>
+where
+    F: FnOnce(&Connection) -> Result<T, HistoryError>,
+{
+    let mut guard = state
+        .history
+        .conn
+        .lock()
+        .map_err(|e| HistoryError::MutexPoisoned(e.to_string()))?;
+    if guard.is_none() {
+        match initialize_database() {
+            Ok(conn) => {
+                *guard = Some(conn);
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    if let Some(conn) = guard.as_ref() {
+        f(conn)
+    } else {
+        Err(HistoryError::ConfigDir(
+            "Database connection is missing".to_string(),
+        ))
+    }
+}
+
+fn with_connection_mut<F, T>(state: &AppState, f: F) -> Result<T, HistoryError>
+where
+    F: FnOnce(&mut Connection) -> Result<T, HistoryError>,
+{
+    let mut guard = state
+        .history
+        .conn
+        .lock()
+        .map_err(|e| HistoryError::MutexPoisoned(e.to_string()))?;
+    if guard.is_none() {
+        match initialize_database() {
+            Ok(conn) => {
+                *guard = Some(conn);
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    if let Some(conn) = guard.as_mut() {
+        f(conn)
+    } else {
+        Err(HistoryError::ConfigDir(
+            "Database connection is missing".to_string(),
+        ))
+    }
+}
+
+pub fn initialize_database() -> Result<Connection, HistoryError> {
+    let conn = open_connection()?;
+    init_schema(&conn)?;
+    cleanup_local_history_rows(&conn)?;
+    Ok(conn)
+}
+
 pub fn refresh_lobby_history(state: &Arc<AppState>) {
     let config = state.system.config.load();
     if !config.history_enabled || !config.lobby_history_indicators_enabled {
@@ -84,12 +156,21 @@ pub fn refresh_lobby_history(state: &Arc<AppState>) {
         .map(|key| key.0)
         .collect();
 
-    match load_summaries(&keys) {
+    let state_clone = state.clone();
+    let run = move || match load_summaries(&state_clone, &keys) {
         Ok(summaries) => {
-            state.history.player_summaries.store(Arc::new(summaries));
-            set_status(state, "History ready.");
+            state_clone
+                .history
+                .player_summaries
+                .store(Arc::new(summaries));
+            set_status(&state_clone, "History ready.");
         }
-        Err(error) => set_status(state, &format!("History error: {error}")),
+        Err(error) => set_status(&state_clone, &format!("History error: {error}")),
+    };
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        handle.spawn_blocking(run);
+    } else {
+        run();
     }
 }
 
@@ -102,9 +183,15 @@ pub fn refresh_totals(state: &Arc<AppState>) {
         return;
     }
 
-    match load_totals() {
-        Ok(totals) => state.history.totals.store(Arc::new(totals)),
-        Err(error) => set_status(state, &format!("History error: {error}")),
+    let state_clone = state.clone();
+    let run = move || match load_totals(&state_clone) {
+        Ok(totals) => state_clone.history.totals.store(Arc::new(totals)),
+        Err(error) => set_status(&state_clone, &format!("History error: {error}")),
+    };
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        handle.spawn_blocking(run);
+    } else {
+        run();
     }
 }
 
@@ -119,118 +206,181 @@ pub fn record_completed_match(state: &Arc<AppState>, session: &SessionState) {
         return;
     }
 
-    let players = state.game.players.load();
-    match insert_completed_match(session, players.values()) {
+    let match_roster = state.game.match_roster.load();
+    let live_players = state.game.players.load();
+    let players = if match_roster.is_empty() {
+        live_players.values().cloned().collect::<Vec<_>>()
+    } else {
+        match_roster.values().cloned().collect::<Vec<_>>()
+    };
+
+    let state_clone = state.clone();
+    let session_clone = session.clone();
+
+    let run = move || match insert_completed_match(&state_clone, &session_clone, players.iter()) {
         Ok(inserted) => {
             if inserted {
-                set_status(state, "Match saved to history.");
-                refresh_totals(state);
-                refresh_lobby_history(state);
+                set_status(&state_clone, "Match saved to history.");
+                state_clone.history.revision.fetch_add(1, Ordering::SeqCst);
+                refresh_totals(&state_clone);
+                refresh_lobby_history(&state_clone);
             }
         }
-        Err(error) => set_status(state, &format!("History save failed: {error}")),
+        Err(error) => set_status(&state_clone, &format!("History save failed: {error}")),
+    };
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        handle.spawn_blocking(run);
+    } else {
+        run();
     }
 }
 
-pub fn load_all_player_summaries() -> Result<Vec<PlayerHistorySummary>, String> {
-    let conn = open_connection()?;
-    init_schema(&conn)?;
+pub fn load_all_player_summaries(
+    state: &AppState,
+) -> Result<Vec<PlayerHistorySummary>, HistoryError> {
+    with_connection(state, load_all_player_summaries_on_conn)
+}
+
+fn load_all_player_summaries_on_conn(
+    conn: &Connection,
+) -> Result<Vec<PlayerHistorySummary>, HistoryError> {
     let mut stmt = conn
         .prepare(
-            "SELECT player_key, latest_name, platform, first_seen_unix_ms, last_seen_unix_ms
-             FROM players
-             ORDER BY last_seen_unix_ms DESC, latest_name COLLATE NOCASE",
-        )
-        .map_err(|error| error.to_string())?;
+            "SELECT
+                p.player_key,
+                p.latest_name,
+                p.platform,
+                COALESCE(SUM(CASE WHEN mp.role = 'teammate' THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN mp.role = 'opponent' THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN mp.role = 'teammate' AND m.result = 'win' THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN mp.role = 'teammate' AND m.result = 'loss' THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN mp.role = 'opponent' AND m.result = 'win' THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN mp.role = 'opponent' AND m.result = 'loss' THEN 1 ELSE 0 END), 0),
+                p.last_seen_unix_ms
+             FROM players p
+             JOIN match_players mp ON mp.player_id = p.id
+                AND mp.role IN ('teammate', 'opponent')
+             LEFT JOIN matches m ON m.id = mp.match_id
+             GROUP BY p.id
+             ORDER BY p.last_seen_unix_ms DESC, p.latest_name COLLATE NOCASE",
+        )?;
 
-    let rows = stmt
-        .query_map([], |row| {
-            let key: String = row.get(0)?;
-            Ok((
-                key.clone(),
-                PlayerHistorySummary {
-                    player_key: key,
-                    name: row.get(1)?,
-                    platform: row.get(2)?,
-                    games_with: 0,
-                    games_against: 0,
-                    wins_with: 0,
-                    losses_with: 0,
-                    wins_against: 0,
-                    losses_against: 0,
-                    last_seen_unix_ms: row.get(4)?,
-                },
-            ))
+    let rows = stmt.query_map([], |row| {
+        Ok(PlayerHistorySummary {
+            player_key: row.get(0)?,
+            name: row.get(1)?,
+            platform: row.get(2)?,
+            games_with: row.get(3)?,
+            games_against: row.get(4)?,
+            wins_with: row.get(5)?,
+            losses_with: row.get(6)?,
+            wins_against: row.get(7)?,
+            losses_against: row.get(8)?,
+            last_seen_unix_ms: row.get(9)?,
         })
-        .map_err(|error| error.to_string())?;
+    })?;
 
     let mut summaries = Vec::new();
     for row in rows {
-        let (key, mut summary) = row.map_err(|error| error.to_string())?;
-        if let Some(aggregate) = query_summary(&conn, &key)? {
-            summary.games_with = aggregate.games_with;
-            summary.games_against = aggregate.games_against;
-            summary.wins_with = aggregate.wins_with;
-            summary.losses_with = aggregate.losses_with;
-            summary.wins_against = aggregate.wins_against;
-            summary.losses_against = aggregate.losses_against;
-            summary.last_seen_unix_ms = aggregate.last_seen_unix_ms;
-        }
-        summaries.push(summary);
+        summaries.push(row?);
     }
 
     Ok(summaries)
 }
 
-pub fn load_totals() -> Result<HistoryTotals, String> {
-    let conn = open_connection()?;
-    init_schema(&conn)?;
-    let matches = conn
-        .query_row("SELECT COUNT(*) FROM matches", [], |row| {
-            row.get::<_, u32>(0)
-        })
-        .map_err(|error| error.to_string())?;
-    let players = conn
-        .query_row("SELECT COUNT(*) FROM players", [], |row| {
-            row.get::<_, u32>(0)
-        })
-        .map_err(|error| error.to_string())?;
+pub fn load_totals(state: &AppState) -> Result<HistoryTotals, HistoryError> {
+    with_connection(state, load_totals_on_conn)
+}
+
+fn load_totals_on_conn(conn: &Connection) -> Result<HistoryTotals, HistoryError> {
+    let matches = conn.query_row("SELECT COUNT(*) FROM matches", [], |row| {
+        row.get::<_, u32>(0)
+    })?;
+    let players = conn.query_row(
+        "SELECT COUNT(DISTINCT p.id)
+             FROM players p
+             JOIN match_players mp ON mp.player_id = p.id
+             WHERE mp.role IN ('teammate', 'opponent')",
+        [],
+        |row| row.get::<_, u32>(0),
+    )?;
     Ok(HistoryTotals { matches, players })
 }
 
-pub fn clear_history() -> Result<(), String> {
-    let mut conn = open_connection()?;
-    init_schema(&conn)?;
-    let tx = conn.transaction().map_err(|error| error.to_string())?;
-    tx.execute("DELETE FROM match_players", [])
-        .map_err(|error| error.to_string())?;
-    tx.execute("DELETE FROM matches", [])
-        .map_err(|error| error.to_string())?;
-    tx.execute("DELETE FROM players", [])
-        .map_err(|error| error.to_string())?;
-    tx.commit().map_err(|error| error.to_string())
+pub fn clear_history(state: &AppState) -> Result<(), HistoryError> {
+    with_connection_mut(state, |conn| {
+        let tx = conn.transaction()?;
+        tx.execute("DELETE FROM match_players", [])?;
+        tx.execute("DELETE FROM matches", [])?;
+        tx.execute("DELETE FROM players", [])?;
+        tx.commit()?;
+        Ok(())
+    })
 }
 
-fn load_summaries(keys: &[String]) -> Result<HashMap<String, PlayerHistorySummary>, String> {
-    let conn = open_connection()?;
-    init_schema(&conn)?;
-
-    let mut summaries = HashMap::new();
-    for key in keys {
-        if let Some(summary) = query_summary(&conn, key)? {
-            summaries.insert(key.clone(), summary);
-        }
+fn load_summaries(
+    state: &AppState,
+    keys: &[String],
+) -> Result<HashMap<String, PlayerHistorySummary>, HistoryError> {
+    if keys.is_empty() {
+        return Ok(HashMap::new());
     }
-    Ok(summaries)
+
+    with_connection(state, |conn| {
+        let placeholders = vec!["?"; keys.len()].join(", ");
+        let sql = format!(
+            "SELECT
+                p.player_key,
+                p.latest_name,
+                p.platform,
+                COALESCE(SUM(CASE WHEN mp.role = 'teammate' THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN mp.role = 'opponent' THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN mp.role = 'teammate' AND m.result = 'win' THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN mp.role = 'teammate' AND m.result = 'loss' THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN mp.role = 'opponent' AND m.result = 'win' THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN mp.role = 'opponent' AND m.result = 'loss' THEN 1 ELSE 0 END), 0),
+                p.last_seen_unix_ms
+             FROM players p
+             JOIN match_players mp ON mp.player_id = p.id
+                AND mp.role IN ('teammate', 'opponent')
+             LEFT JOIN matches m ON m.id = mp.match_id
+             WHERE p.player_key IN ({placeholders})
+             GROUP BY p.id"
+        );
+
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(keys), |row| {
+            Ok(PlayerHistorySummary {
+                player_key: row.get(0)?,
+                name: row.get(1)?,
+                platform: row.get(2)?,
+                games_with: row.get(3)?,
+                games_against: row.get(4)?,
+                wins_with: row.get(5)?,
+                losses_with: row.get(6)?,
+                wins_against: row.get(7)?,
+                losses_against: row.get(8)?,
+                last_seen_unix_ms: row.get(9)?,
+            })
+        })?;
+
+        let mut summaries = HashMap::new();
+        for row in rows {
+            let summary = row?;
+            summaries.insert(summary.player_key.clone(), summary);
+        }
+        Ok(summaries)
+    })
 }
 
 fn insert_completed_match<'a>(
+    state: &AppState,
     session: &SessionState,
     players: impl Iterator<Item = &'a PlayerInfo>,
-) -> Result<bool, String> {
-    let mut conn = open_connection()?;
-    init_schema(&conn)?;
-    insert_completed_match_on_conn(&mut conn, session, players, current_unix_ms())
+) -> Result<bool, HistoryError> {
+    with_connection_mut(state, |conn| {
+        insert_completed_match_on_conn(conn, session, players, current_unix_ms())
+    })
 }
 
 fn insert_completed_match_on_conn<'a>(
@@ -238,26 +388,24 @@ fn insert_completed_match_on_conn<'a>(
     session: &SessionState,
     players: impl Iterator<Item = &'a PlayerInfo>,
     ended_unix_ms: i64,
-) -> Result<bool, String> {
-    let tx = conn.transaction().map_err(|error| error.to_string())?;
+) -> Result<bool, HistoryError> {
+    let tx = conn.transaction()?;
     let local_team = session.local_team.unwrap_or(NO_TEAM);
 
-    let inserted = tx
-        .execute(
-            "INSERT OR IGNORE INTO matches
+    let inserted = tx.execute(
+        "INSERT OR IGNORE INTO matches
              (match_guid, mode, result, blue_score, orange_score, local_team, ended_unix_ms)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![
-                session.active_match_id,
-                mode_key(session.active_mode),
-                result_key(session.last_result),
-                session.blue_score,
-                session.orange_score,
-                local_team,
-                ended_unix_ms,
-            ],
-        )
-        .map_err(|error| error.to_string())?;
+        params![
+            session.active_match_id,
+            mode_key(session.active_mode),
+            result_key(session.last_result),
+            session.blue_score,
+            session.orange_score,
+            local_team,
+            ended_unix_ms,
+        ],
+    )?;
 
     if inserted == 0 {
         return Ok(false);
@@ -265,6 +413,9 @@ fn insert_completed_match_on_conn<'a>(
 
     let match_id = tx.last_insert_rowid();
     for player in players {
+        if player.is_local {
+            continue;
+        }
         let Some(key) = player_key(player) else {
             continue;
         };
@@ -284,16 +435,13 @@ fn insert_completed_match_on_conn<'a>(
                 player.primary_id.trim(),
                 ended_unix_ms,
             ],
-        )
-        .map_err(|error| error.to_string())?;
+        )?;
 
-        let player_id = tx
-            .query_row(
-                "SELECT id FROM players WHERE player_key = ?1",
-                params![key.as_str()],
-                |row| row.get::<_, i64>(0),
-            )
-            .map_err(|error| error.to_string())?;
+        let player_id = tx.query_row(
+            "SELECT id FROM players WHERE player_key = ?1",
+            params![key.as_str()],
+            |row| row.get::<_, i64>(0),
+        )?;
         tx.execute(
             "INSERT OR IGNORE INTO match_players
              (match_id, player_id, team, role, score, goals, saves, touches, demos)
@@ -309,69 +457,29 @@ fn insert_completed_match_on_conn<'a>(
                 player.touches,
                 player.demos,
             ],
-        )
-        .map_err(|error| error.to_string())?;
+        )?;
     }
 
-    tx.commit().map_err(|error| error.to_string())?;
+    tx.commit()?;
     Ok(true)
 }
 
-fn query_summary(
-    conn: &Connection,
-    player_key: &str,
-) -> Result<Option<PlayerHistorySummary>, String> {
-    conn.query_row(
-        "SELECT
-            p.player_key,
-            p.latest_name,
-            p.platform,
-            COALESCE(SUM(CASE WHEN mp.role = 'teammate' THEN 1 ELSE 0 END), 0),
-            COALESCE(SUM(CASE WHEN mp.role = 'opponent' THEN 1 ELSE 0 END), 0),
-            COALESCE(SUM(CASE WHEN mp.role = 'teammate' AND m.result = 'win' THEN 1 ELSE 0 END), 0),
-            COALESCE(SUM(CASE WHEN mp.role = 'teammate' AND m.result = 'loss' THEN 1 ELSE 0 END), 0),
-            COALESCE(SUM(CASE WHEN mp.role = 'opponent' AND m.result = 'win' THEN 1 ELSE 0 END), 0),
-            COALESCE(SUM(CASE WHEN mp.role = 'opponent' AND m.result = 'loss' THEN 1 ELSE 0 END), 0),
-            p.last_seen_unix_ms
-         FROM players p
-         LEFT JOIN match_players mp ON mp.player_id = p.id
-         LEFT JOIN matches m ON m.id = mp.match_id
-         WHERE p.player_key = ?1
-         GROUP BY p.id",
-        params![player_key],
-        |row| {
-            Ok(PlayerHistorySummary {
-                player_key: row.get(0)?,
-                name: row.get(1)?,
-                platform: row.get(2)?,
-                games_with: row.get(3)?,
-                games_against: row.get(4)?,
-                wins_with: row.get(5)?,
-                losses_with: row.get(6)?,
-                wins_against: row.get(7)?,
-                losses_against: row.get(8)?,
-                last_seen_unix_ms: row.get(9)?,
-            })
-        },
-    )
-    .optional()
-    .map_err(|error| error.to_string())
-}
-
-fn open_connection() -> Result<Connection, String> {
-    let path =
-        history_db_path().ok_or_else(|| "Could not resolve config directory.".to_string())?;
+fn open_connection() -> Result<Connection, HistoryError> {
+    let path = history_db_path().ok_or_else(|| {
+        HistoryError::ConfigDir("Could not resolve config directory.".to_string())
+    })?;
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+        std::fs::create_dir_all(parent)?;
     }
-    Connection::open(path).map_err(|error| error.to_string())
+    let conn = Connection::open(path)?;
+    Ok(conn)
 }
 
 fn history_db_path() -> Option<PathBuf> {
     config_dir().map(|dir| dir.join("history.sqlite3"))
 }
 
-fn init_schema(conn: &Connection) -> Result<(), String> {
+fn init_schema(conn: &Connection) -> Result<(), HistoryError> {
     conn.execute_batch(
         "
         PRAGMA foreign_keys = ON;
@@ -411,8 +519,20 @@ fn init_schema(conn: &Connection) -> Result<(), String> {
         CREATE INDEX IF NOT EXISTS idx_match_players_player_id ON match_players(player_id);
         CREATE INDEX IF NOT EXISTS idx_players_last_seen ON players(last_seen_unix_ms);
         ",
-    )
-    .map_err(|error| error.to_string())
+    )?;
+    Ok(())
+}
+
+fn cleanup_local_history_rows(conn: &Connection) -> Result<(), HistoryError> {
+    conn.execute("DELETE FROM match_players WHERE role = 'local'", [])?;
+    conn.execute(
+        "DELETE FROM players
+         WHERE NOT EXISTS (
+            SELECT 1 FROM match_players mp WHERE mp.player_id = players.id
+         )",
+        [],
+    )?;
+    Ok(())
 }
 
 fn player_role(player: &PlayerInfo, local_team: u8) -> &'static str {
@@ -464,6 +584,49 @@ mod tests {
     use super::*;
     use crate::session::{MatchResult, SessionMode, SessionState};
     use crate::state::PlayerInfo;
+    use rusqlite::OptionalExtension;
+
+    fn query_summary(
+        conn: &Connection,
+        player_key: &str,
+    ) -> Result<Option<PlayerHistorySummary>, HistoryError> {
+        let res = conn.query_row(
+            "SELECT
+                p.player_key,
+                p.latest_name,
+                p.platform,
+                COALESCE(SUM(CASE WHEN mp.role = 'teammate' THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN mp.role = 'opponent' THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN mp.role = 'teammate' AND m.result = 'win' THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN mp.role = 'teammate' AND m.result = 'loss' THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN mp.role = 'opponent' AND m.result = 'win' THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN mp.role = 'opponent' AND m.result = 'loss' THEN 1 ELSE 0 END), 0),
+                p.last_seen_unix_ms
+             FROM players p
+             JOIN match_players mp ON mp.player_id = p.id
+                AND mp.role IN ('teammate', 'opponent')
+             LEFT JOIN matches m ON m.id = mp.match_id
+             WHERE p.player_key = ?1
+             GROUP BY p.id",
+            params![player_key],
+            |row| {
+                Ok(PlayerHistorySummary {
+                    player_key: row.get(0)?,
+                    name: row.get(1)?,
+                    platform: row.get(2)?,
+                    games_with: row.get(3)?,
+                    games_against: row.get(4)?,
+                    wins_with: row.get(5)?,
+                    losses_with: row.get(6)?,
+                    wins_against: row.get(7)?,
+                    losses_against: row.get(8)?,
+                    last_seen_unix_ms: row.get(9)?,
+                })
+            },
+        )
+        .optional()?;
+        Ok(res)
+    }
 
     #[test]
     fn player_key_skips_bots_and_unknown_players() {
@@ -521,6 +684,86 @@ mod tests {
         assert_eq!(friend.wins_with, 1);
         assert_eq!(opponent.games_against, 1);
         assert_eq!(opponent.wins_against, 1);
+        assert!(query_summary(&conn, "steam:steam|me|0").unwrap().is_none());
+    }
+
+    #[test]
+    fn all_player_summaries_and_totals_exclude_local_player() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let mut session = SessionState::default();
+        session.active_match_id = "match-a".to_string();
+        session.active_mode = SessionMode::Twos;
+        session.local_team = Some(0);
+        session.blue_score = 3;
+        session.orange_score = 1;
+        session.last_result = MatchResult::Win;
+        let players = [
+            player("Me", "Steam|me|0", 0, true),
+            player("Friend", "Steam|friend|0", 0, false),
+            player("Opponent", "Steam|opponent|0", 1, false),
+        ];
+
+        assert!(insert_completed_match_on_conn(&mut conn, &session, players.iter(), 1000).unwrap());
+        let summaries = load_all_player_summaries_on_conn(&conn).unwrap();
+        let totals = load_totals_on_conn(&conn).unwrap();
+
+        assert_eq!(summaries.len(), 2);
+        assert!(summaries.iter().all(|summary| summary.name != "Me"));
+        assert_eq!(totals.matches, 1);
+        assert_eq!(totals.players, 2);
+        let friend = summaries
+            .iter()
+            .find(|summary| summary.name == "Friend")
+            .unwrap();
+        let opponent = summaries
+            .iter()
+            .find(|summary| summary.name == "Opponent")
+            .unwrap();
+        assert_eq!(friend.games_with, 1);
+        assert_eq!(friend.wins_with, 1);
+        assert_eq!(opponent.games_against, 1);
+        assert_eq!(opponent.wins_against, 1);
+    }
+
+    #[test]
+    fn cleanup_removes_legacy_local_rows_and_preserves_encounters() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let mut session = SessionState::default();
+        session.active_match_id = "match-a".to_string();
+        session.active_mode = SessionMode::Twos;
+        session.local_team = Some(0);
+        session.blue_score = 0;
+        session.orange_score = 2;
+        session.last_result = MatchResult::Loss;
+        let players = [
+            player("Me", "Steam|me|0", 0, true),
+            player("Friend", "Steam|friend|0", 0, false),
+            player("Opponent", "Steam|opponent|0", 1, false),
+        ];
+
+        insert_legacy_completed_match_with_local_rows(&mut conn, &session, players.iter(), 1000)
+            .unwrap();
+        cleanup_local_history_rows(&conn).unwrap();
+
+        let summaries = load_all_player_summaries_on_conn(&conn).unwrap();
+        let totals = load_totals_on_conn(&conn).unwrap();
+
+        assert_eq!(summaries.len(), 2);
+        assert!(summaries.iter().all(|summary| summary.name != "Me"));
+        assert_eq!(totals.players, 2);
+        let friend = query_summary(&conn, "steam:steam|friend|0")
+            .unwrap()
+            .unwrap();
+        let opponent = query_summary(&conn, "steam:steam|opponent|0")
+            .unwrap()
+            .unwrap();
+        assert_eq!(friend.games_with, 1);
+        assert_eq!(friend.losses_with, 1);
+        assert_eq!(opponent.games_against, 1);
+        assert_eq!(opponent.losses_against, 1);
+        assert!(query_summary(&conn, "steam:steam|me|0").unwrap().is_none());
     }
 
     #[test]
@@ -558,5 +801,76 @@ mod tests {
             score: 100,
             ..Default::default()
         }
+    }
+
+    fn insert_legacy_completed_match_with_local_rows<'a>(
+        conn: &mut Connection,
+        session: &SessionState,
+        players: impl Iterator<Item = &'a PlayerInfo>,
+        ended_unix_ms: i64,
+    ) -> Result<bool, HistoryError> {
+        let tx = conn.transaction()?;
+        let local_team = session.local_team.unwrap_or(NO_TEAM);
+        let inserted = tx.execute(
+            "INSERT OR IGNORE INTO matches
+                 (match_guid, mode, result, blue_score, orange_score, local_team, ended_unix_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                session.active_match_id,
+                mode_key(session.active_mode),
+                result_key(session.last_result),
+                session.blue_score,
+                session.orange_score,
+                local_team,
+                ended_unix_ms,
+            ],
+        )?;
+
+        if inserted == 0 {
+            return Ok(false);
+        }
+
+        let match_id = tx.last_insert_rowid();
+        for player in players {
+            let Some(key) = player_key(player) else {
+                continue;
+            };
+            tx.execute(
+                "INSERT INTO players
+                 (player_key, latest_name, platform, primary_id, first_seen_unix_ms, last_seen_unix_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
+                params![
+                    key.as_str(),
+                    player.name.trim(),
+                    player.platform.trim(),
+                    player.primary_id.trim(),
+                    ended_unix_ms,
+                ],
+            )?;
+            let player_id = tx.query_row(
+                "SELECT id FROM players WHERE player_key = ?1",
+                params![key.as_str()],
+                |row| row.get::<_, i64>(0),
+            )?;
+            tx.execute(
+                "INSERT OR IGNORE INTO match_players
+                 (match_id, player_id, team, role, score, goals, saves, touches, demos)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    match_id,
+                    player_id,
+                    player.team,
+                    player_role(player, local_team),
+                    player.score,
+                    player.goals,
+                    player.saves,
+                    player.touches,
+                    player.demos,
+                ],
+            )?;
+        }
+
+        tx.commit()?;
+        Ok(true)
     }
 }

@@ -198,7 +198,11 @@ async fn download_and_apply_update(state: Arc<AppState>) -> Result<(), String> {
         spawn_update_script(&update_dir, &staged_exe)
             .map_err(|error| format!("Could not start updater: {error}"))?;
 
-        std::process::exit(0);
+        state
+            .flags
+            .should_exit
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
     }
 }
 

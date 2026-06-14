@@ -500,7 +500,12 @@ fn run_tracker_scrape_debug(state: Arc<AppState>, platform: String, player_name_
             player_id: player_name_or_id.clone(),
         };
 
-        let result = crate::mmr::fetch_tracker_snapshot(&state.system.http_client, &player).await;
+        let result = crate::mmr::fetch_tracker_snapshot(
+            &state.system.http_client,
+            Some(&state.mmr.xuid_gamertag_cache),
+            &player,
+        )
+        .await;
 
         let status_msg = match result {
             Ok(snapshot) => {

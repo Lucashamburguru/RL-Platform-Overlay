@@ -278,21 +278,12 @@ fn load_config_file(path: &PathBuf) -> Result<Config, String> {
 }
 
 fn config_path() -> PathBuf {
-    if std::env::var("RL_OVERLAY_TEST").is_ok() {
-        return std::env::temp_dir().join(format!(
-            "rl_platform_overlay_config_test_{}.toml",
-            std::process::id()
-        ));
-    }
-    #[cfg(test)]
-    {
+    if cfg!(test) || std::env::var("RL_OVERLAY_TEST").is_ok() {
         std::env::temp_dir().join(format!(
             "rl_platform_overlay_config_test_{}.toml",
             std::process::id()
         ))
-    }
-    #[cfg(not(test))]
-    {
+    } else {
         config_dir().map_or_else(
             || PathBuf::from("config.toml"),
             |dir| dir.join("config.toml"),
@@ -583,6 +574,8 @@ pub struct HistoryState {
     pub player_summaries: ArcSwap<HashMap<String, crate::history::PlayerHistorySummary>>,
     pub totals: ArcSwap<crate::history::HistoryTotals>,
     pub status: Arc<std::sync::Mutex<String>>,
+    pub revision: AtomicU64,
+    pub conn: std::sync::Mutex<Option<rusqlite::Connection>>,
 }
 
 pub struct AppFlags {
@@ -590,6 +583,7 @@ pub struct AppFlags {
     pub is_settings_visible: AtomicBool,
     pub is_connected: AtomicBool,
     pub is_launched: AtomicBool,
+    pub should_exit: AtomicBool,
 }
 
 pub struct HotkeyRecordingState {
@@ -606,6 +600,8 @@ pub struct GameLobbyState {
     pub local_player_identity: ArcSwap<LocalPlayerIdentity>,
     pub local_team: std::sync::atomic::AtomicU8,
     pub players: ArcSwap<HashMap<String, PlayerInfo>>,
+    pub match_roster: ArcSwap<HashMap<String, PlayerInfo>>,
+    pub match_roster_guid: ArcSwap<String>,
     pub session: ArcSwap<SessionState>,
 }
 
@@ -667,6 +663,14 @@ impl AppState {
             crate::diagnostics::ResourcePoller::new(resource_tracker.clone()),
         ));
 
+        let conn = match crate::history::initialize_database() {
+            Ok(c) => Some(c),
+            Err(e) => {
+                log::error!("Failed to initialize history database: {e}");
+                None
+            }
+        };
+
         Arc::new(Self {
             debug_enabled,
             debug_logging_enabled: AtomicBool::new(debug_logging_enabled),
@@ -675,6 +679,7 @@ impl AppState {
                 is_settings_visible: AtomicBool::new(true),
                 is_connected: AtomicBool::new(false),
                 is_launched: AtomicBool::new(false),
+                should_exit: AtomicBool::new(false),
             },
             hotkeys: HotkeyRecordingState {
                 is_recording_kb: AtomicBool::new(false),
@@ -689,6 +694,8 @@ impl AppState {
                 local_player_identity: ArcSwap::from_pointee(cached_local_player_identity),
                 local_team: std::sync::atomic::AtomicU8::new(NO_TEAM),
                 players: ArcSwap::from_pointee(HashMap::new()),
+                match_roster: ArcSwap::from_pointee(HashMap::new()),
+                match_roster_guid: ArcSwap::from_pointee(String::new()),
                 session: ArcSwap::from_pointee(SessionState::default()),
             },
             system: SystemState {
@@ -732,31 +739,42 @@ impl AppState {
                 player_summaries: ArcSwap::from_pointee(HashMap::new()),
                 totals: ArcSwap::from_pointee(crate::history::HistoryTotals::default()),
                 status: Arc::new(std::sync::Mutex::new("History disabled.".to_string())),
+                revision: AtomicU64::new(0),
+                conn: std::sync::Mutex::new(conn),
             },
             config_write_mutex: std::sync::Mutex::new(()),
         })
     }
 
-    fn save_config_impl(&self, config: Config) {
-        let mut status = ConfigStatus::new(config_path());
-        if let Err(error) = config.save() {
-            status.last_error = error;
+    fn save_config_impl(self: &Arc<Self>, config: Config) {
+        self.system.config.store(Arc::new(config.clone()));
+        let self_clone = self.clone();
+        let run = move || {
+            let _guard = self_clone
+                .config_write_mutex
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let mut status = ConfigStatus::new(config_path());
+            if let Err(error) = config.save() {
+                status.last_error = error;
+            }
+            self_clone.system.config_status.store(Arc::new(status));
+        };
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn_blocking(run);
+        } else {
+            run();
         }
-        self.system.config.store(Arc::new(config));
-        self.system.config_status.store(Arc::new(status));
     }
 
-    pub fn save_config(&self, config: Config) {
-        let _guard = self.config_write_mutex.lock().unwrap();
+    pub fn save_config(self: &Arc<Self>, config: Config) {
         self.save_config_impl(config);
     }
 
-    pub fn update_local_player_identity(&self, identity: LocalPlayerIdentity) -> bool {
+    pub fn update_local_player_identity(self: &Arc<Self>, identity: LocalPlayerIdentity) -> bool {
         if !identity.is_known() {
             return false;
         }
-
-        let _guard = self.config_write_mutex.lock().unwrap();
 
         let config = self.system.config.load();
         if config.lock_local_player {
