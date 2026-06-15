@@ -272,6 +272,7 @@ fn session_mode_playlist_id(session_mode: SessionMode) -> Option<i32> {
         SessionMode::Threes => Some(13),
         SessionMode::Hoops => Some(27),
         SessionMode::Dropshot => Some(29),
+        SessionMode::Snowday => Some(30),
         SessionMode::Knockout | SessionMode::Freeplay | SessionMode::Unknown => None,
     }
 }

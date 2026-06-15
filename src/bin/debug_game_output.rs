@@ -3,11 +3,11 @@ use rl_platform_overlay::json_utils::{decode_json_string_value, number_field, st
 use rl_platform_overlay::stats_api::{TCP_ADDR, TcpJsonSplitter, WS_URL, now_ms};
 use serde_json::Value;
 use std::env;
-use std::fs::File;
-use std::io::{self, Write};
+use std::io;
 use std::path::PathBuf;
 use std::time::Duration;
-use tokio::io::AsyncReadExt;
+use tokio::fs::File;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio_tungstenite::connect_async;
 
@@ -21,15 +21,21 @@ struct Args {
 #[tokio::main]
 async fn main() -> io::Result<()> {
     let args = parse_args();
-    let mut file = File::create(&args.output)?;
+    let mut file = File::create(&args.output).await?;
 
-    writeln!(file, "Rocket League Stats API debug capture")?;
-    writeln!(file, "started_unix_ms={}", now_ms())?;
-    writeln!(file, "target_ws={WS_URL}")?;
-    writeln!(file, "target_tcp={TCP_ADDR}")?;
-    writeln!(file, "capture_seconds={}", args.seconds)?;
-    writeln!(file, "raw_chunks={}", args.raw_chunks)?;
-    writeln!(file)?;
+    file.write_all(b"Rocket League Stats API debug capture\n")
+        .await?;
+    file.write_all(format!("started_unix_ms={}\n", now_ms()).as_bytes())
+        .await?;
+    file.write_all(format!("target_ws={WS_URL}\n").as_bytes())
+        .await?;
+    file.write_all(format!("target_tcp={TCP_ADDR}\n").as_bytes())
+        .await?;
+    file.write_all(format!("capture_seconds={}\n", args.seconds).as_bytes())
+        .await?;
+    file.write_all(format!("raw_chunks={}\n", args.raw_chunks).as_bytes())
+        .await?;
+    file.write_all(b"\n").await?;
 
     println!(
         "Capturing Rocket League output for {}s into {}",
@@ -43,7 +49,7 @@ async fn main() -> io::Result<()> {
     match connect_async(WS_URL).await {
         Ok((ws_stream, _)) => {
             println!("Connected via WebSocket.");
-            writeln!(file, "connected_transport=websocket")?;
+            file.write_all(b"connected_transport=websocket\n").await?;
             capture_websocket(ws_stream, &mut file, deadline).await?;
         }
         Err(error)
@@ -55,19 +61,22 @@ async fn main() -> io::Result<()> {
             ) =>
         {
             println!("Stats API appears to be raw TCP. Connecting via TCP.");
-            writeln!(file, "websocket_probe_error={error}")?;
-            writeln!(file, "connected_transport=tcp")?;
+            file.write_all(format!("websocket_probe_error={error}\n").as_bytes())
+                .await?;
+            file.write_all(b"connected_transport=tcp\n").await?;
             capture_tcp(&mut file, deadline, args.raw_chunks).await?;
         }
         Err(error) => {
-            writeln!(file, "connection_error={error}")?;
+            file.write_all(format!("connection_error={error}\n").as_bytes())
+                .await?;
             eprintln!("Could not connect to Rocket League Stats API: {error}");
             eprintln!("Make sure Rocket League is running and PacketSendRate is greater than 0.");
         }
     }
 
-    writeln!(file)?;
-    writeln!(file, "finished_unix_ms={}", now_ms())?;
+    file.write_all(b"\n").await?;
+    file.write_all(format!("finished_unix_ms={}\n", now_ms()).as_bytes())
+        .await?;
     println!("Capture complete: {}", args.output.display());
 
     Ok(())
@@ -140,15 +149,16 @@ where
         match tokio::time::timeout(remaining, ws_stream.next()).await {
             Ok(Some(Ok(msg))) => {
                 if let Ok(text) = msg.to_text() {
-                    write_payload(file, "websocket", text)?;
+                    write_payload(file, "websocket", text).await?;
                 }
             }
             Ok(Some(Err(error))) => {
-                writeln!(file, "websocket_error={error}")?;
+                file.write_all(format!("websocket_error={error}\n").as_bytes())
+                    .await?;
                 return Ok(());
             }
             Ok(None) => {
-                writeln!(file, "websocket_closed=true")?;
+                file.write_all(b"websocket_closed=true\n").await?;
                 return Ok(());
             }
             Err(_) => return Ok(()),
@@ -173,12 +183,13 @@ async fn capture_tcp(
 
         let n = match tokio::time::timeout(remaining, stream.read(&mut buffer)).await {
             Ok(Ok(0)) => {
-                writeln!(file, "tcp_closed=true")?;
+                file.write_all(b"tcp_closed=true\n").await?;
                 return Ok(());
             }
             Ok(Ok(n)) => n,
             Ok(Err(error)) => {
-                writeln!(file, "tcp_error={error}")?;
+                file.write_all(format!("tcp_error={error}\n").as_bytes())
+                    .await?;
                 return Ok(());
             }
             Err(_) => return Ok(()),
@@ -186,51 +197,54 @@ async fn capture_tcp(
 
         let chunk = String::from_utf8_lossy(&buffer[..n]);
         if raw_chunks {
-            writeln!(
-                file,
-                "\n--- raw tcp chunk unix_ms={} bytes={} ---",
-                now_ms(),
-                n
-            )?;
-            writeln!(file, "{chunk}")?;
+            file.write_all(
+                format!("\n--- raw tcp chunk unix_ms={} bytes={} ---\n", now_ms(), n).as_bytes(),
+            )
+            .await?;
+            file.write_all(format!("{chunk}\n").as_bytes()).await?;
         }
 
         for payload in splitter.push(&buffer[..n]) {
-            write_payload(file, "tcp-json-object", &payload)?;
+            write_payload(file, "tcp-json-object", &payload).await?;
         }
     }
 }
 
-fn write_payload(file: &mut File, transport: &str, text: &str) -> io::Result<()> {
-    writeln!(
-        file,
-        "\n=== payload unix_ms={} transport={} bytes={} ===",
-        now_ms(),
-        transport,
-        text.len()
-    )?;
-    writeln!(file, "{text}")?;
+async fn write_payload(file: &mut File, transport: &str, text: &str) -> io::Result<()> {
+    file.write_all(
+        format!(
+            "\n=== payload unix_ms={} transport={} bytes={} ===\n",
+            now_ms(),
+            transport,
+            text.len()
+        )
+        .as_bytes(),
+    )
+    .await?;
+    file.write_all(format!("{text}\n").as_bytes()).await?;
 
     match serde_json::from_str::<Value>(text) {
         Ok(json) => {
             if let Ok(pretty) = serde_json::to_string_pretty(&json) {
-                writeln!(file, "\n--- pretty json ---")?;
-                writeln!(file, "{pretty}")?;
+                file.write_all(b"\n--- pretty json ---\n").await?;
+                file.write_all(format!("{pretty}\n").as_bytes()).await?;
             }
-            write_summary(file, &json)?;
+            write_summary(file, &json).await?;
         }
         Err(error) => {
-            writeln!(file, "\njson_parse_error={error}")?;
+            file.write_all(format!("\njson_parse_error={error}\n").as_bytes())
+                .await?;
         }
     }
 
     Ok(())
 }
 
-fn write_summary(file: &mut File, json: &Value) -> io::Result<()> {
+async fn write_summary(file: &mut File, json: &Value) -> io::Result<()> {
     let event = json["Event"].as_str().unwrap_or("Unknown");
-    writeln!(file, "\n--- derived summary ---")?;
-    writeln!(file, "event={event}")?;
+    file.write_all(b"\n--- derived summary ---\n").await?;
+    file.write_all(format!("event={event}\n").as_bytes())
+        .await?;
 
     if event != "UpdateState" {
         return Ok(());
@@ -238,13 +252,13 @@ fn write_summary(file: &mut File, json: &Value) -> io::Result<()> {
 
     let data = json.get("Data").unwrap_or(json);
     if data.as_str().is_some() {
-        writeln!(file, "data_is_json_string=true")?;
+        file.write_all(b"data_is_json_string=true\n").await?;
     }
     let real_data = decode_json_string_value(data);
 
     if let Some(game) = real_data.get("game").or_else(|| real_data.get("Game")) {
-        write_optional_str(file, "game.client", game, &["client", "Client"])?;
-        write_optional_str(file, "game.me", game, &["me", "Me"])?;
+        write_optional_str(file, "game.client", game, &["client", "Client"]).await?;
+        write_optional_str(file, "game.me", game, &["me", "Me"]).await?;
     }
 
     let Some(players) = real_data
@@ -253,54 +267,66 @@ fn write_summary(file: &mut File, json: &Value) -> io::Result<()> {
         .or(Some(&real_data))
         .and_then(Value::as_array)
     else {
-        writeln!(file, "players_array_found=false")?;
+        file.write_all(b"players_array_found=false\n").await?;
         return Ok(());
     };
 
-    writeln!(file, "players_array_found=true")?;
-    writeln!(file, "players_len={}", players.len())?;
+    file.write_all(b"players_array_found=true\n").await?;
+    file.write_all(format!("players_len={}\n", players.len()).as_bytes())
+        .await?;
 
     for (index, player) in players.iter().enumerate() {
-        writeln!(
-            file,
-            "player[{index}].name={}",
-            string_field(player, &["Name", "name"]).unwrap_or("")
-        )?;
-        writeln!(
-            file,
-            "player[{index}].primary_id={}",
-            string_field(player, &["PrimaryId", "primaryId", "primary_id"]).unwrap_or("")
-        )?;
-        writeln!(
-            file,
-            "player[{index}].team={:?}",
-            number_field(player, &["TeamNum", "teamNum", "Team", "team"])
-        )?;
-        writeln!(
-            file,
-            "player[{index}].boost={:?}",
-            number_field(player, &["Boost", "boost"])
-        )?;
-        writeln!(
-            file,
-            "player[{index}].is_local_flags=IsLocalPlayer:{:?}, isLocalPlayer:{:?}, isMe:{:?}",
+        file.write_all(
+            format!(
+                "player[{index}].name={}\n",
+                string_field(player, &["Name", "name"]).unwrap_or("")
+            )
+            .as_bytes(),
+        )
+        .await?;
+        file.write_all(
+            format!(
+                "player[{index}].primary_id={}\n",
+                string_field(player, &["PrimaryId", "primaryId", "primary_id"]).unwrap_or("")
+            )
+            .as_bytes(),
+        )
+        .await?;
+        file.write_all(
+            format!(
+                "player[{index}].team={:?}\n",
+                number_field(player, &["TeamNum", "teamNum", "Team", "team"])
+            )
+            .as_bytes(),
+        )
+        .await?;
+        file.write_all(
+            format!(
+                "player[{index}].boost={:?}\n",
+                number_field(player, &["Boost", "boost"])
+            )
+            .as_bytes(),
+        )
+        .await?;
+        file.write_all(format!("player[{index}].is_local_flags=IsLocalPlayer:{:?}, isLocalPlayer:{:?}, isMe:{:?}\n",
             player["IsLocalPlayer"].as_bool(),
             player["isLocalPlayer"].as_bool(),
             player["isMe"].as_bool()
-        )?;
+        ).as_bytes()).await?;
     }
 
     Ok(())
 }
 
-fn write_optional_str(
+async fn write_optional_str(
     file: &mut File,
     label: &str,
     value: &Value,
     keys: &[&str],
 ) -> io::Result<()> {
     if let Some(field) = string_field(value, keys) {
-        writeln!(file, "{label}={field}")?;
+        file.write_all(format!("{label}={field}\n").as_bytes())
+            .await?;
     }
     Ok(())
 }

@@ -29,7 +29,11 @@ pub(super) fn render_local_mmr_panel(
                 *changed = true;
             }
         });
-        debug_status_row(ui, "Platform", identity.platform.as_str());
+        debug_status_row(
+            ui,
+            "Platform",
+            crate::stats_api_parser::format_platform(identity.platform.as_str()),
+        );
     } else {
         ui.colored_label(
             egui::Color32::from_rgb(220, 200, 100),

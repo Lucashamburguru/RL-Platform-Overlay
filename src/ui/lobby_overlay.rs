@@ -663,7 +663,8 @@ fn render_history_badge(
 }
 
 fn render_platform_name(ui: &mut egui::Ui, platform: &str, size: f32) {
-    let plat_lower = platform.to_lowercase();
+    let normalized = crate::stats_api_parser::format_platform(platform);
+    let plat_lower = normalized.to_lowercase();
     if plat_lower.contains("epic") {
         let mut job = egui::text::LayoutJob::default();
         let colors = [
@@ -674,7 +675,7 @@ fn render_platform_name(ui: &mut egui::Ui, platform: &str, size: f32) {
             egui::Color32::from_rgb(70, 180, 255),  // Blue
             egui::Color32::from_rgb(180, 100, 255), // Purple
         ];
-        for (i, c) in platform.chars().enumerate() {
+        for (i, c) in normalized.chars().enumerate() {
             let color = colors[i % colors.len()];
             job.append(
                 &c.to_string(),
@@ -698,7 +699,7 @@ fn render_platform_name(ui: &mut egui::Ui, platform: &str, size: f32) {
             egui::Color32::from_gray(160) // Steam / Default stays gray
         };
 
-        ui.label(egui::RichText::new(platform).size(size).color(color));
+        ui.label(egui::RichText::new(normalized).size(size).color(color));
     }
 }
 
@@ -783,6 +784,7 @@ fn lobby_playlist_id(session_mode: SessionMode) -> Option<i32> {
         SessionMode::Threes => Some(13),
         SessionMode::Hoops => Some(27),
         SessionMode::Dropshot => Some(29),
+        SessionMode::Snowday => Some(30),
         SessionMode::Knockout | SessionMode::Freeplay | SessionMode::Unknown => None,
     }
 }

@@ -1,6 +1,6 @@
 use crate::session::{MatchResult, SessionMode, SessionState};
 use crate::state::{AppState, NO_TEAM, PlayerInfo, config_dir};
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -134,6 +134,7 @@ where
 pub fn initialize_database() -> Result<Connection, HistoryError> {
     let conn = open_connection()?;
     init_schema(&conn)?;
+    migrate_database_platforms(&conn)?;
     cleanup_local_history_rows(&conn)?;
     Ok(conn)
 }
@@ -180,12 +181,16 @@ pub fn refresh_totals(state: &Arc<AppState>) {
             .history
             .totals
             .store(Arc::new(HistoryTotals::default()));
+        set_status(state, "History disabled.");
         return;
     }
 
     let state_clone = state.clone();
     let run = move || match load_totals(&state_clone) {
-        Ok(totals) => state_clone.history.totals.store(Arc::new(totals)),
+        Ok(totals) => {
+            state_clone.history.totals.store(Arc::new(totals));
+            set_status(&state_clone, "History ready.");
+        }
         Err(error) => set_status(&state_clone, &format!("History error: {error}")),
     };
     if let Ok(handle) = tokio::runtime::Handle::try_current() {
@@ -523,6 +528,74 @@ fn init_schema(conn: &Connection) -> Result<(), HistoryError> {
     Ok(())
 }
 
+fn migrate_database_platforms(conn: &Connection) -> Result<(), HistoryError> {
+    let mut stmt = conn.prepare("SELECT id, player_key, platform, primary_id FROM players")?;
+    let mut rows = stmt.query([])?;
+    let mut updates = Vec::new();
+    while let Some(row) = rows.next()? {
+        let id: i64 = row.get(0)?;
+        let key: String = row.get(1)?;
+        let platform: String = row.get(2)?;
+        let primary_id: String = row.get(3)?;
+
+        let norm_platform = crate::stats_api_parser::format_platform(&platform);
+        let norm_key = format!(
+            "{}:{}",
+            norm_platform.to_lowercase(),
+            primary_id.to_lowercase()
+        );
+
+        if norm_platform != platform || norm_key != key {
+            updates.push((id, norm_key, norm_platform.to_string()));
+        }
+    }
+    drop(rows);
+    drop(stmt);
+
+    if updates.is_empty() {
+        return Ok(());
+    }
+
+    log::info!(
+        "Migrating {} history database players to normalized platforms...",
+        updates.len()
+    );
+
+    for (id, new_key, norm_platform) in updates {
+        let existing_id: Option<i64> = conn
+            .query_row(
+                "SELECT id FROM players WHERE player_key = ?1 AND id != ?2",
+                params![&new_key, id],
+                |r| r.get(0),
+            )
+            .optional()?;
+
+        if let Some(target_id) = existing_id {
+            // Collision! Merge 'id' into 'target_id'.
+            conn.execute(
+                "DELETE FROM match_players 
+                 WHERE player_id = ?1 
+                   AND match_id IN (SELECT match_id FROM match_players WHERE player_id = ?2)",
+                params![id, target_id],
+            )?;
+
+            conn.execute(
+                "UPDATE match_players SET player_id = ?1 WHERE player_id = ?2",
+                params![target_id, id],
+            )?;
+
+            conn.execute("DELETE FROM players WHERE id = ?1", params![id])?;
+        } else {
+            conn.execute(
+                "UPDATE players SET player_key = ?1, platform = ?2 WHERE id = ?3",
+                params![&new_key, &norm_platform, id],
+            )?;
+        }
+    }
+
+    Ok(())
+}
+
 fn cleanup_local_history_rows(conn: &Connection) -> Result<(), HistoryError> {
     conn.execute("DELETE FROM match_players WHERE role = 'local'", [])?;
     conn.execute(
@@ -552,6 +625,7 @@ fn mode_key(mode: SessionMode) -> &'static str {
         SessionMode::Threes => "threes",
         SessionMode::Hoops => "hoops",
         SessionMode::Dropshot => "dropshot",
+        SessionMode::Snowday => "snowday",
         SessionMode::Knockout => "knockout",
         SessionMode::Freeplay => "freeplay",
         SessionMode::Unknown => "unknown",
@@ -872,5 +946,124 @@ mod tests {
 
         tx.commit()?;
         Ok(true)
+    }
+
+    #[test]
+    fn test_database_platform_migration_and_merge() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+
+        // 1. Insert a player on a legacy platform "PS4"
+        conn.execute(
+            "INSERT INTO players (player_key, latest_name, platform, primary_id, first_seen_unix_ms, last_seen_unix_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
+            params!["ps4:123", "Bob", "PS4", "123", 1000],
+        ).unwrap();
+        let bob_ps4_id: i64 = conn
+            .query_row(
+                "SELECT id FROM players WHERE player_key = 'ps4:123'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+
+        // 2. Insert another player on a newer normalized platform "PlayStation" with same primary ID (collision target)
+        conn.execute(
+            "INSERT INTO players (player_key, latest_name, platform, primary_id, first_seen_unix_ms, last_seen_unix_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
+            params!["playstation:123", "Bob", "PlayStation", "123", 2000],
+        ).unwrap();
+        let _bob_playstation_id: i64 = conn
+            .query_row(
+                "SELECT id FROM players WHERE player_key = 'playstation:123'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+
+        // 3. Insert a third player who does NOT collide (e.g. XboxOne which should become Xbox)
+        conn.execute(
+            "INSERT INTO players (player_key, latest_name, platform, primary_id, first_seen_unix_ms, last_seen_unix_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
+            params!["xboxone:456", "Alice", "XboxOne", "456", 1500],
+        ).unwrap();
+
+        // Let's add matches/match_players for them
+        conn.execute(
+            "INSERT INTO matches (match_guid, mode, result, blue_score, orange_score, local_team, ended_unix_ms)
+             VALUES ('match1', 'ones', 'win', 1, 0, 0, 1000)",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO match_players (match_id, player_id, team, role, score, goals, saves, touches, demos)
+             VALUES (1, ?1, 1, 'opponent', 100, 0, 0, 0, 0)",
+            params![bob_ps4_id],
+        ).unwrap();
+
+        // Perform migration
+        migrate_database_platforms(&conn).unwrap();
+
+        // Assertions:
+        // Alice should be updated to "Xbox" and key "xbox:456"
+        let alice_platform: String = conn
+            .query_row(
+                "SELECT platform FROM players WHERE primary_id = '456'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let alice_key: String = conn
+            .query_row(
+                "SELECT player_key FROM players WHERE primary_id = '456'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(alice_platform, "Xbox");
+        assert_eq!(alice_key, "xbox:456");
+
+        // Bob should be merged into a single player row. One of the duplicate player IDs should be deleted.
+        // Let's count how many Bobs exist.
+        let bob_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM players WHERE primary_id = '123'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(bob_count, 1);
+
+        // The remaining Bob should have platform "PSN" and player_key "psn:123"
+        let bob_platform: String = conn
+            .query_row(
+                "SELECT platform FROM players WHERE primary_id = '123'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let bob_key: String = conn
+            .query_row(
+                "SELECT player_key FROM players WHERE primary_id = '123'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(bob_platform, "PSN");
+        assert_eq!(bob_key, "psn:123");
+
+        // The match_players references should have been updated to the remaining Bob's ID
+        let remaining_bob_id: i64 = conn
+            .query_row("SELECT id FROM players WHERE primary_id = '123'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let match_player_pid: i64 = conn
+            .query_row(
+                "SELECT player_id FROM match_players WHERE match_id = 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(match_player_pid, remaining_bob_id);
     }
 }

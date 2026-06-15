@@ -152,6 +152,13 @@ fn scan_folder(state: &AppState, folder: &str) -> ReplayMetadataSnapshot {
         snapshot.entries.insert(filename, parsed);
     }
 
+    // Keep cloud metadata entries from previous scan
+    for (filename, entry) in &previous.entries {
+        if !snapshot.entries.contains_key(filename) && entry.file_size == 0 {
+            snapshot.entries.insert(filename.clone(), entry.clone());
+        }
+    }
+
     snapshot
 }
 

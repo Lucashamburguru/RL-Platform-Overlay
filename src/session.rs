@@ -38,6 +38,7 @@ pub enum SessionMode {
     Threes,
     Hoops,
     Dropshot,
+    Snowday,
     Knockout,
     Freeplay,
     #[default]
@@ -69,14 +70,22 @@ impl SessionMode {
 
         if normalized.contains("hoops")
             || normalized.contains("dunkhouse")
-            || normalized.contains("basketball")
-            || normalized.contains("basket_ball")
+            || normalized.contains("basket")
         {
             return Some(Self::Hoops);
         }
 
         if normalized.contains("shattershot") || normalized.contains("core707") {
             return Some(Self::Dropshot);
+        }
+
+        if normalized.contains("hockey")
+            || normalized.contains("snowy")
+            || normalized.contains("snow_")
+            || normalized.contains("winter")
+            || normalized.contains("snowday")
+        {
+            return Some(Self::Snowday);
         }
 
         if normalized.starts_with("ko_")
@@ -99,6 +108,7 @@ impl SessionMode {
             Self::Threes => "3v3",
             Self::Hoops => "Hoops",
             Self::Dropshot => "Dropshot",
+            Self::Snowday => "Snow Day",
             Self::Knockout => "Knockout",
             Self::Freeplay => "Freeplay",
             Self::Unknown => "Unknown",
@@ -134,6 +144,7 @@ pub struct SessionState {
     pub blue_score: u32,
     pub orange_score: u32,
     pub round_started: bool,
+    pub is_watching_replay: bool,
     result_recorded_for_match: bool,
     last_recorded_match_id: String,
     last_recorded_result: Option<ResultSignature>,
@@ -234,9 +245,18 @@ impl SessionState {
             self.active_mode = SessionMode::Unknown;
             self.result_recorded_for_match = false;
             self.last_result = MatchResult::Unknown;
+
+            let b_replay = real_data
+                .get("Game")
+                .or_else(|| real_data.get("game"))
+                .and_then(|game| bool_field(game, &["bReplay", "b_replay", "replay"]))
+                .unwrap_or(false);
+            self.is_watching_replay = self.is_watching_replay || b_replay;
         }
 
-        if mode_hint != SessionMode::Unknown {
+        if mode_hint != SessionMode::Unknown
+            && (!self.round_started || self.active_mode == SessionMode::Unknown)
+        {
             self.active_mode = mode_hint;
         }
 
@@ -261,7 +281,7 @@ impl SessionState {
                 }
             }
 
-            if has_winner {
+            if has_winner && !self.is_watching_replay {
                 let winner = string_field(game, &["Winner", "winner"]).unwrap_or("");
                 self.record_result(winner);
             }
@@ -290,7 +310,8 @@ impl SessionState {
     }
 
     pub fn record_early_leave(&mut self) {
-        if self.has_recorded_current_match()
+        if self.is_watching_replay
+            || self.has_recorded_current_match()
             || self.active_match_id.is_empty()
             || !self.round_started
         {
@@ -308,6 +329,9 @@ impl SessionState {
     }
 
     pub fn handle_match_ended(&mut self, data: &Value, local_team_hint: Option<u8>) {
+        if self.is_watching_replay {
+            return;
+        }
         let real_data = decode_json_string_value(data);
 
         if let Some(match_guid) = string_field(&real_data, &["MatchGuid", "matchGuid"]) {
@@ -818,12 +842,32 @@ mod tests {
             SessionMode::Hoops
         );
         assert_eq!(
+            SessionMode::infer(Some("BasketStreet_P"), Some(4)),
+            SessionMode::Hoops
+        );
+        assert_eq!(
             SessionMode::infer(Some("ShatterShot_P"), Some(6)),
             SessionMode::Dropshot
         );
         assert_eq!(
             SessionMode::infer(Some("KO_Calavera_P"), Some(8)),
             SessionMode::Knockout
+        );
+        assert_eq!(
+            SessionMode::infer(Some("ThrowbackHockey_P"), Some(6)),
+            SessionMode::Snowday
+        );
+        assert_eq!(
+            SessionMode::infer(Some("Park_Snowy_P"), Some(6)),
+            SessionMode::Snowday
+        );
+        assert_eq!(
+            SessionMode::infer(Some("Stadium_Winter_P"), Some(6)),
+            SessionMode::Snowday
+        );
+        assert_eq!(
+            SessionMode::infer(Some("UtopiaStadium_Snow_P"), Some(6)),
+            SessionMode::Snowday
         );
     }
 
@@ -846,5 +890,73 @@ mod tests {
     #[test]
     fn labels_freeplay_mode() {
         assert_eq!(SessionMode::Freeplay.label(), "Freeplay");
+        assert_eq!(SessionMode::Snowday.label(), "Snow Day");
+    }
+
+    #[test]
+    fn locks_gamemode_after_round_started() {
+        let mut session = SessionState {
+            active_match_id: "abc".to_string(),
+            active_mode: SessionMode::Threes,
+            round_started: true,
+            ..Default::default()
+        };
+        let data = json!({
+            "MatchGuid": "abc",
+            "Game": {
+                "bHasWinner": false,
+            }
+        });
+        session.handle_update_state(&data, None, SessionMode::Twos);
+        assert_eq!(session.active_mode, SessionMode::Threes);
+    }
+
+    #[test]
+    fn test_watching_replay_bypasses_all_updates() {
+        let mut session = SessionState {
+            active_match_id: "xyz".to_string(),
+            active_mode: SessionMode::Twos,
+            local_team: Some(0),
+            blue_score: 3,
+            orange_score: 1,
+            round_started: true,
+            is_watching_replay: true,
+            ..Default::default()
+        };
+
+        // 1. Verify early leave does nothing
+        session.record_early_leave();
+        assert_eq!(session.wins, 0);
+        assert_eq!(session.losses, 0);
+        assert_eq!(session.matches_played, 0);
+
+        // 2. Verify match ended does nothing
+        session.handle_match_ended(
+            &json!({
+                "MatchGuid": "xyz",
+                "WinnerTeamNum": 0
+            }),
+            None,
+        );
+        assert_eq!(session.wins, 0);
+        assert_eq!(session.losses, 0);
+        assert_eq!(session.matches_played, 0);
+
+        // 3. Verify handle_update_state with winner does nothing
+        let data = json!({
+            "MatchGuid": "xyz",
+            "Game": {
+                "Teams": [
+                    {"TeamNum": 0, "Score": 3},
+                    {"TeamNum": 1, "Score": 1}
+                ],
+                "bHasWinner": true,
+                "Winner": "Blue"
+            }
+        });
+        session.handle_update_state(&data, Some(0), SessionMode::Twos);
+        assert_eq!(session.wins, 0);
+        assert_eq!(session.losses, 0);
+        assert_eq!(session.matches_played, 0);
     }
 }

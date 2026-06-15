@@ -1,10 +1,10 @@
 use futures_util::StreamExt;
 use serde_json::Value;
-use std::fs::File;
-use std::io::{self, Write};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::io::AsyncReadExt;
+use tokio::fs::File;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio_tungstenite::connect_async;
 
@@ -107,21 +107,26 @@ pub fn default_capture_path(config_dir: Option<PathBuf>) -> PathBuf {
 
 pub async fn capture_to_file(output: &Path, seconds: u64) -> io::Result<()> {
     if let Some(parent) = output.parent() {
-        std::fs::create_dir_all(parent)?;
+        tokio::fs::create_dir_all(parent).await?;
     }
 
-    let mut file = File::create(output)?;
-    writeln!(file, "Rocket League Stats API debug capture")?;
-    writeln!(file, "started_unix_ms={}", now_ms())?;
-    writeln!(file, "target_ws={WS_URL}")?;
-    writeln!(file, "target_tcp={TCP_ADDR}")?;
-    writeln!(file, "capture_seconds={seconds}")?;
-    writeln!(file)?;
+    let mut file = File::create(output).await?;
+    file.write_all(b"Rocket League Stats API debug capture\n")
+        .await?;
+    file.write_all(format!("started_unix_ms={}\n", now_ms()).as_bytes())
+        .await?;
+    file.write_all(format!("target_ws={WS_URL}\n").as_bytes())
+        .await?;
+    file.write_all(format!("target_tcp={TCP_ADDR}\n").as_bytes())
+        .await?;
+    file.write_all(format!("capture_seconds={seconds}\n").as_bytes())
+        .await?;
+    file.write_all(b"\n").await?;
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(seconds);
     match connect_async(WS_URL).await {
         Ok((ws_stream, _)) => {
-            writeln!(file, "connected_transport=websocket")?;
+            file.write_all(b"connected_transport=websocket\n").await?;
             capture_websocket(ws_stream, &mut file, deadline).await?;
         }
         Err(error)
@@ -132,17 +137,20 @@ pub async fn capture_to_file(output: &Path, seconds: u64) -> io::Result<()> {
                 )
             ) =>
         {
-            writeln!(file, "websocket_probe_error={error}")?;
-            writeln!(file, "connected_transport=tcp")?;
+            file.write_all(format!("websocket_probe_error={error}\n").as_bytes())
+                .await?;
+            file.write_all(b"connected_transport=tcp\n").await?;
             capture_tcp(&mut file, deadline).await?;
         }
         Err(error) => {
-            writeln!(file, "connection_error={error}")?;
+            file.write_all(format!("connection_error={error}\n").as_bytes())
+                .await?;
         }
     }
 
-    writeln!(file)?;
-    writeln!(file, "finished_unix_ms={}", now_ms())?;
+    file.write_all(b"\n").await?;
+    file.write_all(format!("finished_unix_ms={}\n", now_ms()).as_bytes())
+        .await?;
     Ok(())
 }
 
@@ -163,15 +171,16 @@ where
         match tokio::time::timeout(remaining, ws_stream.next()).await {
             Ok(Some(Ok(msg))) => {
                 if let Ok(text) = msg.to_text() {
-                    write_payload(file, "websocket", text)?;
+                    write_payload(file, "websocket", text).await?;
                 }
             }
             Ok(Some(Err(error))) => {
-                writeln!(file, "websocket_error={error}")?;
+                file.write_all(format!("websocket_error={error}\n").as_bytes())
+                    .await?;
                 return Ok(());
             }
             Ok(None) => {
-                writeln!(file, "websocket_closed=true")?;
+                file.write_all(b"websocket_closed=true\n").await?;
                 return Ok(());
             }
             Err(_) => return Ok(()),
@@ -192,30 +201,28 @@ async fn capture_tcp(file: &mut File, deadline: tokio::time::Instant) -> io::Res
 
         let n = match tokio::time::timeout(remaining, stream.read(&mut buffer)).await {
             Ok(Ok(0)) => {
-                writeln!(file, "tcp_closed=true")?;
+                file.write_all(b"tcp_closed=true\n").await?;
                 return Ok(());
             }
             Ok(Ok(n)) => n,
             Ok(Err(error)) => {
-                writeln!(file, "tcp_error={error}")?;
+                file.write_all(format!("tcp_error={error}\n").as_bytes())
+                    .await?;
                 return Ok(());
             }
             Err(_) => return Ok(()),
         };
 
         for payload in splitter.push(&buffer[..n]) {
-            write_payload(file, "tcp-json-object", &payload)?;
+            write_payload(file, "tcp-json-object", &payload).await?;
         }
     }
 }
 
-fn write_payload(file: &mut File, source: &str, text: &str) -> io::Result<()> {
-    writeln!(
-        file,
-        "\n--- payload source={source} unix_ms={} ---",
-        now_ms()
-    )?;
-    writeln!(file, "{text}")?;
+async fn write_payload(file: &mut File, source: &str, text: &str) -> io::Result<()> {
+    file.write_all(format!("\n--- payload source={source} unix_ms={} ---\n", now_ms()).as_bytes())
+        .await?;
+    file.write_all(format!("{text}\n").as_bytes()).await?;
 
     match serde_json::from_str::<Value>(text) {
         Ok(json) => {
@@ -226,11 +233,14 @@ fn write_payload(file: &mut File, source: &str, text: &str) -> io::Result<()> {
                 .or_else(|| data.get("players"))
                 .and_then(Value::as_array)
                 .map_or(0, Vec::len);
-            writeln!(file, "summary_event={event}")?;
-            writeln!(file, "summary_player_count={player_count}")?;
+            file.write_all(format!("summary_event={event}\n").as_bytes())
+                .await?;
+            file.write_all(format!("summary_player_count={player_count}\n").as_bytes())
+                .await?;
         }
         Err(error) => {
-            writeln!(file, "summary_parse_error={error}")?;
+            file.write_all(format!("summary_parse_error={error}\n").as_bytes())
+                .await?;
         }
     }
 

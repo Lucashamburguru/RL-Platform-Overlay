@@ -42,6 +42,7 @@ pub struct MainApp {
     launched_by_layout_mode: bool,
     confirm_modal: Option<ConfirmAction>,
     tos_accepted: bool,
+    history_search_query: String,
 }
 
 impl MainApp {
@@ -63,6 +64,7 @@ impl MainApp {
             launched_by_layout_mode: false,
             confirm_modal: None,
             tos_accepted: false,
+            history_search_query: String::new(),
         }
     }
 
@@ -87,6 +89,7 @@ impl MainApp {
         self.history_players_cache =
             Some(crate::history::load_all_player_summaries(&self.state).map_err(|e| e.to_string()));
         self.history_players_cache_revision = revision;
+        crate::history::refresh_totals(&self.state);
     }
 
     fn invalidate_history_players_cache(&mut self) {
@@ -761,6 +764,7 @@ impl MainApp {
                     &mut changed,
                     &mut self.confirm_modal,
                     self.history_players_cache.as_ref(),
+                    &mut self.history_search_query,
                 ),
                 SettingsTab::Debug => render_debug_settings_tab(
                     ui,

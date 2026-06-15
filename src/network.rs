@@ -21,12 +21,15 @@ fn clear_lobby_state(state: &AppState) {
 }
 
 fn handle_match_reset(state: &Arc<AppState>, early_leave: bool) {
+    let is_replay = state.flags.is_watching_replay.swap(false, Ordering::SeqCst);
+
     let players = state.game.players.load();
     let match_roster = state.game.match_roster.load();
     let is_online =
         players.values().any(is_online_player) || match_roster.values().any(is_online_player);
 
     let mut session = (**state.game.session.load()).clone();
+    session.is_watching_replay = is_replay;
     let matches_before = session.matches_played;
     if early_leave && is_online {
         session.record_early_leave();
@@ -36,6 +39,7 @@ fn handle_match_reset(state: &Arc<AppState>, early_leave: bool) {
         crate::history::record_completed_match(state, &session);
     }
     session.handle_reset_event();
+    session.is_watching_replay = false;
     state.game.session.store(Arc::new(session));
 
     clear_lobby_state(state);
@@ -138,7 +142,21 @@ fn handle_event(state: &Arc<AppState>, json: &Value) {
                 state.game.session.store(Arc::new(session));
             }
         }
+        "ReplayCreated" | "ReplayPlaybackStart" => {
+            state.flags.is_watching_replay.store(true, Ordering::SeqCst);
+            state.game.session.rcu(|session| {
+                let mut s = (**session).clone();
+                s.is_watching_replay = true;
+                Arc::new(s)
+            });
+        }
+        "ReplayPlaybackEnd" | "ReplayWillEnd" => {
+            handle_match_reset(state, false);
+        }
         "MatchEnded" => {
+            if state.flags.is_watching_replay.load(Ordering::SeqCst) {
+                return;
+            }
             let local_team = state.game.local_team.load(Ordering::SeqCst);
             let local_team_hint = (local_team != crate::state::NO_TEAM).then_some(local_team);
             let mut session = (**state.game.session.load()).clone();
@@ -148,9 +166,13 @@ fn handle_event(state: &Arc<AppState>, json: &Value) {
                 update_result_diagnostics(state, &session, "match_ended");
                 crate::history::record_completed_match(state, &session);
             }
+            session.handle_reset_event();
             state.game.session.store(Arc::new(session));
 
-            handle_match_reset(state, false);
+            state
+                .game
+                .local_team
+                .store(crate::state::NO_TEAM, Ordering::SeqCst);
 
             let state_clone = state.clone();
             tokio::spawn(async move {
@@ -358,7 +380,10 @@ fn update_session_from_event(
             session_mode,
         );
     let mode_changed = current_session.active_match_id != parsed_event.mode.match_guid
-        || (session_mode != SessionMode::Unknown && current_session.active_mode != session_mode)
+        || ((!current_session.round_started
+            || current_session.active_mode == SessionMode::Unknown)
+            && session_mode != SessionMode::Unknown
+            && current_session.active_mode != session_mode)
         || (local_team_hint.is_some() && current_session.local_team != local_team_hint);
     let round_start_relevant =
         !current_session.round_started && players_have_round_stats(parsed_event);
@@ -373,6 +398,10 @@ fn update_session_from_event(
         let mut session = (**current_session).clone();
         let matches_before = session.matches_played;
         session.handle_update_state(&parsed_event.data, local_team_hint, session_mode);
+        state
+            .flags
+            .is_watching_replay
+            .store(session.is_watching_replay, Ordering::SeqCst);
         if session.matches_played > matches_before {
             update_result_diagnostics(state, &session, "update_state");
             crate::history::record_completed_match(state, &session);
@@ -506,15 +535,13 @@ mod tests {
     fn test_parse_platform() {
         assert_eq!(parse_platform("Steam|123|0"), ("Steam".to_string(), false));
         assert_eq!(parse_platform("Epic|456|0"), ("Epic".to_string(), false));
-        assert_eq!(
-            parse_platform("Ps4|789|0"),
-            ("PlayStation".to_string(), false)
-        );
-        assert_eq!(
-            parse_platform("Ps5|012|0"),
-            ("PlayStation".to_string(), false)
-        );
+        assert_eq!(parse_platform("Ps4|789|0"), ("PSN".to_string(), false));
+        assert_eq!(parse_platform("Ps5|012|0"), ("PSN".to_string(), false));
+        assert_eq!(parse_platform("PS4|789|0"), ("PSN".to_string(), false));
+        assert_eq!(parse_platform("PS5|012|0"), ("PSN".to_string(), false));
         assert_eq!(parse_platform("Xbox|345|0"), ("Xbox".to_string(), false));
+        assert_eq!(parse_platform("XboxOne|345|0"), ("Xbox".to_string(), false));
+        assert_eq!(parse_platform("XBoxOne|345|0"), ("Xbox".to_string(), false));
         assert_eq!(
             parse_platform("Switch|678|0"),
             ("Switch".to_string(), false)
@@ -1464,5 +1491,117 @@ mod tests {
         let session = state.game.session.load();
         assert_eq!(session.wins, 1);
         assert_eq!(session.matches_played, 1);
+    }
+
+    #[test]
+    fn test_replay_playback_bypasses_all_updates() {
+        let state = AppState::new();
+
+        // 1. Send ReplayPlaybackStart to mark replay mode active
+        handle_event(&state, &json!({"Event": "ReplayPlaybackStart"}));
+        assert!(state.flags.is_watching_replay.load(Ordering::SeqCst));
+        assert!(state.game.session.load().is_watching_replay);
+
+        // 2. Send UpdateState representing a completed match inside the replay
+        handle_update_state_payload(
+            &state,
+            &json!({
+                "MatchGuid": "guid123",
+                "Players": [
+                    {"Name": "Me", "PrimaryId": "Steam|1|0", "TeamNum": 0, "IsLocalPlayer": true},
+                    {"Name": "Opponent", "PrimaryId": "Epic|2|0", "TeamNum": 1}
+                ],
+                "Game": {
+                    "Teams": [
+                        {"TeamNum": 0, "Score": 3},
+                        {"TeamNum": 1, "Score": 1}
+                    ],
+                    "bHasWinner": true,
+                    "Winner": "Blue"
+                }
+            }),
+        );
+
+        // Verify no wins/losses/matches recorded
+        let session = state.game.session.load();
+        assert_eq!(session.wins, 0);
+        assert_eq!(session.losses, 0);
+        assert_eq!(session.matches_played, 0);
+
+        // 3. Send MatchEnded event and verify it returns early and does not increment stats
+        handle_event(
+            &state,
+            &json!({
+                "Event": "MatchEnded",
+                "Data": {
+                    "MatchGuid": "guid123",
+                    "WinnerTeamNum": 0
+                }
+            }),
+        );
+        let session2 = state.game.session.load();
+        assert_eq!(session2.wins, 0);
+        assert_eq!(session2.matches_played, 0);
+
+        // 4. Send MatchDestroyed to simulate exiting the replay playback
+        handle_event(&state, &json!({"Event": "MatchDestroyed"}));
+        assert!(!state.flags.is_watching_replay.load(Ordering::SeqCst));
+        assert!(!state.game.session.load().is_watching_replay);
+    }
+
+    #[test]
+    fn test_replay_auto_detection_from_first_frame() {
+        let state = AppState::new();
+
+        // Simulate connecting mid-replay (no ReplayPlaybackStart event received).
+        // Send first UpdateState frame with bReplay: true.
+        handle_update_state_payload(
+            &state,
+            &json!({
+                "MatchGuid": "guid999",
+                "Players": [
+                    {"Name": "Me", "PrimaryId": "Steam|1|0", "TeamNum": 0, "IsLocalPlayer": true},
+                    {"Name": "Opponent", "PrimaryId": "Epic|2|0", "TeamNum": 1}
+                ],
+                "Game": {
+                    "Teams": [
+                        {"TeamNum": 0, "Score": 0},
+                        {"TeamNum": 1, "Score": 0}
+                    ],
+                    "bReplay": true,
+                    "bHasWinner": false,
+                    "Winner": ""
+                }
+            }),
+        );
+
+        // Verify that is_watching_replay was automatically set to true on both flags and session
+        assert!(state.flags.is_watching_replay.load(Ordering::SeqCst));
+        assert!(state.game.session.load().is_watching_replay);
+
+        // Subsequent winner frame within this replay match does not record results
+        handle_update_state_payload(
+            &state,
+            &json!({
+                "MatchGuid": "guid999",
+                "Players": [
+                    {"Name": "Me", "PrimaryId": "Steam|1|0", "TeamNum": 0, "IsLocalPlayer": true},
+                    {"Name": "Opponent", "PrimaryId": "Epic|2|0", "TeamNum": 1}
+                ],
+                "Game": {
+                    "Teams": [
+                        {"TeamNum": 0, "Score": 5},
+                        {"TeamNum": 1, "Score": 2}
+                    ],
+                    "bReplay": true,
+                    "bHasWinner": true,
+                    "Winner": "Blue"
+                }
+            }),
+        );
+
+        let session = state.game.session.load();
+        assert_eq!(session.wins, 0);
+        assert_eq!(session.matches_played, 0);
     }
 }

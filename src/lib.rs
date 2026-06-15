@@ -34,6 +34,8 @@ pub async fn run(debug_enabled: bool) -> eframe::Result<()> {
 
     let state = AppState::new_with_debug(debug_enabled);
 
+    history::refresh_totals(&state);
+
     if state.game.local_player_identity.load().is_known() {
         mmr::start_local_mmr_refresh(state.clone());
     }

@@ -433,14 +433,36 @@ pub fn parse_platform(id: &str) -> (String, bool) {
     }
     let parts: Vec<&str> = id.split('|').collect();
     let platform = parts.first().copied().unwrap_or("Unknown");
-    match platform {
-        "Steam" => ("Steam".to_string(), false),
-        "Epic" => ("Epic".to_string(), false),
-        "Ps4" | "Ps5" | "PlayStation" | "PSN" => ("PlayStation".to_string(), false),
-        "Xbox" | "XBoxOne" | "XBL" => ("Xbox".to_string(), false),
-        "Switch" | "Nintendo" => ("Switch".to_string(), false),
-        "Bot" => ("BOT".to_string(), true),
+    let platform_lower = platform.to_lowercase();
+    match platform_lower.as_str() {
+        "steam" => ("Steam".to_string(), false),
+        "epic" => ("Epic".to_string(), false),
+        "ps4" | "ps5" | "playstation" | "psn" => ("PSN".to_string(), false),
+        "xbox" | "xboxone" | "xboxseries" | "xbl" => ("Xbox".to_string(), false),
+        "switch" | "nintendo" => ("Switch".to_string(), false),
+        "bot" => ("BOT".to_string(), true),
         _ => (platform.to_string(), false),
+    }
+}
+
+pub fn format_platform(platform: &str) -> &str {
+    let lower = platform.to_lowercase();
+    if lower == "ps4" || lower == "ps5" || lower == "playstation" || lower == "psn" {
+        "PSN"
+    } else if lower == "xbox" || lower == "xboxone" || lower == "xboxseries" || lower == "xbl" {
+        "Xbox"
+    } else if lower == "steam" {
+        "Steam"
+    } else if lower == "epic" {
+        "Epic"
+    } else if lower == "switch" || lower == "nintendo" {
+        "Switch"
+    } else if lower == "bot" {
+        "BOT"
+    } else if lower == "unknown" {
+        "Unknown"
+    } else {
+        platform
     }
 }
 

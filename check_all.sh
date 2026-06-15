@@ -13,7 +13,14 @@ run_cargo_cmd() {
     
     if [ $status -ne 0 ]; then
         echo "❌ $cmd_name FAILED (exit code $status):"
-        echo "$output"
+        # Print up to 30 lines of error/warning lines to save tokens
+        local filtered
+        filtered=$(echo "$output" | grep -iE "error|warning|failed|aborting|diff" | head -n 30)
+        if [ -n "$filtered" ]; then
+            echo "$filtered"
+        else
+            echo "$output" | tail -n 15
+        fi
         return $status
     else
         echo "✅ $cmd_name passed."
@@ -23,7 +30,7 @@ run_cargo_cmd() {
 
 status_fmt=0
 status_clippy=0
-status_check=0
+status_test=0
 
 # Run format check
 run_cargo_cmd "cargo fmt" cargo fmt -- --check
@@ -33,11 +40,18 @@ status_fmt=$?
 run_cargo_cmd "cargo clippy" cargo clippy --all-targets -- -D warnings
 status_clippy=$?
 
-# Run cargo check
-run_cargo_cmd "cargo check" cargo check
-status_check=$?
+# Run tests using the existing tests script to keep output clean and token-friendly
+echo "Running cargo test..."
+test_output=$(./run_tests.sh 2>&1)
+status_test=$?
+if [ $status_test -ne 0 ]; then
+    echo "❌ cargo test FAILED:"
+    echo "$test_output" | grep -iE "failed|error|panic" | head -n 25
+else
+    echo "✅ cargo test passed."
+fi
 
-if [ $status_fmt -eq 0 ] && [ $status_clippy -eq 0 ] && [ $status_check -eq 0 ]; then
+if [ $status_fmt -eq 0 ] && [ $status_clippy -eq 0 ] && [ $status_test -eq 0 ]; then
     echo "🎉 All checks passed successfully!"
     exit 0
 else

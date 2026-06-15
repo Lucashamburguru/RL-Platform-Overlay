@@ -187,11 +187,13 @@ async fn download_and_apply_update(state: Arc<AppState>) -> Result<(), String> {
         let update_dir = config_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join("update");
-        std::fs::create_dir_all(&update_dir)
+        tokio::fs::create_dir_all(&update_dir)
+            .await
             .map_err(|error| format!("Could not create update directory: {error}"))?;
 
         let staged_exe = update_dir.join(format!("rl-platform-overlay-{latest_tag}.exe"));
-        std::fs::write(&staged_exe, &bytes)
+        tokio::fs::write(&staged_exe, &bytes)
+            .await
             .map_err(|error| format!("Could not stage update: {error}"))?;
 
         set_update_status(&state, true, "Restarting to apply update...", "");

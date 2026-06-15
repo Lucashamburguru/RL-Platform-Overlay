@@ -552,6 +552,7 @@ pub struct ReplaysState {
     pub upload_progress: ArcSwap<ReplayUploadProgress>,
     pub upload_paused: AtomicBool,
     pub upload_stop_requested: AtomicBool,
+    pub download_active: AtomicBool,
     pub metadata_cache: ArcSwap<crate::replay_metadata::ReplayMetadataSnapshot>,
     pub metadata_scan_running: AtomicBool,
     pub metadata_status: Arc<std::sync::Mutex<String>>,
@@ -587,6 +588,7 @@ pub struct AppFlags {
     pub is_connected: AtomicBool,
     pub is_launched: AtomicBool,
     pub should_exit: AtomicBool,
+    pub is_watching_replay: AtomicBool,
 }
 
 pub struct HotkeyRecordingState {
@@ -683,6 +685,7 @@ impl AppState {
                 is_connected: AtomicBool::new(false),
                 is_launched: AtomicBool::new(false),
                 should_exit: AtomicBool::new(false),
+                is_watching_replay: AtomicBool::new(false),
             },
             hotkeys: HotkeyRecordingState {
                 is_recording_kb: AtomicBool::new(false),
@@ -724,6 +727,7 @@ impl AppState {
                 upload_progress: ArcSwap::from_pointee(ReplayUploadProgress::default()),
                 upload_paused: AtomicBool::new(false),
                 upload_stop_requested: AtomicBool::new(false),
+                download_active: AtomicBool::new(false),
                 metadata_cache: ArcSwap::from_pointee(
                     crate::replay_metadata::ReplayMetadataSnapshot::default(),
                 ),
