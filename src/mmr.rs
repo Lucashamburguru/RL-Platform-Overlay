@@ -539,7 +539,9 @@ fn tracker_player_from_info(name: &str, info: &PlayerInfo) -> Option<(String, Tr
 
     // Extract the actual ID from PrimaryId, e.g. "Steam|76561197981997358|0".
     // Bolt: Avoid collecting string splits into a Vec
-    let actual_id = info.primary_id.split('|')
+    let actual_id = info
+        .primary_id
+        .split('|')
         .nth(1)
         .filter(|id| !id.trim().is_empty())
         .map(|id| id.to_string())
