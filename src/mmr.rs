@@ -538,12 +538,13 @@ fn tracker_player_from_info(name: &str, info: &PlayerInfo) -> Option<(String, Tr
     }
 
     // Extract the actual ID from PrimaryId, e.g. "Steam|76561197981997358|0".
-    let id_parts: Vec<&str> = info.primary_id.split('|').collect();
-    let actual_id = id_parts
-        .get(1)
+    // Bolt: Avoid collecting string splits into a Vec
+    let actual_id = info.primary_id.split('|')
+        .nth(1)
         .filter(|id| !id.trim().is_empty())
-        .map(|id| (*id).to_string())
+        .map(|id| id.to_string())
         .unwrap_or_else(|| name.to_string());
+
     let cache_key = if info.primary_id.trim().is_empty() {
         format!("{}|{}", platform_lower, name.to_lowercase())
     } else {
