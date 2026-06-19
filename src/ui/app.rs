@@ -5,6 +5,7 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use super::boost_hud::{render_teammate_boost, render_teammate_boost_position_preview};
+use super::dashboard::render_dashboard_viewport;
 use super::debug::render_debug_settings_tab;
 use super::hotkeys::egui_to_rdev_key;
 use super::lobby_overlay::render_overlay;
@@ -28,8 +29,6 @@ pub enum ConfirmAction {
 pub struct MainApp {
     state: Arc<AppState>,
     settings_tab: SettingsTab,
-    history_players_cache: Option<Result<Vec<crate::history::PlayerHistorySummary>, String>>,
-    history_players_cache_revision: u64,
     is_rl_running: bool,
     rl_process_detection_detail: String,
     last_rl_check: std::time::Instant,
@@ -50,8 +49,6 @@ impl MainApp {
         Self {
             state,
             settings_tab: SettingsTab::Overlay,
-            history_players_cache: None,
-            history_players_cache_revision: 0,
             is_rl_running: false,
             rl_process_detection_detail: "not checked".to_string(),
             last_rl_check: std::time::Instant::now()
@@ -70,7 +67,7 @@ impl MainApp {
 
     fn refresh_rocket_league_process_detection(&mut self) {
         let now = std::time::Instant::now();
-        if self.is_rl_running || now.duration_since(self.last_rl_check).as_secs() < 2 {
+        if !should_poll_rocket_league_process(now, self.last_rl_check) {
             return;
         }
 
@@ -79,21 +76,30 @@ impl MainApp {
         self.rl_process_detection_detail = detection.detail;
         self.last_rl_check = now;
     }
+}
 
-    fn refresh_history_players_cache_if_needed(&mut self) {
-        let revision = self.state.history.revision.load(Ordering::SeqCst);
-        if self.history_players_cache.is_some() && self.history_players_cache_revision == revision {
-            return;
-        }
+fn should_poll_rocket_league_process(
+    now: std::time::Instant,
+    last_check: std::time::Instant,
+) -> bool {
+    now.duration_since(last_check) >= std::time::Duration::from_secs(2)
+}
 
-        self.history_players_cache =
-            Some(crate::history::load_all_player_summaries(&self.state).map_err(|e| e.to_string()));
-        self.history_players_cache_revision = revision;
-        crate::history::refresh_totals(&self.state);
-    }
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    fn invalidate_history_players_cache(&mut self) {
-        self.history_players_cache = None;
+    #[test]
+    fn process_polling_rechecks_after_interval_even_if_running() {
+        let now = std::time::Instant::now();
+        assert!(should_poll_rocket_league_process(
+            now,
+            now - std::time::Duration::from_secs(2)
+        ));
+        assert!(!should_poll_rocket_league_process(
+            now,
+            now - std::time::Duration::from_millis(1500)
+        ));
     }
 }
 
@@ -101,6 +107,7 @@ impl MainApp {
 pub(super) enum SettingsTab {
     Setup,
     Overlay,
+    Dashboard,
     Session,
     Boost,
     Replays,
@@ -119,6 +126,8 @@ impl eframe::App for MainApp {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        ctx.set_zoom_factor(1.0);
+
         if self.state.flags.should_exit.load(Ordering::SeqCst) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             return;
@@ -152,6 +161,13 @@ impl eframe::App for MainApp {
                 self.launched_by_layout_mode = false;
             }
         }
+        let is_launched =
+            if config.dashboard_enabled && !config.dashboard_keep_overlay_enabled && is_launched {
+                self.state.flags.is_launched.store(false, Ordering::SeqCst);
+                false
+            } else {
+                is_launched
+            };
 
         let lobby_hotkey_visible = self.state.flags.is_visible.load(Ordering::SeqCst);
         let show_hud = is_launched && (lobby_hotkey_visible || config.layout_mode);
@@ -167,6 +183,7 @@ impl eframe::App for MainApp {
                     && config.show_teammate_boost);
         let show_boost_hud =
             is_launched && config.show_teammate_boost && !show_settings && !config.layout_mode;
+        let show_dashboard = config.dashboard_enabled;
         let mouse_passthrough = is_launched && !show_settings && !config.layout_mode;
         #[allow(unused_mut)]
         let mut target_size = if is_launched {
@@ -509,6 +526,11 @@ impl eframe::App for MainApp {
                                 .clicked()
                             {
                                 self.state.flags.is_launched.store(true, Ordering::SeqCst);
+                                if config.dashboard_open_with_overlay && !config.dashboard_enabled {
+                                    let mut config_edit = (**config).clone();
+                                    config_edit.dashboard_enabled = true;
+                                    self.state.save_config(config_edit);
+                                }
                                 self.state
                                     .flags
                                     .is_settings_visible
@@ -541,6 +563,10 @@ impl eframe::App for MainApp {
 
         self.render_confirm_modal(ctx);
 
+        if show_dashboard {
+            render_dashboard_viewport(ctx, self.state.clone(), (**config).clone());
+        }
+
         schedule_repaint(
             ctx,
             &self.state,
@@ -550,6 +576,7 @@ impl eframe::App for MainApp {
                 show_hud,
                 show_session_overlay,
                 show_boost_panel: show_boost_hud || show_boost_position_preview,
+                show_dashboard,
                 layout_mode: config.layout_mode,
             },
         );
@@ -562,6 +589,7 @@ struct RepaintInputs {
     show_hud: bool,
     show_session_overlay: bool,
     show_boost_panel: bool,
+    show_dashboard: bool,
     layout_mode: bool,
 }
 
@@ -573,12 +601,13 @@ fn schedule_repaint(ctx: &egui::Context, state: &Arc<AppState>, inputs: RepaintI
     let needs_animation = inputs.show_hud
         || inputs.show_session_overlay
         || inputs.show_boost_panel
+        || inputs.show_dashboard
         || has_drag_input
         || has_spinner;
 
     let delay = if needs_animation {
         Duration::from_millis(16)
-    } else if inputs.is_launched {
+    } else if inputs.is_launched || inputs.show_dashboard {
         Duration::from_millis(100)
     } else if inputs.show_settings {
         Duration::from_millis(250)
@@ -715,7 +744,7 @@ impl MainApp {
         render_settings_tabs(ui, &mut self.settings_tab, self.state.debug_enabled);
         self.refresh_rocket_league_process_detection();
         if self.settings_tab == SettingsTab::History && config_edit.history_enabled {
-            self.refresh_history_players_cache_if_needed();
+            crate::history::request_all_player_history_refresh(&self.state, false);
         }
 
         egui::ScrollArea::vertical()
@@ -738,6 +767,13 @@ impl MainApp {
                     &mut config_edit,
                     &mut changed,
                     is_launched,
+                ),
+                SettingsTab::Dashboard => super::settings::render_dashboard_settings_tab(
+                    ui,
+                    ctx,
+                    &self.state,
+                    &mut config_edit,
+                    &mut changed,
                 ),
                 SettingsTab::Session => {
                     render_session_settings_tab(ui, &self.state, &mut config_edit, &mut changed)
@@ -763,7 +799,6 @@ impl MainApp {
                     &mut config_edit,
                     &mut changed,
                     &mut self.confirm_modal,
-                    self.history_players_cache.as_ref(),
                     &mut self.history_search_query,
                 ),
                 SettingsTab::Debug => render_debug_settings_tab(
@@ -808,8 +843,8 @@ impl MainApp {
             let history_enabled = config_edit.history_enabled;
             let history_indicators_enabled = config_edit.lobby_history_indicators_enabled;
             self.state.save_config(config_edit);
-            self.invalidate_history_players_cache();
             if history_enabled {
+                crate::history::request_all_player_history_refresh(&self.state, true);
                 crate::history::refresh_totals(&self.state);
                 if history_indicators_enabled {
                     crate::history::refresh_lobby_history(&self.state);
@@ -945,10 +980,13 @@ impl MainApp {
             ConfirmAction::ClearHistory => match crate::history::clear_history(&self.state) {
                 Ok(()) => {
                     self.state.history.revision.fetch_add(1, Ordering::SeqCst);
-                    self.invalidate_history_players_cache();
                     self.state
                         .history
                         .player_summaries
+                        .store(Arc::new(Default::default()));
+                    self.state
+                        .history
+                        .all_players_snapshot
                         .store(Arc::new(Default::default()));
                     self.state
                         .history

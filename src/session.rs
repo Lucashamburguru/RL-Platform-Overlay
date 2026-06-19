@@ -143,6 +143,8 @@ pub struct SessionState {
     pub local_team: Option<u8>,
     pub blue_score: u32,
     pub orange_score: u32,
+    pub time_seconds: Option<u32>,
+    pub overtime: bool,
     pub round_started: bool,
     pub is_watching_replay: bool,
     result_recorded_for_match: bool,
@@ -172,6 +174,17 @@ impl SessionState {
         }
 
         if let Some(game) = real_data.get("Game").or_else(|| real_data.get("game")) {
+            if let Some(time_seconds) = number_field(game, &["TimeSeconds", "timeSeconds"])
+                && self.time_seconds != Some(time_seconds.max(0) as u32)
+            {
+                return true;
+            }
+            if let Some(overtime) = bool_field(game, &["bOvertime", "overtime"])
+                && self.overtime != overtime
+            {
+                return true;
+            }
+
             if let Some(teams) = game
                 .get("Teams")
                 .or_else(|| game.get("teams"))
@@ -194,6 +207,12 @@ impl SessionState {
 
             let has_winner = bool_field(game, &["bHasWinner", "hasWinner"]).unwrap_or(false);
             if has_winner && !self.has_recorded_current_match() {
+                return true;
+            }
+
+            if let Some(b_replay) = bool_field(game, &["bReplay", "b_replay", "replay"])
+                && self.is_watching_replay != b_replay
+            {
                 return true;
             }
         }
@@ -251,11 +270,13 @@ impl SessionState {
                 .or_else(|| real_data.get("game"))
                 .and_then(|game| bool_field(game, &["bReplay", "b_replay", "replay"]))
                 .unwrap_or(false);
-            self.is_watching_replay = self.is_watching_replay || b_replay;
+            self.is_watching_replay = b_replay;
         }
 
         if mode_hint != SessionMode::Unknown
-            && (!self.round_started || self.active_mode == SessionMode::Unknown)
+            && (!self.round_started
+                || self.active_mode == SessionMode::Unknown
+                || should_replace_active_mode(self.active_mode, mode_hint))
         {
             self.active_mode = mode_hint;
         }
@@ -265,6 +286,17 @@ impl SessionState {
         }
 
         if let Some(game) = real_data.get("Game").or_else(|| real_data.get("game")) {
+            if let Some(b_replay) = bool_field(game, &["bReplay", "b_replay", "replay"]) {
+                self.is_watching_replay = b_replay;
+            }
+
+            if let Some(time_seconds) = number_field(game, &["TimeSeconds", "timeSeconds"]) {
+                self.time_seconds = Some(time_seconds.max(0) as u32);
+            }
+            if let Some(overtime) = bool_field(game, &["bOvertime", "overtime"]) {
+                self.overtime = overtime;
+            }
+
             if let Some(teams) = game
                 .get("Teams")
                 .or_else(|| game.get("teams"))
@@ -307,6 +339,16 @@ impl SessionState {
 
     pub fn handle_round_started(&mut self) {
         self.round_started = true;
+    }
+
+    pub fn handle_clock_update(&mut self, data: &Value) {
+        let real_data = decode_json_string_value(data);
+        if let Some(time_seconds) = number_field(&real_data, &["TimeSeconds", "timeSeconds"]) {
+            self.time_seconds = Some(time_seconds.max(0) as u32);
+        }
+        if let Some(overtime) = bool_field(&real_data, &["bOvertime", "overtime"]) {
+            self.overtime = overtime;
+        }
     }
 
     pub fn record_early_leave(&mut self) {
@@ -355,7 +397,7 @@ impl SessionState {
             return;
         };
 
-        let result = number_field(
+        let mut result = number_field(
             &real_data,
             &["WinnerTeamNum", "winnerTeamNum", "WinnerTeam", "winnerTeam"],
         )
@@ -368,6 +410,33 @@ impl SessionState {
         })
         .unwrap_or(MatchResult::Unknown);
 
+        if result == MatchResult::Unknown
+            && let Some(winner_str) = string_field(
+                &real_data,
+                &["Winner", "winner", "WinnerTeam", "winnerTeam"],
+            )
+        {
+            result = result_from_winner(winner_str, local_team).unwrap_or(MatchResult::Unknown);
+        }
+
+        if result == MatchResult::Unknown {
+            let (blue, orange) =
+                if let Some(game) = real_data.get("Game").or_else(|| real_data.get("game")) {
+                    team_scores(game)
+                } else {
+                    team_scores(&real_data)
+                };
+            if blue > 0 || orange > 0 {
+                result =
+                    result_from_score(blue, orange, local_team).unwrap_or(MatchResult::Unknown);
+            }
+        }
+
+        if result == MatchResult::Unknown {
+            result = result_from_score(self.blue_score, self.orange_score, local_team)
+                .unwrap_or(MatchResult::Unknown);
+        }
+
         self.apply_match_result(result);
     }
 
@@ -377,8 +446,11 @@ impl SessionState {
         self.local_team = None;
         self.blue_score = 0;
         self.orange_score = 0;
+        self.time_seconds = None;
+        self.overtime = false;
         self.result_recorded_for_match = false;
         self.round_started = false;
+        self.is_watching_replay = false;
     }
 
     fn record_result(&mut self, winner: &str) {
@@ -496,6 +568,16 @@ impl SessionState {
     }
 }
 
+fn should_replace_active_mode(current: SessionMode, next: SessionMode) -> bool {
+    matches!(
+        next,
+        SessionMode::Hoops | SessionMode::Dropshot | SessionMode::Snowday | SessionMode::Knockout
+    ) && !matches!(
+        current,
+        SessionMode::Hoops | SessionMode::Dropshot | SessionMode::Snowday | SessionMode::Knockout
+    )
+}
+
 pub fn format_win_rate(wins: u32, losses: u32) -> String {
     let total = wins + losses;
     if total == 0 {
@@ -593,6 +675,46 @@ mod tests {
     }
 
     #[test]
+    fn explicit_extra_mode_hint_replaces_started_player_count_guess() {
+        let mut session = SessionState {
+            active_match_id: "abc".to_string(),
+            active_mode: SessionMode::Ones,
+            round_started: true,
+            ..Default::default()
+        };
+        let data = json!({
+            "MatchGuid": "abc",
+            "Game": {
+                "Arena": "HoopsStadium_P",
+                "bReplay": false
+            }
+        });
+
+        session.handle_update_state(&data, Some(0), SessionMode::Hoops);
+
+        assert_eq!(session.active_mode, SessionMode::Hoops);
+    }
+
+    #[test]
+    fn replay_flag_updates_without_new_match_guid() {
+        let mut session = SessionState {
+            active_match_id: "abc".to_string(),
+            is_watching_replay: false,
+            ..Default::default()
+        };
+        let data = json!({
+            "MatchGuid": "abc",
+            "Game": {
+                "bReplay": true
+            }
+        });
+
+        session.handle_update_state(&data, Some(0), SessionMode::Unknown);
+
+        assert!(session.is_watching_replay);
+    }
+
+    #[test]
     fn ignores_stale_match_ended_after_reset() {
         let mut session = SessionState {
             active_match_id: "abc".to_string(),
@@ -649,6 +771,23 @@ mod tests {
         assert_eq!(session.matches_played, 0);
         assert_eq!(session.last_result, MatchResult::Unknown);
         assert!(!session.result_recorded_for_match);
+    }
+
+    #[test]
+    fn update_state_tracks_clock_and_overtime() {
+        let mut session = SessionState::default();
+        let data = json!({
+            "MatchGuid": "abc",
+            "Game": {
+                "TimeSeconds": 123,
+                "bOvertime": true
+            }
+        });
+
+        assert!(session.would_change(&data, None, SessionMode::Twos));
+        session.handle_update_state(&data, None, SessionMode::Twos);
+        assert_eq!(session.time_seconds, Some(123));
+        assert!(session.overtime);
     }
 
     #[test]

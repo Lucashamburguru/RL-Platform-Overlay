@@ -133,10 +133,27 @@ fn contains_bytes(haystack: &[u8], needle: &str) -> bool {
 }
 
 /// Scans the body byte-by-byte and replaces any occurrences of old_token with new_token.
-fn replace_token(body: &[u8], old_token: &[u8], new_token: &[u8]) -> (Vec<u8>, usize) {
+fn replace_token(body: &[u8], old_token: &[u8], new_token: &[u8]) -> (Option<Vec<u8>>, usize) {
+    // First, check if there's any match in the body
+    let mut first_match = None;
+    for i in 0..=body.len().saturating_sub(old_token.len()) {
+        if &body[i..i + old_token.len()] == old_token {
+            first_match = Some(i);
+            break;
+        }
+    }
+
+    let Some(start_idx) = first_match else {
+        return (None, 0);
+    };
+
+    // We found a match, so we allocate a new Vec
     let mut result = Vec::with_capacity(body.len());
-    let mut count = 0;
-    let mut i = 0;
+    result.extend_from_slice(&body[..start_idx]);
+    result.extend_from_slice(new_token);
+
+    let mut count = 1;
+    let mut i = start_idx + old_token.len();
     while i < body.len() {
         if i + old_token.len() <= body.len() && &body[i..i + old_token.len()] == old_token {
             result.extend_from_slice(new_token);
@@ -147,7 +164,7 @@ fn replace_token(body: &[u8], old_token: &[u8], new_token: &[u8]) -> (Vec<u8>, u
             i += 1;
         }
     }
-    (result, count)
+    (Some(result), count)
 }
 
 /// Fixes a single Rocket League replay file's legacy hoops tags and updates both header and body CRCs.
@@ -204,7 +221,9 @@ pub fn fix_single_replay(data: &[u8]) -> Option<(Vec<u8>, Vec<PatchDetail>)> {
                     desc: candidate.desc.clone(),
                     count,
                 });
-                final_body_data = new_body;
+                if let Some(nb) = new_body {
+                    final_body_data = nb;
+                }
             }
         }
     }
@@ -289,8 +308,21 @@ fn clear_logs(state: &AppState) {
 
 /// Spawns the background task to scan the replays folder and patch legacy hoops files in place.
 pub fn start_folder_fix_task(state: Arc<AppState>) {
+    if state
+        .hoops_fixer
+        .running
+        .swap(true, std::sync::atomic::Ordering::SeqCst)
+    {
+        set_status(&state, "Error: Another hoops fixer task is already running");
+        return;
+    }
     tokio::task::spawn_blocking(move || {
+        let state_clone = state.clone();
         run_folder_fix(state);
+        state_clone
+            .hoops_fixer
+            .running
+            .store(false, std::sync::atomic::Ordering::SeqCst);
     });
 }
 
@@ -384,12 +416,22 @@ fn run_folder_fix(state: Arc<AppState>) {
                 continue;
             }
 
-            // Write fixed replay in place
-            if let Err(e) = fs::write(&path, &fixed_bytes) {
+            // Write fixed replay atomically
+            let tmp_path = path.with_extension("replay.tmp");
+            if let Err(e) = fs::write(&tmp_path, &fixed_bytes) {
                 append_log(
                     &state,
-                    format!("❌ {filename}: Could not save fixed replay ({e})"),
+                    format!("❌ {filename}: Could not write temp file ({e})"),
                 );
+                let _ = fs::remove_file(&tmp_path);
+                continue;
+            }
+            if let Err(e) = fs::rename(&tmp_path, &path) {
+                append_log(
+                    &state,
+                    format!("❌ {filename}: Could not rename temp file to replace original ({e})"),
+                );
+                let _ = fs::remove_file(&tmp_path);
                 continue;
             }
 
@@ -412,8 +454,21 @@ fn run_folder_fix(state: Arc<AppState>) {
 
 /// Spawns a background task to restore original replays from backup (.replay.bak) files.
 pub fn start_restore_backups_task(state: Arc<AppState>) {
+    if state
+        .hoops_fixer
+        .running
+        .swap(true, std::sync::atomic::Ordering::SeqCst)
+    {
+        set_status(&state, "Error: Another hoops fixer task is already running");
+        return;
+    }
     tokio::task::spawn_blocking(move || {
+        let state_clone = state.clone();
         run_restore_backups(state);
+        state_clone
+            .hoops_fixer
+            .running
+            .store(false, std::sync::atomic::Ordering::SeqCst);
     });
 }
 
@@ -484,8 +539,21 @@ fn run_restore_backups(state: Arc<AppState>) {
 
 /// Spawns a background task to clean up and delete all backup (.replay.bak) files.
 pub fn start_delete_backups_task(state: Arc<AppState>) {
+    if state
+        .hoops_fixer
+        .running
+        .swap(true, std::sync::atomic::Ordering::SeqCst)
+    {
+        set_status(&state, "Error: Another hoops fixer task is already running");
+        return;
+    }
     tokio::task::spawn_blocking(move || {
+        let state_clone = state.clone();
         run_delete_backups(state);
+        state_clone
+            .hoops_fixer
+            .running
+            .store(false, std::sync::atomic::Ordering::SeqCst);
     });
 }
 

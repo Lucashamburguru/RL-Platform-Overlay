@@ -1,7 +1,8 @@
 use crate::state::AppState;
-use boxcars::{HeaderProp, ParserBuilder};
+use boxcars::HeaderProp;
 use std::collections::HashMap;
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -191,7 +192,7 @@ fn parse_metadata_file(
         ..Default::default()
     };
 
-    let bytes = match fs::read(path) {
+    let bytes = match read_replay_header_prefix(path) {
         Ok(bytes) => bytes,
         Err(error) => {
             entry.error = format!("Could not read replay: {error}");
@@ -199,23 +200,226 @@ fn parse_metadata_file(
         }
     };
 
-    let replay = match ParserBuilder::new(&bytes)
-        .on_error_check_crc()
-        .never_parse_network_data()
-        .parse()
-    {
-        Ok(replay) => replay,
+    let properties = match parse_header_properties(&bytes) {
+        Ok(properties) => properties,
         Err(error) => {
             entry.error = format!("Could not parse replay header: {error}");
             return entry;
         }
     };
 
-    apply_properties(&mut entry, &replay.properties);
+    apply_properties(&mut entry, &properties);
     if entry.display_name.trim().is_empty() {
         entry.display_name = filename.trim_end_matches(".replay").to_string();
     }
     entry
+}
+
+fn read_replay_header_prefix(path: &Path) -> std::io::Result<Vec<u8>> {
+    let mut file = fs::File::open(path)?;
+    let mut prefix = [0_u8; 8];
+    file.read_exact(&mut prefix)?;
+    let header_len = i32::from_le_bytes(prefix[0..4].try_into().unwrap());
+    if header_len < 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "negative replay header length",
+        ));
+    }
+    let total_len = 8_usize
+        .checked_add(header_len as usize)
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "header too large"))?;
+    let mut bytes = Vec::with_capacity(total_len);
+    bytes.extend_from_slice(&prefix);
+    bytes.resize(total_len, 0);
+    file.read_exact(&mut bytes[8..])?;
+    Ok(bytes)
+}
+
+fn parse_header_properties(bytes: &[u8]) -> Result<Vec<(String, HeaderProp)>, String> {
+    if bytes.len() < 8 {
+        return Err("header prefix is too short".to_string());
+    }
+    let header_len = i32::from_le_bytes(bytes[0..4].try_into().unwrap());
+    if header_len < 0 {
+        return Err("negative header length".to_string());
+    }
+    let header_end = 8_usize
+        .checked_add(header_len as usize)
+        .ok_or_else(|| "header length overflowed".to_string())?;
+    let header = bytes
+        .get(8..header_end)
+        .ok_or_else(|| "header bytes are incomplete".to_string())?;
+    let mut parser = HeaderParser::new(header);
+    let major_version = parser.take_i32("major version")?;
+    let minor_version = parser.take_i32("minor version")?;
+    if major_version > 865 && minor_version > 17 {
+        parser.take_i32("net version")?;
+    }
+    parser.parse_text("game type")?;
+    parser.parse_properties()
+}
+
+struct HeaderParser<'a> {
+    bytes: &'a [u8],
+    offset: usize,
+}
+
+impl<'a> HeaderParser<'a> {
+    fn new(bytes: &'a [u8]) -> Self {
+        Self { bytes, offset: 0 }
+    }
+
+    fn take(&mut self, count: usize, section: &str) -> Result<&'a [u8], String> {
+        let end = self
+            .offset
+            .checked_add(count)
+            .ok_or_else(|| format!("{section} offset overflowed"))?;
+        let slice = self
+            .bytes
+            .get(self.offset..end)
+            .ok_or_else(|| format!("{section} is truncated"))?;
+        self.offset = end;
+        Ok(slice)
+    }
+
+    fn take_i32(&mut self, section: &str) -> Result<i32, String> {
+        let bytes: [u8; 4] = self.take(4, section)?.try_into().unwrap();
+        Ok(i32::from_le_bytes(bytes))
+    }
+
+    fn take_u32(&mut self, section: &str) -> Result<u32, String> {
+        let bytes: [u8; 4] = self.take(4, section)?.try_into().unwrap();
+        Ok(u32::from_le_bytes(bytes))
+    }
+
+    fn parse_str(&mut self, section: &str) -> Result<String, String> {
+        let len = self.take_i32(section)?;
+        if !(0..=10_000).contains(&len) {
+            return Err(format!("{section} length is invalid"));
+        }
+        let bytes = self.take(len as usize, section)?;
+        Ok(decode_windows_1252(bytes)
+            .trim_end_matches('\0')
+            .to_string())
+    }
+
+    fn parse_text(&mut self, section: &str) -> Result<String, String> {
+        let characters = self.take_i32(section)?;
+        if !(-10_000..=10_000).contains(&characters) {
+            return Err(format!("{section} length is too large"));
+        }
+        if characters < 0 {
+            let byte_len = characters
+                .checked_mul(-2)
+                .ok_or_else(|| format!("{section} length overflowed"))?;
+            let bytes = self.take(byte_len as usize, section)?;
+            let code_units: Vec<u16> = bytes
+                .chunks_exact(2)
+                .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+                .take_while(|unit| *unit != 0)
+                .collect();
+            String::from_utf16(&code_units).map_err(|_| format!("{section} is invalid UTF-16"))
+        } else {
+            let bytes = self.take(characters as usize, section)?;
+            Ok(decode_windows_1252(bytes)
+                .trim_end_matches('\0')
+                .to_string())
+        }
+    }
+
+    fn parse_properties(&mut self) -> Result<Vec<(String, HeaderProp)>, String> {
+        let mut properties = Vec::new();
+        loop {
+            let key = self.parse_str("property key")?;
+            if key == "None" {
+                break;
+            }
+            let kind = self.parse_str("property kind")?;
+            let _size = self.take_u32("property size")?;
+            self.take(4, "property index")?;
+            let value = match kind.as_str() {
+                "BoolProperty" => HeaderProp::Bool(self.take(1, "bool property")?[0] == 1),
+                "ByteProperty" => {
+                    let kind = self.parse_str("byte property kind")?;
+                    if kind == "None" {
+                        self.take(1, "byte property terminator")?;
+                        continue;
+                    }
+                    HeaderProp::Byte {
+                        kind,
+                        value: Some(self.parse_str("byte property value")?),
+                    }
+                }
+                "ArrayProperty" => {
+                    let count = self.take_i32("array property count")?;
+                    if !(0..=25_000).contains(&count) {
+                        return Err("array property count is invalid".to_string());
+                    }
+                    let mut items = Vec::with_capacity(count as usize);
+                    for _ in 0..count {
+                        items.push(self.parse_properties()?);
+                    }
+                    HeaderProp::Array(items)
+                }
+                "FloatProperty" => {
+                    let bytes: [u8; 4] = self.take(4, "float property")?.try_into().unwrap();
+                    HeaderProp::Float(f32::from_le_bytes(bytes))
+                }
+                "IntProperty" => HeaderProp::Int(self.take_i32("int property")?),
+                "QWordProperty" => {
+                    let bytes: [u8; 8] = self.take(8, "qword property")?.try_into().unwrap();
+                    HeaderProp::QWord(u64::from_le_bytes(bytes))
+                }
+                "NameProperty" => HeaderProp::Name(self.parse_text("name property")?),
+                "StrProperty" => HeaderProp::Str(self.parse_text("str property")?),
+                "StructProperty" => {
+                    let name = self.parse_str("struct property name")?;
+                    let fields = self.parse_properties()?;
+                    HeaderProp::Struct { name, fields }
+                }
+                _ => return Err(format!("unexpected header property kind {kind}")),
+            };
+            properties.push((key, value));
+        }
+        Ok(properties)
+    }
+}
+
+fn decode_windows_1252(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .map(|byte| match *byte {
+            0x80 => '\u{20ac}',
+            0x82 => '\u{201a}',
+            0x83 => '\u{0192}',
+            0x84 => '\u{201e}',
+            0x85 => '\u{2026}',
+            0x86 => '\u{2020}',
+            0x87 => '\u{2021}',
+            0x88 => '\u{02c6}',
+            0x89 => '\u{2030}',
+            0x8a => '\u{0160}',
+            0x8b => '\u{2039}',
+            0x8c => '\u{0152}',
+            0x8e => '\u{017d}',
+            0x91 => '\u{2018}',
+            0x92 => '\u{2019}',
+            0x93 => '\u{201c}',
+            0x94 => '\u{201d}',
+            0x95 => '\u{2022}',
+            0x96 => '\u{2013}',
+            0x97 => '\u{2014}',
+            0x98 => '\u{02dc}',
+            0x99 => '\u{2122}',
+            0x9a => '\u{0161}',
+            0x9b => '\u{203a}',
+            0x9c => '\u{0153}',
+            0x9e => '\u{017e}',
+            0x9f => '\u{0178}',
+            other => char::from(other),
+        })
+        .collect()
 }
 
 pub fn apply_properties(entry: &mut ReplayMetadataEntry, properties: &[(String, HeaderProp)]) {
@@ -328,5 +532,80 @@ mod tests {
 
         assert_eq!(entry.display_name, "Blue One");
         assert_eq!(entry.player_names, vec!["Blue One", "Orange One"]);
+    }
+
+    fn push_i32(bytes: &mut Vec<u8>, value: i32) {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+
+    fn push_u32(bytes: &mut Vec<u8>, value: u32) {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+
+    fn push_str(bytes: &mut Vec<u8>, value: &str) {
+        push_i32(bytes, value.len() as i32 + 1);
+        bytes.extend_from_slice(value.as_bytes());
+        bytes.push(0);
+    }
+
+    fn push_text(bytes: &mut Vec<u8>, value: &str) {
+        push_str(bytes, value);
+    }
+
+    fn push_prop_header(bytes: &mut Vec<u8>, key: &str, kind: &str, size: u32) {
+        push_str(bytes, key);
+        push_str(bytes, kind);
+        push_u32(bytes, size);
+        push_u32(bytes, 0);
+    }
+
+    fn synthetic_header() -> Vec<u8> {
+        let mut header = Vec::new();
+        push_i32(&mut header, 868);
+        push_i32(&mut header, 22);
+        push_i32(&mut header, 10);
+        push_text(&mut header, "TAGame.Replay");
+        push_prop_header(&mut header, "ReplayName", "StrProperty", 12);
+        push_text(&mut header, "Ranked Doubles");
+        push_prop_header(&mut header, "MapName", "StrProperty", 9);
+        push_text(&mut header, "Stadium_P");
+        push_prop_header(&mut header, "Team0Score", "IntProperty", 4);
+        push_i32(&mut header, 3);
+        push_prop_header(&mut header, "Team1Score", "IntProperty", 4);
+        push_i32(&mut header, 2);
+        push_str(&mut header, "None");
+
+        let mut replay = Vec::new();
+        push_i32(&mut replay, header.len() as i32);
+        push_u32(&mut replay, 0);
+        replay.extend_from_slice(&header);
+        replay
+    }
+
+    #[test]
+    fn header_prefix_parser_preserves_display_metadata() {
+        let properties = parse_header_properties(&synthetic_header()).unwrap();
+        let mut entry = ReplayMetadataEntry::default();
+
+        apply_properties(&mut entry, &properties);
+
+        assert_eq!(entry.display_name, "Ranked Doubles");
+        assert_eq!(entry.map_name, "Stadium_P");
+        assert_eq!(entry.team0_score, Some(3));
+        assert_eq!(entry.team1_score, Some(2));
+    }
+
+    #[test]
+    fn replay_header_read_is_bounded_to_header_prefix() {
+        let temp = tempfile::tempdir().unwrap();
+        let replay_path = temp.path().join("match.replay");
+        let mut bytes = synthetic_header();
+        let expected_len = bytes.len();
+        bytes.extend(std::iter::repeat_n(7_u8, 4096));
+        fs::write(&replay_path, bytes).unwrap();
+
+        let read = read_replay_header_prefix(&replay_path).unwrap();
+
+        assert_eq!(read.len(), expected_len);
     }
 }

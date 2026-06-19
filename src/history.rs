@@ -24,6 +24,8 @@ pub struct PlayerHistorySummary {
     pub player_key: String,
     pub name: String,
     pub platform: String,
+    pub name_normalized: String,
+    pub platform_normalized: String,
     pub games_with: u32,
     pub games_against: u32,
     pub wins_with: u32,
@@ -39,10 +41,41 @@ impl PlayerHistorySummary {
     }
 }
 
+fn player_history_summary_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<PlayerHistorySummary> {
+    let name: String = row.get(1)?;
+    let platform: String = row.get(2)?;
+    Ok(PlayerHistorySummary {
+        player_key: row.get(0)?,
+        name_normalized: name.to_ascii_lowercase(),
+        platform_normalized: crate::stats_api_parser::format_platform(&platform)
+            .to_ascii_lowercase(),
+        name,
+        platform,
+        games_with: row.get(3)?,
+        games_against: row.get(4)?,
+        wins_with: row.get(5)?,
+        losses_with: row.get(6)?,
+        wins_against: row.get(7)?,
+        losses_against: row.get(8)?,
+        last_seen_unix_ms: row.get(9)?,
+    })
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct HistoryTotals {
     pub matches: u32,
     pub players: u32,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HistoryPlayersSnapshot {
+    pub players: Vec<PlayerHistorySummary>,
+    pub revision: u64,
+    pub refreshing: bool,
+    pub loaded: bool,
+    pub error: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -89,9 +122,14 @@ where
         .lock()
         .map_err(|e| HistoryError::MutexPoisoned(e.to_string()))?;
     if guard.is_none() {
-        match initialize_database() {
-            Ok(conn) => {
+        match initialize_database_at_with_recovery(state.paths.config_dir.clone()) {
+            Ok((conn, recovery_message)) => {
                 *guard = Some(conn);
+                if let Some(message) = recovery_message
+                    && let Ok(mut status) = state.history.status.lock()
+                {
+                    *status = message;
+                }
             }
             Err(e) => return Err(e),
         }
@@ -115,9 +153,14 @@ where
         .lock()
         .map_err(|e| HistoryError::MutexPoisoned(e.to_string()))?;
     if guard.is_none() {
-        match initialize_database() {
-            Ok(conn) => {
+        match initialize_database_at_with_recovery(state.paths.config_dir.clone()) {
+            Ok((conn, recovery_message)) => {
                 *guard = Some(conn);
+                if let Some(message) = recovery_message
+                    && let Ok(mut status) = state.history.status.lock()
+                {
+                    *status = message;
+                }
             }
             Err(e) => return Err(e),
         }
@@ -132,10 +175,41 @@ where
 }
 
 pub fn initialize_database() -> Result<Connection, HistoryError> {
-    let conn = open_connection()?;
+    let config_dir = config_dir().ok_or_else(|| {
+        HistoryError::ConfigDir("Could not resolve config directory.".to_string())
+    })?;
+    initialize_database_at(config_dir)
+}
+
+pub fn initialize_database_at(config_dir: PathBuf) -> Result<Connection, HistoryError> {
+    initialize_database_at_with_recovery(config_dir).map(|(conn, _)| conn)
+}
+
+pub fn initialize_database_at_with_recovery(
+    config_dir: PathBuf,
+) -> Result<(Connection, Option<String>), HistoryError> {
+    let path = config_dir.join("history.sqlite3");
+    match initialize_database_path(&path) {
+        Ok(conn) => Ok((conn, None)),
+        Err(error) if is_corruption_error(&error) && path.exists() => {
+            let corrupt_path = move_corrupt_database(&path)?;
+            let conn = initialize_database_path(&path)?;
+            Ok((
+                conn,
+                Some(format!(
+                    "History database was corrupt and was moved to {}. A fresh database was created.",
+                    corrupt_path.display()
+                )),
+            ))
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn initialize_database_path(path: &std::path::Path) -> Result<Connection, HistoryError> {
+    let mut conn = open_connection_path(path.to_path_buf())?;
     init_schema(&conn)?;
-    migrate_database_platforms(&conn)?;
-    cleanup_local_history_rows(&conn)?;
+    run_versioned_migrations(&mut conn)?;
     Ok(conn)
 }
 
@@ -192,6 +266,76 @@ pub fn refresh_totals(state: &Arc<AppState>) {
             set_status(&state_clone, "History ready.");
         }
         Err(error) => set_status(&state_clone, &format!("History error: {error}")),
+    };
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        handle.spawn_blocking(run);
+    } else {
+        run();
+    }
+}
+
+pub fn request_all_player_history_refresh(state: &Arc<AppState>, force: bool) {
+    if !state.system.config.load().history_enabled {
+        state
+            .history
+            .all_players_snapshot
+            .store(Arc::new(HistoryPlayersSnapshot::default()));
+        return;
+    }
+
+    let revision = state.history.revision.load(Ordering::SeqCst);
+    let current = state.history.all_players_snapshot.load();
+    if !force && current.loaded && current.revision == revision {
+        return;
+    }
+    if state
+        .history
+        .all_players_refresh_running
+        .swap(true, Ordering::SeqCst)
+    {
+        return;
+    }
+
+    state
+        .history
+        .all_players_snapshot
+        .store(Arc::new(HistoryPlayersSnapshot {
+            refreshing: true,
+            ..(**current).clone()
+        }));
+
+    let state_clone = state.clone();
+    let run = move || {
+        let snapshot = match load_all_player_summaries(&state_clone) {
+            Ok(players) => {
+                set_status(&state_clone, "History ready.");
+                HistoryPlayersSnapshot {
+                    players,
+                    revision,
+                    refreshing: false,
+                    loaded: true,
+                    error: String::new(),
+                }
+            }
+            Err(error) => {
+                let previous = state_clone.history.all_players_snapshot.load();
+                set_status(&state_clone, &format!("History error: {error}"));
+                HistoryPlayersSnapshot {
+                    refreshing: false,
+                    error: error.to_string(),
+                    ..(**previous).clone()
+                }
+            }
+        };
+        state_clone
+            .history
+            .all_players_snapshot
+            .store(Arc::new(snapshot));
+        state_clone
+            .history
+            .all_players_refresh_running
+            .store(false, Ordering::SeqCst);
+        refresh_totals(&state_clone);
     };
     if let Ok(handle) = tokio::runtime::Handle::try_current() {
         handle.spawn_blocking(run);
@@ -270,20 +414,7 @@ fn load_all_player_summaries_on_conn(
              ORDER BY p.last_seen_unix_ms DESC, p.latest_name COLLATE NOCASE",
         )?;
 
-    let rows = stmt.query_map([], |row| {
-        Ok(PlayerHistorySummary {
-            player_key: row.get(0)?,
-            name: row.get(1)?,
-            platform: row.get(2)?,
-            games_with: row.get(3)?,
-            games_against: row.get(4)?,
-            wins_with: row.get(5)?,
-            losses_with: row.get(6)?,
-            wins_against: row.get(7)?,
-            losses_against: row.get(8)?,
-            last_seen_unix_ms: row.get(9)?,
-        })
-    })?;
+    let rows = stmt.query_map([], player_history_summary_from_row)?;
 
     let mut summaries = Vec::new();
     for row in rows {
@@ -354,20 +485,10 @@ fn load_summaries(
         );
 
         let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(rusqlite::params_from_iter(keys), |row| {
-            Ok(PlayerHistorySummary {
-                player_key: row.get(0)?,
-                name: row.get(1)?,
-                platform: row.get(2)?,
-                games_with: row.get(3)?,
-                games_against: row.get(4)?,
-                wins_with: row.get(5)?,
-                losses_with: row.get(6)?,
-                wins_against: row.get(7)?,
-                losses_against: row.get(8)?,
-                last_seen_unix_ms: row.get(9)?,
-            })
-        })?;
+        let rows = stmt.query_map(
+            rusqlite::params_from_iter(keys),
+            player_history_summary_from_row,
+        )?;
 
         let mut summaries = HashMap::new();
         for row in rows {
@@ -469,10 +590,7 @@ fn insert_completed_match_on_conn<'a>(
     Ok(true)
 }
 
-fn open_connection() -> Result<Connection, HistoryError> {
-    let path = history_db_path().ok_or_else(|| {
-        HistoryError::ConfigDir("Could not resolve config directory.".to_string())
-    })?;
+fn open_connection_path(path: PathBuf) -> Result<Connection, HistoryError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -480,8 +598,31 @@ fn open_connection() -> Result<Connection, HistoryError> {
     Ok(conn)
 }
 
-fn history_db_path() -> Option<PathBuf> {
-    config_dir().map(|dir| dir.join("history.sqlite3"))
+fn is_corruption_error(error: &HistoryError) -> bool {
+    match error {
+        HistoryError::Database(rusqlite::Error::SqliteFailure(sqlite_error, message)) => {
+            matches!(
+                sqlite_error.code,
+                rusqlite::ErrorCode::DatabaseCorrupt | rusqlite::ErrorCode::NotADatabase
+            ) || message
+                .as_deref()
+                .is_some_and(|message| message.to_ascii_lowercase().contains("not a database"))
+        }
+        _ => false,
+    }
+}
+
+fn move_corrupt_database(path: &std::path::Path) -> Result<PathBuf, HistoryError> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| HistoryError::ConfigDir("History database path is invalid.".to_string()))?;
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default();
+    let corrupt_path = parent.join(format!("history.corrupt-{timestamp}.sqlite3"));
+    std::fs::rename(path, &corrupt_path)?;
+    Ok(corrupt_path)
 }
 
 fn init_schema(conn: &Connection) -> Result<(), HistoryError> {
@@ -528,7 +669,17 @@ fn init_schema(conn: &Connection) -> Result<(), HistoryError> {
     Ok(())
 }
 
-fn migrate_database_platforms(conn: &Connection) -> Result<(), HistoryError> {
+fn run_versioned_migrations(conn: &mut Connection) -> Result<(), HistoryError> {
+    let version: u32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version < 1 {
+        migrate_database_platforms(conn)?;
+        cleanup_local_history_rows(conn)?;
+        conn.pragma_update(None, "user_version", 1_u32)?;
+    }
+    Ok(())
+}
+
+fn migrate_database_platforms(conn: &mut Connection) -> Result<(), HistoryError> {
     let mut stmt = conn.prepare("SELECT id, player_key, platform, primary_id FROM players")?;
     let mut rows = stmt.query([])?;
     let mut updates = Vec::new();
@@ -561,8 +712,9 @@ fn migrate_database_platforms(conn: &Connection) -> Result<(), HistoryError> {
         updates.len()
     );
 
+    let tx = conn.transaction()?;
     for (id, new_key, norm_platform) in updates {
-        let existing_id: Option<i64> = conn
+        let existing_id: Option<i64> = tx
             .query_row(
                 "SELECT id FROM players WHERE player_key = ?1 AND id != ?2",
                 params![&new_key, id],
@@ -572,39 +724,42 @@ fn migrate_database_platforms(conn: &Connection) -> Result<(), HistoryError> {
 
         if let Some(target_id) = existing_id {
             // Collision! Merge 'id' into 'target_id'.
-            conn.execute(
+            tx.execute(
                 "DELETE FROM match_players 
                  WHERE player_id = ?1 
                    AND match_id IN (SELECT match_id FROM match_players WHERE player_id = ?2)",
                 params![id, target_id],
             )?;
 
-            conn.execute(
+            tx.execute(
                 "UPDATE match_players SET player_id = ?1 WHERE player_id = ?2",
                 params![target_id, id],
             )?;
 
-            conn.execute("DELETE FROM players WHERE id = ?1", params![id])?;
+            tx.execute("DELETE FROM players WHERE id = ?1", params![id])?;
         } else {
-            conn.execute(
+            tx.execute(
                 "UPDATE players SET player_key = ?1, platform = ?2 WHERE id = ?3",
                 params![&new_key, &norm_platform, id],
             )?;
         }
     }
+    tx.commit()?;
 
     Ok(())
 }
 
-fn cleanup_local_history_rows(conn: &Connection) -> Result<(), HistoryError> {
-    conn.execute("DELETE FROM match_players WHERE role = 'local'", [])?;
-    conn.execute(
+fn cleanup_local_history_rows(conn: &mut Connection) -> Result<(), HistoryError> {
+    let tx = conn.transaction()?;
+    tx.execute("DELETE FROM match_players WHERE role = 'local'", [])?;
+    tx.execute(
         "DELETE FROM players
          WHERE NOT EXISTS (
             SELECT 1 FROM match_players mp WHERE mp.player_id = players.id
          )",
         [],
     )?;
+    tx.commit()?;
     Ok(())
 }
 
@@ -683,20 +838,7 @@ mod tests {
              WHERE p.player_key = ?1
              GROUP BY p.id",
             params![player_key],
-            |row| {
-                Ok(PlayerHistorySummary {
-                    player_key: row.get(0)?,
-                    name: row.get(1)?,
-                    platform: row.get(2)?,
-                    games_with: row.get(3)?,
-                    games_against: row.get(4)?,
-                    wins_with: row.get(5)?,
-                    losses_with: row.get(6)?,
-                    wins_against: row.get(7)?,
-                    losses_against: row.get(8)?,
-                    last_seen_unix_ms: row.get(9)?,
-                })
-            },
+            player_history_summary_from_row,
         )
         .optional()?;
         Ok(res)
@@ -727,6 +869,49 @@ mod tests {
         assert!(player_key(&bot).is_none());
         assert!(player_key(&unknown).is_none());
         assert_eq!(player_key(&human).unwrap().as_str(), "steam:steam|abc|0");
+    }
+
+    #[test]
+    fn corrupt_history_database_is_moved_and_recreated() {
+        let temp = tempfile::tempdir().unwrap();
+        let db_path = temp.path().join("history.sqlite3");
+        std::fs::write(&db_path, b"not sqlite").unwrap();
+
+        let (_conn, recovery) =
+            initialize_database_at_with_recovery(temp.path().to_path_buf()).unwrap();
+
+        let message = recovery.expect("expected recovery message");
+        assert!(message.contains("was corrupt"));
+        assert!(message.contains(".corrupt-"));
+        assert!(db_path.exists());
+        assert_eq!(
+            std::fs::read_dir(temp.path())
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_name().to_string_lossy().contains(".corrupt-"))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn non_corrupt_history_open_failure_is_not_moved() {
+        let temp = tempfile::tempdir().unwrap();
+        let db_path = temp.path().join("history.sqlite3");
+        std::fs::create_dir(&db_path).unwrap();
+
+        let error = initialize_database_at_with_recovery(temp.path().to_path_buf()).unwrap_err();
+
+        assert!(!is_corruption_error(&error));
+        assert!(db_path.is_dir());
+        assert_eq!(
+            std::fs::read_dir(temp.path())
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_name().to_string_lossy().contains(".corrupt-"))
+                .count(),
+            0
+        );
     }
 
     #[test]
@@ -819,7 +1004,7 @@ mod tests {
 
         insert_legacy_completed_match_with_local_rows(&mut conn, &session, players.iter(), 1000)
             .unwrap();
-        cleanup_local_history_rows(&conn).unwrap();
+        cleanup_local_history_rows(&mut conn).unwrap();
 
         let summaries = load_all_player_summaries_on_conn(&conn).unwrap();
         let totals = load_totals_on_conn(&conn).unwrap();
@@ -950,7 +1135,7 @@ mod tests {
 
     #[test]
     fn test_database_platform_migration_and_merge() {
-        let conn = Connection::open_in_memory().unwrap();
+        let mut conn = Connection::open_in_memory().unwrap();
         init_schema(&conn).unwrap();
 
         // 1. Insert a player on a legacy platform "PS4"
@@ -1001,7 +1186,7 @@ mod tests {
         ).unwrap();
 
         // Perform migration
-        migrate_database_platforms(&conn).unwrap();
+        migrate_database_platforms(&mut conn).unwrap();
 
         // Assertions:
         // Alice should be updated to "Xbox" and key "xbox:456"

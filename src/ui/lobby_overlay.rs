@@ -50,9 +50,12 @@ pub(super) fn preview_lobby_players(state: &Arc<AppState>) -> Vec<PlayerInfo> {
                 is_bot: false,
                 is_local: true,
                 boost: 100,
+                boost_known: true,
                 score: 350,
                 goals: 1,
+                assists: 1,
                 saves: 1,
+                shots: 3,
                 touches: 14,
                 car_touches: 3,
                 demos: 2,
@@ -69,9 +72,12 @@ pub(super) fn preview_lobby_players(state: &Arc<AppState>) -> Vec<PlayerInfo> {
                 is_bot: false,
                 is_local: false,
                 boost: 45,
+                boost_known: true,
                 score: 210,
                 goals: 0,
+                assists: 0,
                 saves: 2,
+                shots: 2,
                 touches: 8,
                 car_touches: 1,
                 demos: 0,
@@ -85,12 +91,47 @@ pub(super) fn preview_lobby_players(state: &Arc<AppState>) -> Vec<PlayerInfo> {
 
 fn preview_mmr(rating: i32, tier_name: &str) -> TrackerSnapshot {
     let mut playlists = HashMap::new();
+
+    // Dynamic mapping for 1v1 tier name based on its rating
+    let one_v_one_rating = rating - 150;
+    let one_v_one_tier = if one_v_one_rating >= 1400 {
+        "Grand Champion I"
+    } else if one_v_one_rating >= 1200 {
+        "Champion I"
+    } else if one_v_one_rating >= 1000 {
+        "Diamond II"
+    } else if one_v_one_rating >= 800 {
+        "Platinum III"
+    } else if one_v_one_rating >= 600 {
+        "Gold III"
+    } else {
+        "Silver III"
+    };
+
+    playlists.insert(
+        10,
+        crate::mmr::TrackerPlaylistSnapshot {
+            name: "Ranked Duel 1v1".to_string(),
+            rating: one_v_one_rating,
+            matches: 30,
+            tier_name: one_v_one_tier.to_string(),
+        },
+    );
     playlists.insert(
         11,
         crate::mmr::TrackerPlaylistSnapshot {
             name: "Ranked Doubles 2v2".to_string(),
             rating,
             matches: 120,
+            tier_name: tier_name.to_string(),
+        },
+    );
+    playlists.insert(
+        13,
+        crate::mmr::TrackerPlaylistSnapshot {
+            name: "Ranked Standard 3v3".to_string(),
+            rating: rating - 80,
+            matches: 50,
             tier_name: tier_name.to_string(),
         },
     );
@@ -662,7 +703,7 @@ fn render_history_badge(
     );
 }
 
-fn render_platform_name(ui: &mut egui::Ui, platform: &str, size: f32) {
+pub(super) fn render_platform_name(ui: &mut egui::Ui, platform: &str, size: f32) {
     let normalized = crate::stats_api_parser::format_platform(platform);
     let plat_lower = normalized.to_lowercase();
     if plat_lower.contains("epic") {
@@ -738,13 +779,21 @@ fn render_mmr_badge(ui: &mut egui::Ui, rank: &str, rating: i32, show_rank_name: 
                 );
             }
             ui.label(
-                egui::RichText::new(rating.to_string())
+                egui::RichText::new(mmr_badge_rating_text(rank, rating))
                     .size(8.5 * scale)
                     .color(egui::Color32::WHITE)
                     .strong(),
             );
         });
     });
+}
+
+fn mmr_badge_rating_text(rank: &str, rating: i32) -> String {
+    if rank.trim().eq_ignore_ascii_case("unranked") {
+        format!("MMR {rating}")
+    } else {
+        rating.to_string()
+    }
 }
 
 #[allow(dead_code)]
@@ -756,7 +805,7 @@ fn compact_player_text(player: &PlayerInfo) -> String {
     }
 }
 
-fn select_lobby_playlist(
+pub(super) fn select_lobby_playlist(
     mmr: Option<&TrackerSnapshot>,
     session_mode: SessionMode,
     player_count: usize,
@@ -812,7 +861,7 @@ fn best_rank(mmr: Option<&TrackerSnapshot>) -> Option<(String, i32)> {
     Some((playlist.tier_name.clone(), playlist.rating))
 }
 
-fn rank_icon(rank: &str) -> Option<egui::ImageSource<'static>> {
+pub(super) fn rank_icon(rank: &str) -> Option<egui::ImageSource<'static>> {
     match rank.trim().to_lowercase().as_str() {
         "bronze i" => Some(egui::include_image!("../../assets/ranks/bronze_1.png")),
         "bronze ii" => Some(egui::include_image!("../../assets/ranks/bronze_2.png")),
@@ -897,11 +946,15 @@ fn boost_color(boost: u8) -> egui::Color32 {
     }
 }
 
-fn platform_icon(player: &PlayerInfo) -> egui::ImageSource<'static> {
-    if player.is_bot {
+pub(super) fn platform_icon(player: &PlayerInfo) -> egui::ImageSource<'static> {
+    platform_icon_for(&player.platform, player.is_bot)
+}
+
+pub(super) fn platform_icon_for(platform: &str, is_bot: bool) -> egui::ImageSource<'static> {
+    if is_bot {
         return egui::include_image!("../../assets/bot.png");
     }
-    let plat = player.platform.to_lowercase();
+    let plat = platform.to_lowercase();
     if plat.contains("steam") {
         egui::include_image!("../../assets/steam.png")
     } else if plat.contains("epic") {
@@ -1073,6 +1126,12 @@ mod tests {
         assert!(rank_icon("Grand Champion III").is_some());
         assert!(rank_icon("Supersonic Legend").is_some());
         assert!(rank_icon("Prospect I").is_none());
+    }
+
+    #[test]
+    fn unranked_mmr_badge_labels_rating_as_mmr() {
+        assert_eq!(mmr_badge_rating_text("Unranked", 944), "MMR 944");
+        assert_eq!(mmr_badge_rating_text("Diamond II", 944), "944");
     }
 
     #[test]

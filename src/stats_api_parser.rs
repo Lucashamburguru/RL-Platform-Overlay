@@ -99,7 +99,11 @@ pub fn parse_stats_api_data(
             let name = context.current_local_name.trim();
             (!name.is_empty()).then_some(name)
         })
-        .or(hints.target_name.as_deref())
+        .or(if !hints.has_target {
+            hints.target_name.as_deref()
+        } else {
+            None
+        })
         .unwrap_or("");
     let players = parse_players(
         &data,
@@ -367,13 +371,14 @@ fn parse_player_info(
         || (!current_local_name.is_empty() && name.eq_ignore_ascii_case(current_local_name))
         || (cached_identity.is_known() && cached_identity.same_account(&player_identity));
 
-    if has_target && cached_identity.is_known() && !name.eq_ignore_ascii_case(&cached_identity.name)
-    {
+    if has_target && cached_identity.is_known() && !cached_identity.same_account(&player_identity) {
         is_local = false;
     }
 
     let team =
         number_field(player_payload, &["TeamNum", "teamNum", "Team", "team"]).unwrap_or(0) as u8;
+
+    let boost = number_field(player_payload, &["Boost", "boost"]);
 
     Some(PlayerInfo {
         name: name.clone(),
@@ -382,10 +387,13 @@ fn parse_player_info(
         team,
         is_bot,
         is_local,
-        boost: number_field(player_payload, &["Boost", "boost"]).unwrap_or(0) as u8,
+        boost: boost.unwrap_or(0) as u8,
+        boost_known: boost.is_some(),
         score: number_field(player_payload, &["Score", "score"]).unwrap_or(0) as u32,
         goals: number_field(player_payload, &["Goals", "goals"]).unwrap_or(0) as u32,
+        assists: number_field(player_payload, &["Assists", "assists"]).unwrap_or(0) as u32,
         saves: number_field(player_payload, &["Saves", "saves"]).unwrap_or(0) as u32,
+        shots: number_field(player_payload, &["Shots", "shots"]).unwrap_or(0) as u32,
         touches: number_field(player_payload, &["Touches", "touches"]).unwrap_or(0) as u32,
         car_touches: number_field(player_payload, &["CarTouches", "carTouches", "car_touches"])
             .unwrap_or(0) as u32,

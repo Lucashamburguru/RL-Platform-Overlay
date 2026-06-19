@@ -3,7 +3,7 @@ use crate::setup::StatsApiSetupResult;
 use crate::stats_api::StatsApiTransport;
 use arc_swap::ArcSwap;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::env;
 use std::fs;
 use std::path::PathBuf;
@@ -35,6 +35,13 @@ pub enum LobbyDisplayMode {
     Expanded,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub enum DashboardPlayerLayout {
+    #[default]
+    Table,
+    Cards,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -45,6 +52,18 @@ pub struct Config {
     pub lobby_theme: LobbyTheme,
     pub lobby_display_mode: LobbyDisplayMode,
     pub monitor_index: usize,
+    pub dashboard_enabled: bool,
+    pub dashboard_monitor_index: usize,
+    pub dashboard_fullscreen: bool,
+    pub dashboard_open_with_overlay: bool,
+    pub dashboard_keep_overlay_enabled: bool,
+    pub dashboard_show_boost: bool,
+    pub dashboard_show_ranks: bool,
+    pub dashboard_show_team_comparison: bool,
+    pub dashboard_show_event_feed: bool,
+    pub dashboard_show_replay_upload: bool,
+    pub dashboard_player_layout: DashboardPlayerLayout,
+    pub dashboard_scale: f32,
     pub hotkey_kb: String,
     pub hotkey_ctrl: String,
     pub hotkey_settings: String,
@@ -198,6 +217,18 @@ impl Default for Config {
             lobby_theme: LobbyTheme::default(),
             lobby_display_mode: LobbyDisplayMode::default(),
             monitor_index: 0,
+            dashboard_enabled: false,
+            dashboard_monitor_index: 0,
+            dashboard_fullscreen: true,
+            dashboard_open_with_overlay: false,
+            dashboard_keep_overlay_enabled: true,
+            dashboard_show_boost: true,
+            dashboard_show_ranks: true,
+            dashboard_show_team_comparison: true,
+            dashboard_show_event_feed: true,
+            dashboard_show_replay_upload: true,
+            dashboard_player_layout: DashboardPlayerLayout::Table,
+            dashboard_scale: 1.0,
             hotkey_kb: "Backspace".to_string(),
             hotkey_ctrl: "Select".to_string(),
             hotkey_settings: "F1".to_string(),
@@ -244,6 +275,10 @@ impl Default for Config {
 impl Config {
     pub fn load() -> (Self, ConfigStatus) {
         let path = config_path();
+        Self::load_from_path(path)
+    }
+
+    pub fn load_from_path(path: PathBuf) -> (Self, ConfigStatus) {
         let mut status = ConfigStatus::new(path.clone());
 
         if path.exists() {
@@ -261,13 +296,17 @@ impl Config {
 
     pub fn save(&self) -> Result<(), String> {
         let path = config_path();
+        self.save_to_path(&path)
+    }
+
+    pub fn save_to_path(&self, path: &PathBuf) -> Result<(), String> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)
                 .map_err(|error| format!("Could not create config directory: {error}"))?;
         }
         let content = toml::to_string_pretty(self)
             .map_err(|error| format!("Could not serialize config: {error}"))?;
-        fs::write(&path, content).map_err(|error| format!("Could not save config: {error}"))
+        fs::write(path, content).map_err(|error| format!("Could not save config: {error}"))
     }
 }
 
@@ -315,6 +354,39 @@ pub fn config_dir() -> Option<PathBuf> {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct AppPaths {
+    pub config_dir: PathBuf,
+    pub config_path: PathBuf,
+}
+
+impl AppPaths {
+    pub fn resolve() -> Self {
+        let config_dir = app_config_dir().unwrap_or_else(|| PathBuf::from("."));
+        let config_path = config_dir.join("config.toml");
+        Self {
+            config_dir,
+            config_path,
+        }
+    }
+}
+
+fn app_config_dir() -> Option<PathBuf> {
+    #[cfg(test)]
+    {
+        let temp_dir = tempfile::Builder::new()
+            .prefix("rl_platform_overlay_state_")
+            .tempdir()
+            .ok()?;
+        Some(temp_dir.keep())
+    }
+
+    #[cfg(not(test))]
+    {
+        config_dir()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -326,6 +398,18 @@ mod tests {
         assert_eq!(config.ui_scale, 2.2);
         assert!(config.show_bots);
         assert_eq!(config.lobby_display_mode, LobbyDisplayMode::Expanded);
+        assert!(!config.dashboard_enabled);
+        assert_eq!(config.dashboard_monitor_index, 0);
+        assert!(config.dashboard_fullscreen);
+        assert!(!config.dashboard_open_with_overlay);
+        assert!(config.dashboard_keep_overlay_enabled);
+        assert!(config.dashboard_show_boost);
+        assert!(config.dashboard_show_ranks);
+        assert!(config.dashboard_show_team_comparison);
+        assert!(config.dashboard_show_event_feed);
+        assert!(config.dashboard_show_replay_upload);
+        assert_eq!(config.dashboard_player_layout, DashboardPlayerLayout::Table);
+        assert_eq!(config.dashboard_scale, 1.0);
         assert!(!config.cached_local_player_identity.is_known());
     }
 
@@ -400,6 +484,23 @@ mod tests {
     }
 
     #[test]
+    fn app_state_uses_isolated_test_paths() {
+        let first = AppState::new();
+        let second = AppState::new();
+
+        assert_ne!(first.paths.config_dir, second.paths.config_dir);
+        assert_ne!(first.paths.config_path, second.paths.config_path);
+        assert_ne!(
+            first.paths.config_dir.join("history.sqlite3"),
+            second.paths.config_dir.join("history.sqlite3")
+        );
+        assert_ne!(
+            first.paths.config_dir.join("update"),
+            second.paths.config_dir.join("update")
+        );
+    }
+
+    #[test]
     fn test_config_compatibility_missing_lobby_display_mode() {
         let toml_str = r#"
             transparency = 150
@@ -408,6 +509,54 @@ mod tests {
         let config: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(config.lobby_display_mode, LobbyDisplayMode::Expanded);
         assert!(!config.debug_logging_enabled);
+        assert!(!config.dashboard_enabled);
+        assert_eq!(config.dashboard_monitor_index, 0);
+        assert!(config.dashboard_fullscreen);
+        assert!(!config.dashboard_open_with_overlay);
+        assert!(config.dashboard_keep_overlay_enabled);
+        assert!(config.dashboard_show_boost);
+        assert!(config.dashboard_show_ranks);
+        assert!(config.dashboard_show_team_comparison);
+        assert!(config.dashboard_show_event_feed);
+        assert!(config.dashboard_show_replay_upload);
+        assert_eq!(config.dashboard_player_layout, DashboardPlayerLayout::Table);
+        assert_eq!(config.dashboard_scale, 1.0);
+    }
+
+    #[test]
+    fn test_config_dashboard_fields_round_trip() {
+        let config = Config {
+            dashboard_enabled: true,
+            dashboard_monitor_index: 2,
+            dashboard_fullscreen: false,
+            dashboard_open_with_overlay: true,
+            dashboard_keep_overlay_enabled: false,
+            dashboard_show_boost: false,
+            dashboard_show_ranks: false,
+            dashboard_show_team_comparison: false,
+            dashboard_show_event_feed: false,
+            dashboard_show_replay_upload: false,
+            dashboard_player_layout: DashboardPlayerLayout::Cards,
+            ..Default::default()
+        };
+
+        let encoded = toml::to_string(&config).unwrap();
+        let decoded: Config = toml::from_str(&encoded).unwrap();
+
+        assert!(decoded.dashboard_enabled);
+        assert_eq!(decoded.dashboard_monitor_index, 2);
+        assert!(!decoded.dashboard_fullscreen);
+        assert!(decoded.dashboard_open_with_overlay);
+        assert!(!decoded.dashboard_keep_overlay_enabled);
+        assert!(!decoded.dashboard_show_boost);
+        assert!(!decoded.dashboard_show_ranks);
+        assert!(!decoded.dashboard_show_team_comparison);
+        assert!(!decoded.dashboard_show_event_feed);
+        assert!(!decoded.dashboard_show_replay_upload);
+        assert_eq!(
+            decoded.dashboard_player_layout,
+            DashboardPlayerLayout::Cards
+        );
     }
 }
 
@@ -494,9 +643,12 @@ pub struct PlayerInfo {
     pub is_bot: bool,
     pub is_local: bool,
     pub boost: u8,
+    pub boost_known: bool,
     pub score: u32,
     pub goals: u32,
+    pub assists: u32,
     pub saves: u32,
+    pub shots: u32,
     pub touches: u32,
     pub car_touches: u32,
     pub demos: u32,
@@ -556,26 +708,33 @@ pub struct ReplaysState {
     pub metadata_cache: ArcSwap<crate::replay_metadata::ReplayMetadataSnapshot>,
     pub metadata_scan_running: AtomicBool,
     pub metadata_status: Arc<std::sync::Mutex<String>>,
+    pub upload_running: AtomicBool,
+    pub auto_upload_running: AtomicBool,
 }
 
 pub struct BoostState {
     pub boost_swap_status: Arc<std::sync::Mutex<String>>,
+    pub boost_swap_inspection: ArcSwap<crate::assets::BoostSwapInspectionSnapshot>,
+    pub inspection_running: AtomicBool,
 }
 
 pub struct HoopsFixerState {
     pub hoops_fixer_status: Arc<std::sync::Mutex<String>>,
     pub hoops_fixer_logs: Arc<std::sync::Mutex<Vec<String>>>,
+    pub running: AtomicBool,
 }
 
 pub struct MmrState {
     pub xuid_gamertag_cache: Arc<std::sync::Mutex<HashMap<String, String>>>,
     pub debug_scrape_status: Arc<std::sync::Mutex<String>>,
-    pub debug_tracker_logs: Arc<std::sync::Mutex<Vec<String>>>,
+    pub debug_tracker_logs: Arc<std::sync::Mutex<VecDeque<String>>>,
     pub local_mmr: ArcSwap<LocalMmrState>,
 }
 
 pub struct HistoryState {
     pub player_summaries: ArcSwap<HashMap<String, crate::history::PlayerHistorySummary>>,
+    pub all_players_snapshot: ArcSwap<crate::history::HistoryPlayersSnapshot>,
+    pub all_players_refresh_running: AtomicBool,
     pub totals: ArcSwap<crate::history::HistoryTotals>,
     pub status: Arc<std::sync::Mutex<String>>,
     pub revision: AtomicU64,
@@ -616,11 +775,17 @@ pub struct SystemState {
     pub version_check: ArcSwap<VersionCheck>,
     pub auto_update_status: ArcSwap<AutoUpdateStatus>,
     pub network_diagnostics: ArcSwap<NetworkDiagnostics>,
+    pub stats_api_setup_status: ArcSwap<crate::setup::StatsApiSetupStatus>,
+    pub stats_api_setup_refresh_running: AtomicBool,
     pub stats_api_setup_result: ArcSwap<StatsApiSetupResult>,
     pub http_client: Arc<wreq::Client>,
+    pub release_url: ArcSwap<String>,
+    pub release_public_key: ArcSwap<String>,
+    pub is_simulating_input: AtomicBool,
 }
 
 pub struct AppState {
+    pub paths: AppPaths,
     pub debug_enabled: bool,
     pub debug_logging_enabled: AtomicBool,
     pub flags: AppFlags,
@@ -646,12 +811,8 @@ impl AppState {
     }
 
     pub fn new_with_debug(debug_enabled: bool) -> Arc<Self> {
-        #[cfg(test)]
-        {
-            let _ = fs::remove_file(config_path());
-        }
-
-        let (config, config_status) = Config::load();
+        let paths = AppPaths::resolve();
+        let (config, config_status) = Config::load_from_path(paths.config_path.clone());
         let cached_local_player_identity = config.cached_local_player_identity.clone();
         let debug_logging_enabled = config.debug_logging_enabled;
 
@@ -668,15 +829,23 @@ impl AppState {
             crate::diagnostics::ResourcePoller::new(resource_tracker.clone()),
         ));
 
-        let conn = match crate::history::initialize_database() {
-            Ok(c) => Some(c),
-            Err(e) => {
-                log::error!("Failed to initialize history database: {e}");
-                None
-            }
-        };
+        let mut history_status = "History disabled.".to_string();
+        let conn =
+            match crate::history::initialize_database_at_with_recovery(paths.config_dir.clone()) {
+                Ok((c, recovery_message)) => {
+                    if let Some(message) = recovery_message {
+                        history_status = message;
+                    }
+                    Some(c)
+                }
+                Err(e) => {
+                    log::error!("Failed to initialize history database: {e}");
+                    None
+                }
+            };
 
         Arc::new(Self {
+            paths,
             debug_enabled,
             debug_logging_enabled: AtomicBool::new(debug_logging_enabled),
             flags: AppFlags {
@@ -710,8 +879,18 @@ impl AppState {
                 version_check: ArcSwap::from_pointee(VersionCheck::default()),
                 auto_update_status: ArcSwap::from_pointee(AutoUpdateStatus::default()),
                 network_diagnostics: ArcSwap::from_pointee(NetworkDiagnostics::default()),
+                stats_api_setup_status: ArcSwap::from_pointee(crate::setup::StatsApiSetupStatus {
+                    message: "Checking Stats API config...".to_string(),
+                    ..Default::default()
+                }),
+                stats_api_setup_refresh_running: AtomicBool::new(false),
                 stats_api_setup_result: ArcSwap::from_pointee(StatsApiSetupResult::default()),
                 http_client,
+                release_url: ArcSwap::from_pointee(crate::update::LATEST_RELEASE_URL.to_string()),
+                release_public_key: ArcSwap::from_pointee(
+                    crate::update::RELEASE_SIGNING_PUBLIC_KEY_B64.to_string(),
+                ),
+                is_simulating_input: AtomicBool::new(false),
             },
             diagnostics: DiagnosticsState {
                 frame_tracker: Arc::new(crate::diagnostics::SharedFrameTracker::new(60)),
@@ -733,24 +912,35 @@ impl AppState {
                 ),
                 metadata_scan_running: AtomicBool::new(false),
                 metadata_status: Arc::new(std::sync::Mutex::new("Not scanned".to_string())),
+                upload_running: AtomicBool::new(false),
+                auto_upload_running: AtomicBool::new(false),
             },
             boost: BoostState {
                 boost_swap_status: Arc::new(std::sync::Mutex::new("Idle".to_string())),
+                boost_swap_inspection: ArcSwap::from_pointee(
+                    crate::assets::BoostSwapInspectionSnapshot::default(),
+                ),
+                inspection_running: AtomicBool::new(false),
             },
             hoops_fixer: HoopsFixerState {
                 hoops_fixer_status: Arc::new(std::sync::Mutex::new("Idle".to_string())),
                 hoops_fixer_logs: Arc::new(std::sync::Mutex::new(Vec::new())),
+                running: AtomicBool::new(false),
             },
             mmr: MmrState {
                 xuid_gamertag_cache: Arc::new(std::sync::Mutex::new(HashMap::new())),
                 debug_scrape_status: Arc::new(std::sync::Mutex::new("Idle".to_string())),
-                debug_tracker_logs: Arc::new(std::sync::Mutex::new(Vec::new())),
+                debug_tracker_logs: Arc::new(std::sync::Mutex::new(VecDeque::new())),
                 local_mmr: ArcSwap::from_pointee(LocalMmrState::default()),
             },
             history: HistoryState {
                 player_summaries: ArcSwap::from_pointee(HashMap::new()),
+                all_players_snapshot: ArcSwap::from_pointee(
+                    crate::history::HistoryPlayersSnapshot::default(),
+                ),
+                all_players_refresh_running: AtomicBool::new(false),
                 totals: ArcSwap::from_pointee(crate::history::HistoryTotals::default()),
-                status: Arc::new(std::sync::Mutex::new("History disabled.".to_string())),
+                status: Arc::new(std::sync::Mutex::new(history_status)),
                 revision: AtomicU64::new(0),
                 conn: std::sync::Mutex::new(conn),
             },
@@ -766,8 +956,8 @@ impl AppState {
                 .config_write_mutex
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
-            let mut status = ConfigStatus::new(config_path());
-            if let Err(error) = config.save() {
+            let mut status = ConfigStatus::new(self_clone.paths.config_path.clone());
+            if let Err(error) = config.save_to_path(&self_clone.paths.config_path) {
                 status.last_error = error;
             }
             self_clone.system.config_status.store(Arc::new(status));

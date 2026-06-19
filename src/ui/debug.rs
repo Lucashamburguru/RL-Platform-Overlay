@@ -142,7 +142,7 @@ pub(super) fn render_debug_settings_tab(
         let logs = if let Ok(lock) = state.mmr.debug_tracker_logs.lock() {
             lock.clone()
         } else {
-            Vec::new()
+            std::collections::VecDeque::new()
         };
 
         if ui.button("Clear Tracker Logs").clicked()

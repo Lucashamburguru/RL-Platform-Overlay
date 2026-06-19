@@ -150,7 +150,13 @@ pub(crate) fn render_boost_settings_tab(
 
         ui.add_space(8.0);
 
-        let inspection = crate::assets::inspect_boost_swap(&config_edit.rocket_league_path);
+        crate::assets::request_boost_swap_inspection(
+            state,
+            config_edit.rocket_league_path.clone(),
+            false,
+        );
+        let inspection_snapshot = state.boost.boost_swap_inspection.load();
+        let inspection = &inspection_snapshot.inspection;
         debug_status_row(
             ui,
             "Backup Metadata",
@@ -170,6 +176,9 @@ pub(crate) fn render_boost_settings_tab(
             },
         );
         debug_status_row(ui, "Game Files", inspection.game_file_state.label());
+        if inspection_snapshot.refreshing {
+            ui.label(helper_text("Inspecting Alpha Boost files..."));
+        }
         ui.label(helper_text(&inspection.message));
         ui.add_space(8.0);
 

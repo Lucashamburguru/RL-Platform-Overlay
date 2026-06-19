@@ -622,6 +622,7 @@ struct ReplayCacheRow {
     map: String,
     score: String,
     players: String,
+    search_text: String,
     source_label: &'static str,
     source_color: egui::Color32,
     hover: String,
@@ -632,12 +633,21 @@ fn replay_cache_rows(
     metadata: &std::collections::HashMap<String, crate::replay_metadata::ReplayMetadataEntry>,
     search: &str,
 ) -> Vec<ReplayCacheRow> {
-    let query = search.trim().to_lowercase();
+    let metadata_by_lower_filename: std::collections::HashMap<
+        String,
+        &crate::replay_metadata::ReplayMetadataEntry,
+    > = metadata
+        .iter()
+        .map(|(filename, entry)| (filename.to_ascii_lowercase(), entry))
+        .collect();
+    let query = search.trim().to_ascii_lowercase();
     uploaded_replays
         .iter()
         .rev()
         .filter_map(|filename| {
-            let entry = find_metadata_entry(metadata, filename);
+            let entry = metadata_by_lower_filename
+                .get(&filename.to_ascii_lowercase())
+                .copied();
             let row = replay_cache_row(filename, entry);
             if query.is_empty() || row_matches_query(&row, &query) {
                 Some(row)
@@ -648,23 +658,11 @@ fn replay_cache_rows(
         .collect()
 }
 
-fn find_metadata_entry<'a>(
-    metadata: &'a std::collections::HashMap<String, crate::replay_metadata::ReplayMetadataEntry>,
-    filename: &str,
-) -> Option<&'a crate::replay_metadata::ReplayMetadataEntry> {
-    metadata.get(filename).or_else(|| {
-        metadata
-            .iter()
-            .find(|(candidate, _)| candidate.eq_ignore_ascii_case(filename))
-            .map(|(_, entry)| entry)
-    })
-}
-
 fn replay_cache_row(
     filename: &str,
     entry: Option<&crate::replay_metadata::ReplayMetadataEntry>,
 ) -> ReplayCacheRow {
-    match entry {
+    let mut row = match entry {
         Some(entry) if entry.has_metadata() => {
             let primary = shorten_text(&entry.display_name, 36);
             let is_cloud = entry.file_size == 0;
@@ -686,6 +684,7 @@ fn replay_cache_row(
                     egui::Color32::from_rgb(100, 220, 120)
                 },
                 hover: metadata_hover(filename, entry),
+                search_text: String::new(),
             }
         }
         Some(entry) => ReplayCacheRow {
@@ -698,6 +697,7 @@ fn replay_cache_row(
             source_label: "Parse failed",
             source_color: egui::Color32::from_rgb(230, 95, 85),
             hover: format!("{}\n{}", filename, entry.error),
+            search_text: String::new(),
         },
         None => ReplayCacheRow {
             filename: filename.to_string(),
@@ -709,8 +709,11 @@ fn replay_cache_row(
             source_label: "Cache only",
             source_color: egui::Color32::from_gray(165),
             hover: format!("{filename}\nNo matching local replay file for metadata."),
+            search_text: String::new(),
         },
-    }
+    };
+    row.search_text = replay_row_search_text(&row);
+    row
 }
 
 fn display_or_dash(value: &str) -> String {
@@ -759,13 +762,21 @@ fn metadata_hover(filename: &str, entry: &crate::replay_metadata::ReplayMetadata
 }
 
 fn row_matches_query(row: &ReplayCacheRow, query: &str) -> bool {
-    row.primary.to_lowercase().contains(query)
-        || row.date.to_lowercase().contains(query)
-        || row.map.to_lowercase().contains(query)
-        || row.score.to_lowercase().contains(query)
-        || row.players.to_lowercase().contains(query)
-        || row.hover.to_lowercase().contains(query)
-        || row.source_label.to_lowercase().contains(query)
+    row.search_text.contains(query)
+}
+
+fn replay_row_search_text(row: &ReplayCacheRow) -> String {
+    [
+        row.primary.as_str(),
+        row.date.as_str(),
+        row.map.as_str(),
+        row.score.as_str(),
+        row.players.as_str(),
+        row.hover.as_str(),
+        row.source_label,
+    ]
+    .join("\n")
+    .to_ascii_lowercase()
 }
 
 fn shorten_text(text: &str, max_chars: usize) -> String {
@@ -918,6 +929,21 @@ mod tests {
         );
 
         let rows = replay_cache_rows(&uploaded, &metadata, "stadium");
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].primary, "Ranked Doubles");
+    }
+
+    #[test]
+    fn replay_cache_rows_match_metadata_case_insensitively() {
+        let uploaded = vec!["MATCH.REPLAY".to_string()];
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            "match.replay".to_string(),
+            metadata_entry("match.replay", "Ranked Doubles"),
+        );
+
+        let rows = replay_cache_rows(&uploaded, &metadata, "");
 
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].primary, "Ranked Doubles");

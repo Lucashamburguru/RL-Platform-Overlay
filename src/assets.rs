@@ -1,4 +1,4 @@
-use crate::state::config_dir;
+use crate::state::{AppState, config_dir};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::ffi::OsStr;
@@ -56,6 +56,15 @@ pub struct BoostSwapInspection {
     pub cache_verified: bool,
     pub game_file_state: BoostGameFileState,
     pub message: String,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct BoostSwapInspectionSnapshot {
+    pub rocket_league_path: String,
+    pub inspection: BoostSwapInspection,
+    pub loaded: bool,
+    pub refreshing: bool,
+    pub error: String,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -177,6 +186,7 @@ pub fn is_rocket_league_running() -> bool {
     RocketLeagueProcessWatcher::new().is_running()
 }
 
+#[allow(dead_code)]
 pub fn inspect_boost_swap(rocket_league_path: &str) -> BoostSwapInspection {
     let Ok(conf_dir) =
         config_dir().ok_or_else(|| "Could not resolve config directory.".to_string())
@@ -186,13 +196,16 @@ pub fn inspect_boost_swap(rocket_league_path: &str) -> BoostSwapInspection {
             ..Default::default()
         };
     };
+    inspect_boost_swap_at(rocket_league_path, &conf_dir)
+}
 
-    let metadata_exists = backup_metadata_path(&conf_dir).exists();
-    let game_file_state = inspect_game_file_state(rocket_league_path, &conf_dir)
+fn inspect_boost_swap_at(rocket_league_path: &str, conf_dir: &Path) -> BoostSwapInspection {
+    let metadata_exists = backup_metadata_path(conf_dir).exists();
+    let game_file_state = inspect_game_file_state(rocket_league_path, conf_dir)
         .unwrap_or(BoostGameFileState::Unavailable);
     let cache_verified = asset_hashes_configured()
-        && cached_asset_verified(&conf_dir, ALPHA_VISUAL_SPEC)
-        && cached_asset_verified(&conf_dir, ALPHA_AUDIO_SPEC);
+        && cached_asset_verified(conf_dir, ALPHA_VISUAL_SPEC)
+        && cached_asset_verified(conf_dir, ALPHA_AUDIO_SPEC);
 
     let message = if !asset_hashes_configured() {
         "Alpha Boost asset hashes are not configured.".to_string()
@@ -207,6 +220,62 @@ pub fn inspect_boost_swap(rocket_league_path: &str) -> BoostSwapInspection {
         cache_verified,
         game_file_state,
         message,
+    }
+}
+
+pub fn request_boost_swap_inspection(
+    state: &std::sync::Arc<AppState>,
+    rocket_league_path: String,
+    force: bool,
+) {
+    let current = state.boost.boost_swap_inspection.load();
+    if !force
+        && current.loaded
+        && current.rocket_league_path == rocket_league_path
+        && !current.refreshing
+    {
+        return;
+    }
+    if state
+        .boost
+        .inspection_running
+        .swap(true, std::sync::atomic::Ordering::SeqCst)
+    {
+        return;
+    }
+
+    state
+        .boost
+        .boost_swap_inspection
+        .store(std::sync::Arc::new(BoostSwapInspectionSnapshot {
+            rocket_league_path: rocket_league_path.clone(),
+            refreshing: true,
+            ..(**current).clone()
+        }));
+
+    let state_clone = state.clone();
+    let config_dir = state.paths.config_dir.clone();
+    let run = move || {
+        let snapshot = BoostSwapInspectionSnapshot {
+            inspection: inspect_boost_swap_at(&rocket_league_path, &config_dir),
+            rocket_league_path,
+            loaded: true,
+            refreshing: false,
+            error: String::new(),
+        };
+        state_clone
+            .boost
+            .boost_swap_inspection
+            .store(std::sync::Arc::new(snapshot));
+        state_clone
+            .boost
+            .inspection_running
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+    };
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        handle.spawn_blocking(run);
+    } else {
+        run();
     }
 }
 
@@ -438,6 +507,7 @@ pub fn start_apply_alpha_boost(
                 config.alpha_boost_enabled = true;
                 state_clone.save_config(config);
                 set_boost_status(&state_clone, "Success: Alpha Boost applied!");
+                request_boost_swap_inspection(&state_clone, rocket_league_path.clone(), true);
             }
             Err(error) => set_boost_status(&state_clone, &error),
         }
@@ -491,6 +561,7 @@ pub fn start_restore_standard_boost(
                 config.alpha_boost_enabled = false;
                 state_clone.save_config(config);
                 set_boost_status(&state_clone, "Success: Standard Boost restored!");
+                request_boost_swap_inspection(&state_clone, rocket_league_path.clone(), true);
             }
             Err(error) => set_boost_status(&state_clone, &error),
         }
@@ -878,6 +949,31 @@ mod tests {
             BoostGameFileState::Unbacked
         );
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn boost_inspection_request_dedupes_and_stores_snapshot() {
+        let state = crate::state::AppState::new();
+        state
+            .boost
+            .inspection_running
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        request_boost_swap_inspection(&state, "ignored".to_string(), true);
+        assert!(!state.boost.boost_swap_inspection.load().loaded);
+
+        state
+            .boost
+            .inspection_running
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        request_boost_swap_inspection(&state, String::new(), true);
+
+        let snapshot = state.boost.boost_swap_inspection.load();
+        assert!(snapshot.loaded);
+        assert!(!snapshot.refreshing);
+        assert_eq!(
+            snapshot.inspection.game_file_state,
+            BoostGameFileState::Unavailable
+        );
     }
 
     #[test]

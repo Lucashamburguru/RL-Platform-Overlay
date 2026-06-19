@@ -54,14 +54,33 @@ pub(crate) enum SequenceStep {
 
 pub(crate) fn parse_sequence(seq: &str, default_delay_ms: u64) -> Vec<SequenceStep> {
     let mut steps = Vec::new();
-    let tokens = seq.split([',', ' ', '+']);
-    for token in tokens {
-        let token = token.trim();
+    let tokens: Vec<&str> = seq
+        .split([',', '+'])
+        .flat_map(|s| s.split_whitespace())
+        .collect();
+
+    let mut i = 0;
+    while i < tokens.len() {
+        let token = tokens[i].trim();
         if token.is_empty() {
+            i += 1;
             continue;
         }
         let token_lower = token.to_lowercase();
-        if token_lower.starts_with("delay") || token_lower.starts_with("wait") {
+        if token_lower == "delay" || token_lower == "wait" {
+            let mut ms = default_delay_ms;
+            if i + 1 < tokens.len() {
+                let next_token = tokens[i + 1].trim();
+                if next_token.chars().all(|c| c.is_ascii_digit())
+                    && !next_token.is_empty()
+                    && let Ok(parsed_ms) = next_token.parse::<u64>()
+                {
+                    ms = parsed_ms;
+                    i += 1;
+                }
+            }
+            steps.push(SequenceStep::Delay(std::time::Duration::from_millis(ms)));
+        } else if token_lower.starts_with("delay") || token_lower.starts_with("wait") {
             let ms: u64 = token_lower
                 .chars()
                 .filter(|c| c.is_ascii_digit())
@@ -77,6 +96,7 @@ pub(crate) fn parse_sequence(seq: &str, default_delay_ms: u64) -> Vec<SequenceSt
                 )));
             }
         }
+        i += 1;
     }
     steps
 }
@@ -194,5 +214,34 @@ fn is_rocket_league_foreground_window(system: &mut sysinfo::System) -> bool {
         system
             .process(pid)
             .is_some_and(|process| crate::assets::is_rocket_league_name(process.name()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_sequence_delays() {
+        let steps = parse_sequence("KeyA, Delay 400, wait500, KeyB", 100);
+        assert_eq!(steps.len(), 6);
+        assert!(matches!(steps[0], SequenceStep::Key(rdev::Key::KeyA)));
+        assert_eq!(
+            steps[1],
+            SequenceStep::Delay(std::time::Duration::from_millis(100))
+        );
+        assert_eq!(
+            steps[2],
+            SequenceStep::Delay(std::time::Duration::from_millis(400))
+        );
+        assert_eq!(
+            steps[3],
+            SequenceStep::Delay(std::time::Duration::from_millis(500))
+        );
+        assert!(matches!(steps[4], SequenceStep::Key(rdev::Key::KeyB)));
+        assert_eq!(
+            steps[5],
+            SequenceStep::Delay(std::time::Duration::from_millis(100))
+        );
     }
 }

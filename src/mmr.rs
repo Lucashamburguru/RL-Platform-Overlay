@@ -122,6 +122,10 @@ pub async fn resolve_xuid_to_gamertag(
         serde_json::from_str(&text).map_err(|e| MmrError::XuidJson(e.to_string()))?;
 
     if let Some(mut guard) = cache.and_then(|c| c.lock().ok()) {
+        const MAX_XUID_CACHE_SIZE: usize = 2000;
+        if guard.len() >= MAX_XUID_CACHE_SIZE {
+            guard.clear();
+        }
         guard.insert(xuid.to_string(), res.gamertag.clone());
     }
 
@@ -366,6 +370,23 @@ pub fn start_mmr_fetch_task(state: Arc<AppState>) {
             // Clean up expired entries in failed_fetches
             failed_fetches.retain(|_, &mut instant| Instant::now() < instant);
 
+            // Clean up expired entries in mmr_cache
+            mmr_cache.retain(|_, entry| entry.fetched_at.elapsed() < MMR_CACHE_TTL);
+
+            // Bound MMR cache capacity
+            const MAX_MMR_CACHE_SIZE: usize = 2000;
+            if mmr_cache.len() > MAX_MMR_CACHE_SIZE {
+                let mut entries: Vec<(String, Instant)> = mmr_cache
+                    .iter()
+                    .map(|(k, e)| (k.clone(), e.fetched_at))
+                    .collect();
+                entries.sort_by_key(|e| e.1);
+                for (key, _) in entries.iter().take(500) {
+                    mmr_cache.remove(key);
+                    fetching_players.remove(key);
+                }
+            }
+
             if let Some(until) = cooldown_until {
                 if Instant::now() < until {
                     continue;
@@ -548,6 +569,17 @@ pub fn start_local_mmr_refresh(state: Arc<AppState>) {
         return;
     }
 
+    let now = crate::stats_api::now_ms();
+    let cooldown_ms = 15_000;
+    if now.saturating_sub(current_state.last_updated_unix_ms) < cooldown_ms {
+        let remaining_secs =
+            (cooldown_ms - now.saturating_sub(current_state.last_updated_unix_ms)) / 1000;
+        let mut local_mmr = (**current_state).clone();
+        local_mmr.error = format!("Refresh on cooldown. Please wait {remaining_secs}s.");
+        state.mmr.local_mmr.store(Arc::new(local_mmr));
+        return;
+    }
+
     let identity = (*state.game.local_player_identity.load()).clone();
     if !identity.is_known() {
         let mut local_mmr = (**current_state).clone();
@@ -654,9 +686,9 @@ fn append_tracker_log(state: &AppState, message: String) {
             } else {
                 "00:00:00".to_string()
             };
-        logs.push(format!("[{time_str}] {message}"));
+        logs.push_back(format!("[{time_str}] {message}"));
         if logs.len() > 100 {
-            logs.remove(0);
+            logs.pop_front();
         }
     }
 }

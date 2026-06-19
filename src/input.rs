@@ -93,6 +93,12 @@ pub fn toggle_launch_hotkey(state: &Arc<AppState>, source: &str) {
     let new = !current;
     state.flags.is_launched.store(new, Ordering::SeqCst);
     if new {
+        let config = state.system.config.load();
+        if config.dashboard_open_with_overlay && !config.dashboard_enabled {
+            let mut config_edit = (**config).clone();
+            config_edit.dashboard_enabled = true;
+            state.save_config(config_edit);
+        }
         state
             .flags
             .is_settings_visible

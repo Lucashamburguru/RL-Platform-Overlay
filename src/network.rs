@@ -64,13 +64,20 @@ pub async fn start_network_task_with_addr(state: Arc<AppState>, addr: &str) {
                 log::info!("Connected to Rocket League via WebSocket!");
                 state.flags.is_connected.store(true, Ordering::SeqCst);
                 update_transport(&state, StatsApiTransport::WebSocket);
-                while let Some(msg) = ws_stream.next().await {
-                    if let Ok(msg) = msg
-                        && let Ok(text) = msg.to_text()
-                    {
-                        match serde_json::from_str::<Value>(text) {
-                            Ok(json) => handle_event(&state, &json),
-                            Err(error) => update_parse_error(&state, error.to_string()),
+                while let Some(msg_res) = ws_stream.next().await {
+                    match msg_res {
+                        Ok(msg) => {
+                            if let Ok(text) = msg.to_text() {
+                                match serde_json::from_str::<Value>(text) {
+                                    Ok(json) => handle_event(&state, &json),
+                                    Err(error) => update_parse_error(&state, error.to_string()),
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            log::error!("WebSocket stream error: {}", error);
+                            update_parse_error(&state, error.to_string());
+                            break;
                         }
                     }
                 }
@@ -134,7 +141,17 @@ fn handle_event(state: &Arc<AppState>, json: &Value) {
     update_last_event(state, &parsed_event.event_name);
     match parsed_event.event_name.as_str() {
         "UpdateState" => handle_update_state(state, &parsed_event),
-        "RoundStarted" | "ClockUpdatedSeconds" | "BallHit" | "GoalScored" | "StatfeedEvent" => {
+        "ClockUpdatedSeconds" => {
+            state.game.session.rcu(|current_session| {
+                let mut session = (**current_session).clone();
+                session.handle_clock_update(&parsed_event.data);
+                if !session.round_started {
+                    session.handle_round_started();
+                }
+                Arc::new(session)
+            });
+        }
+        "RoundStarted" | "BallHit" | "GoalScored" | "StatfeedEvent" => {
             let current_session = state.game.session.load();
             if !current_session.round_started {
                 let mut session = (**current_session).clone();
@@ -176,6 +193,15 @@ fn handle_event(state: &Arc<AppState>, json: &Value) {
 
             let state_clone = state.clone();
             tokio::spawn(async move {
+                if state_clone
+                    .system
+                    .is_simulating_input
+                    .swap(true, Ordering::SeqCst)
+                {
+                    log::warn!("Key simulation already in progress, ignoring duplicate trigger.");
+                    return;
+                }
+
                 let config = state_clone.system.config.load();
                 let mut system = sysinfo::System::new();
 
@@ -202,6 +228,11 @@ fn handle_event(state: &Arc<AppState>, json: &Value) {
                     )
                     .await;
                 }
+
+                state_clone
+                    .system
+                    .is_simulating_input
+                    .store(false, Ordering::SeqCst);
             });
 
             if state.system.config.load().ballchasing_enabled {
@@ -239,6 +270,7 @@ fn handle_update_state(state: &Arc<AppState>, parsed_event: &StatsApiEvent) {
 
     if !has_known_local_name
         && parsed_event.local_player_hint.is_none()
+        && !parsed_event.has_target
         && let Some(target_name) = parsed_event.target_name.as_ref()
     {
         state
@@ -594,6 +626,58 @@ mod tests {
                 SequenceStep::Delay(std::time::Duration::from_millis(200))
             ]
         );
+    }
+
+    #[test]
+    fn store_players_preserves_existing_mmr_when_update_omits_it() {
+        let state = AppState::new();
+        let mut playlists = std::collections::HashMap::new();
+        playlists.insert(
+            13,
+            crate::mmr::TrackerPlaylistSnapshot {
+                name: "Ranked Doubles 2v2".to_string(),
+                rating: 1234,
+                matches: 10,
+                tier_name: "Champion I".to_string(),
+            },
+        );
+        let snapshot = crate::mmr::TrackerSnapshot {
+            playlists,
+            last_updated: Some("now".to_string()),
+            current_season: Some(20),
+        };
+
+        let mut initial = std::collections::HashMap::new();
+        initial.insert(
+            "Opponent".to_string(),
+            crate::state::PlayerInfo {
+                name: "Opponent".to_string(),
+                primary_id: "Epic|2|0".to_string(),
+                platform: "Epic".to_string(),
+                mmr: Some(snapshot),
+                ..Default::default()
+            },
+        );
+        store_players_preserving_mmr(&state, initial);
+
+        let mut update_without_mmr = std::collections::HashMap::new();
+        update_without_mmr.insert(
+            "Opponent".to_string(),
+            crate::state::PlayerInfo {
+                name: "Opponent".to_string(),
+                primary_id: "Epic|2|0".to_string(),
+                platform: "Epic".to_string(),
+                boost: 80,
+                mmr: None,
+                ..Default::default()
+            },
+        );
+        store_players_preserving_mmr(&state, update_without_mmr);
+
+        let players = state.game.players.load();
+        let preserved = players["Opponent"].mmr.as_ref().unwrap();
+        assert_eq!(preserved.playlists[&13].rating, 1234);
+        assert_eq!(players["Opponent"].boost, 80);
     }
 
     #[test]
@@ -1009,7 +1093,7 @@ mod tests {
                         {"TeamNum": 0, "Score": 1},
                         {"TeamNum": 1, "Score": 0}
                     ],
-                    "bReplay": true,
+                    "bReplay": false,
                     "bHasWinner": true,
                     "Winner": "Blue",
                     "bHasTarget": false
@@ -1512,6 +1596,7 @@ mod tests {
                     {"Name": "Opponent", "PrimaryId": "Epic|2|0", "TeamNum": 1}
                 ],
                 "Game": {
+                    "bReplay": true,
                     "Teams": [
                         {"TeamNum": 0, "Score": 3},
                         {"TeamNum": 1, "Score": 1}

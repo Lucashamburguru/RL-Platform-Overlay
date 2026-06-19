@@ -13,10 +13,6 @@ async fn send_payload(socket: &mut tokio::net::TcpStream, payload: &str) {
 
 #[tokio::test]
 async fn test_stats_api_integration() {
-    unsafe {
-        std::env::set_var("RL_OVERLAY_TEST", "1");
-    }
-
     // 1. Bind TCP listener on a dynamic port
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

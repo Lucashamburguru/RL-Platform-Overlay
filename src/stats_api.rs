@@ -39,6 +39,11 @@ impl StatsApiTransport {
 #[derive(Clone, Debug, Default)]
 pub struct TcpJsonSplitter {
     leftover: Vec<u8>,
+    depth: usize,
+    in_string: bool,
+    escaped: bool,
+    start_idx: usize,
+    scan_idx: usize,
 }
 
 impl TcpJsonSplitter {
@@ -47,44 +52,61 @@ impl TcpJsonSplitter {
     /// If a JSON object is only partially received, its bytes are retained in an internal
     /// buffer (`leftover`) and will be completed by subsequent calls to `push`.
     pub fn push(&mut self, chunk: &[u8]) -> Vec<String> {
+        const MAX_BUFFER_SIZE: usize = 5 * 1024 * 1024;
+        if self.leftover.len() + chunk.len() > MAX_BUFFER_SIZE {
+            log::warn!("TcpJsonSplitter buffer exceeded limit, clearing buffer.");
+            self.leftover.clear();
+            self.depth = 0;
+            self.in_string = false;
+            self.escaped = false;
+            self.start_idx = 0;
+            self.scan_idx = 0;
+        }
+
         self.leftover.extend_from_slice(chunk);
         let mut payloads = Vec::new();
-        let mut start = 0;
-        let mut depth = 0;
-        let mut in_string = false;
-        let mut escaped = false;
 
-        for i in 0..self.leftover.len() {
-            let b = self.leftover[i];
-            if escaped {
-                escaped = false;
+        while self.scan_idx < self.leftover.len() {
+            let b = self.leftover[self.scan_idx];
+            if self.escaped {
+                self.escaped = false;
+                self.scan_idx += 1;
                 continue;
             }
             match b {
-                b'\\' if in_string => escaped = true,
-                b'"' => in_string = !in_string,
-                b'{' if !in_string => {
-                    if depth == 0 {
-                        start = i;
+                b'\\' if self.in_string => self.escaped = true,
+                b'"' => self.in_string = !self.in_string,
+                b'{' if !self.in_string => {
+                    if self.depth == 0 {
+                        self.start_idx = self.scan_idx;
                     }
-                    depth += 1;
+                    self.depth += 1;
                 }
-                b'}' if !in_string && depth > 0 => {
-                    depth -= 1;
-                    if depth == 0 {
-                        let bytes = &self.leftover[start..=i];
+                b'}' if !self.in_string && self.depth > 0 => {
+                    self.depth -= 1;
+                    if self.depth == 0 {
+                        let bytes = &self.leftover[self.start_idx..=self.scan_idx];
                         let s = String::from_utf8_lossy(bytes).into_owned();
                         payloads.push(s);
                     }
                 }
                 _ => {}
             }
+            self.scan_idx += 1;
         }
 
-        if depth > 0 {
-            self.leftover = self.leftover[start..].to_vec();
+        if self.depth > 0 {
+            if self.start_idx > 0 {
+                self.leftover = self.leftover[self.start_idx..].to_vec();
+                self.scan_idx -= self.start_idx;
+                self.start_idx = 0;
+            }
         } else {
             self.leftover.clear();
+            self.scan_idx = 0;
+            self.start_idx = 0;
+            self.in_string = false;
+            self.escaped = false;
         }
 
         payloads

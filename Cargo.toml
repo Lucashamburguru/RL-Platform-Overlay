@@ -29,6 +29,10 @@ base64 = "0.22"
 ed25519-dalek = "2.2"
 rusqlite = { version = "0.32", features = ["bundled"] }
 thiserror = "2.0"
+semver = "1.0"
+
+[dev-dependencies]
+tempfile = "3.0"
 
 
 [target.'cfg(windows)'.dependencies]

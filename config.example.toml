@@ -7,6 +7,17 @@ window_size = [
 ]
 anchor = "CenterRight"
 monitor_index = 0
+dashboard_enabled = false
+dashboard_monitor_index = 0
+dashboard_fullscreen = true
+dashboard_open_with_overlay = false
+dashboard_keep_overlay_enabled = true
+dashboard_show_boost = true
+dashboard_show_ranks = true
+dashboard_show_team_comparison = true
+dashboard_show_event_feed = true
+dashboard_show_replay_upload = true
+dashboard_player_layout = "Table"
 hotkey_kb = "Backspace"
 hotkey_ctrl = "Select"
 hotkey_settings = "F1"

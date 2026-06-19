@@ -1,26 +1,24 @@
-#[cfg(target_os = "windows")]
-use crate::state::config_dir;
 use crate::state::{AppState, AutoUpdateStatus, VersionCheck};
 #[cfg(any(target_os = "windows", test))]
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 #[cfg(any(target_os = "windows", test))]
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use semver::Version;
 use serde_json::Value;
 #[cfg(any(target_os = "windows", test))]
 use sha2::{Digest, Sha256};
 #[cfg(target_os = "windows")]
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
-const LATEST_RELEASE_URL: &str =
+pub const LATEST_RELEASE_URL: &str =
     "https://api.github.com/repos/Lucashamburguru/RL-Platform-Overlay/releases/latest";
 const WINDOWS_ASSET_NAME: &str = "rl-platform-overlay.exe";
 const WINDOWS_CHECKSUM_ASSET_NAME: &str = "rl-platform-overlay.exe.sha256";
 const WINDOWS_SIGNATURE_ASSET_NAME: &str = "rl-platform-overlay.exe.sig";
-#[cfg(target_os = "windows")]
-const RELEASE_SIGNING_PUBLIC_KEY_B64: &str = "PZxbpTJyQ7EzHd77YcsTT/BbTZecf6T7HVC3XO6AQpw=";
-#[cfg(target_os = "windows")]
+pub const RELEASE_SIGNING_PUBLIC_KEY_B64: &str = "PZxbpTJyQ7EzHd77YcsTT/BbTZecf6T7HVC3XO6AQpw=";
+#[cfg(any(target_os = "windows", test))]
 const UPDATE_SCRIPT: &str = r#"
 param(
     [Parameter(Mandatory=$true)][int]$ProcessId,
@@ -35,7 +33,26 @@ try {
 } catch {}
 
 Start-Sleep -Milliseconds 500
-Copy-Item -LiteralPath $Source -Destination $Destination -Force
+$logPath = Join-Path -Path (Split-Path -Parent $PSCommandPath) -ChildPath "apply_update.log"
+$lastError = $null
+for ($attempt = 1; $attempt -le 10; $attempt++) {
+    try {
+        Add-Content -LiteralPath $logPath -Value ("attempt {0}/10 copying {1} to {2}" -f $attempt, $Source, $Destination)
+        Copy-Item -LiteralPath $Source -Destination $Destination -Force
+        Add-Content -LiteralPath $logPath -Value ("attempt {0}/10 succeeded" -f $attempt)
+        $lastError = $null
+        break
+    } catch {
+        $lastError = $_
+        Add-Content -LiteralPath $logPath -Value ("attempt {0}/10 failed: {1}" -f $attempt, $_.Exception.Message)
+        Start-Sleep -Milliseconds 500
+    }
+}
+if ($null -ne $lastError) {
+    $message = "final failure after 10 attempts: {0}" -f $lastError.Exception.Message
+    Add-Content -LiteralPath $logPath -Value $message
+    throw $message
+}
 Start-Process -FilePath $Destination
 Remove-Item -LiteralPath $Source -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue
@@ -44,8 +61,7 @@ Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue
 pub fn start_version_check(state: Arc<AppState>) {
     tokio::spawn(async move {
         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-        let client = state.system.http_client.clone();
-        let version_check = match check_latest_release(&client).await {
+        let version_check = match check_latest_release(&state).await {
             Ok(check) => check,
             Err(error) => VersionCheck {
                 checked: true,
@@ -89,13 +105,13 @@ pub fn start_auto_update(state: Arc<AppState>) {
 }
 
 async fn download_and_apply_update(state: Arc<AppState>) -> Result<(), String> {
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(all(not(target_os = "windows"), not(test)))]
     {
         let _ = state;
         Err("Automatic updates are currently only supported on Windows.".to_string())
     }
 
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", test))]
     {
         let version_check = state.system.version_check.load();
         if !version_check.update_available {
@@ -182,11 +198,9 @@ async fn download_and_apply_update(state: Arc<AppState>) -> Result<(), String> {
                 "Update checksum mismatch. Expected {expected_sha}, got {actual_sha}."
             ));
         }
-        verify_release_signature(&bytes, &signature)?;
+        verify_release_signature(&state, &bytes, &signature)?;
 
-        let update_dir = config_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("update");
+        let update_dir = state.paths.config_dir.join("update");
         tokio::fs::create_dir_all(&update_dir)
             .await
             .map_err(|error| format!("Could not create update directory: {error}"))?;
@@ -197,8 +211,17 @@ async fn download_and_apply_update(state: Arc<AppState>) -> Result<(), String> {
             .map_err(|error| format!("Could not stage update: {error}"))?;
 
         set_update_status(&state, true, "Restarting to apply update...", "");
+
+        #[cfg(target_os = "windows")]
         spawn_update_script(&update_dir, &staged_exe)
             .map_err(|error| format!("Could not start updater: {error}"))?;
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            // Stub/noop for testing on Linux
+            let _ = update_dir;
+            let _ = staged_exe;
+        }
 
         state
             .flags
@@ -208,7 +231,7 @@ async fn download_and_apply_update(state: Arc<AppState>) -> Result<(), String> {
     }
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", test))]
 fn set_update_status(state: &AppState, running: bool, message: &str, error: &str) {
     state
         .system
@@ -254,9 +277,11 @@ fn spawn_update_script(update_dir: &Path, staged_exe: &Path) -> std::io::Result<
     Ok(())
 }
 
-async fn check_latest_release(client: &wreq::Client) -> Result<VersionCheck, String> {
+async fn check_latest_release(state: &AppState) -> Result<VersionCheck, String> {
+    let url = state.system.release_url.load().to_string();
+    let client = &state.system.http_client;
     let response = client
-        .get(LATEST_RELEASE_URL)
+        .get(&url)
         .header("User-Agent", "RL-Platform-Overlay")
         .send()
         .await
@@ -337,17 +362,8 @@ fn compare_versions(left: &str, right: &str) -> Option<std::cmp::Ordering> {
     Some(parse_version(left)?.cmp(&parse_version(right)?))
 }
 
-fn parse_version(version: &str) -> Option<Vec<u64>> {
-    let clean = version
-        .trim()
-        .trim_start_matches('v')
-        .split(['-', '+'])
-        .next()?;
-    let mut parts = Vec::new();
-    for part in clean.split('.') {
-        parts.push(part.parse().ok()?);
-    }
-    Some(parts)
+fn parse_version(version: &str) -> Option<Version> {
+    Version::parse(version.trim().trim_start_matches('v')).ok()
 }
 
 #[cfg(any(target_os = "windows", test))]
@@ -409,9 +425,14 @@ fn decode_signature_token(token: &str) -> Option<Vec<u8>> {
     (decoded.len() == 64).then_some(decoded)
 }
 
-#[cfg(target_os = "windows")]
-fn verify_release_signature(bytes: &[u8], signature_bytes: &[u8]) -> Result<(), String> {
-    verify_signature_with_public_key(bytes, signature_bytes, RELEASE_SIGNING_PUBLIC_KEY_B64)
+#[cfg(any(target_os = "windows", test))]
+fn verify_release_signature(
+    state: &AppState,
+    bytes: &[u8],
+    signature_bytes: &[u8],
+) -> Result<(), String> {
+    let public_key = state.system.release_public_key.load();
+    verify_signature_with_public_key(bytes, signature_bytes, &public_key)
 }
 
 #[cfg(any(target_os = "windows", test))]
@@ -493,6 +514,14 @@ mod tests {
         assert_eq!(
             compare_versions("v0.1.4", "0.1.4"),
             Some(std::cmp::Ordering::Equal)
+        );
+    }
+
+    #[test]
+    fn stable_release_beats_matching_prerelease() {
+        assert_eq!(
+            compare_versions("1.2.3", "1.2.3-rc1"),
+            Some(std::cmp::Ordering::Greater)
         );
     }
 
@@ -587,5 +616,201 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn update_script_logs_retry_attempts_and_final_failure() {
+        assert!(UPDATE_SCRIPT.contains("attempt {0}/10 copying"));
+        assert!(UPDATE_SCRIPT.contains("attempt {0}/10 failed"));
+        assert!(UPDATE_SCRIPT.contains("final failure after 10 attempts"));
+    }
+
+    #[tokio::test]
+    async fn test_autoupdate_integration() {
+        use ed25519_dalek::{Signer, SigningKey};
+        use std::time::Duration;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        // 1. Generate Ed25519 signing keypair for tests
+        let seed = [42_u8; 32];
+        let signing_key = SigningKey::from_bytes(&seed);
+        let verifying_key = signing_key.verifying_key();
+        let public_key_b64 = BASE64.encode(verifying_key.as_bytes());
+
+        // 2. Prepare mock executable asset and its signatures/checksums
+        let mock_exe_data = b"mock executable file contents for update test";
+
+        let mut hasher = Sha256::new();
+        hasher.update(mock_exe_data);
+        let mock_exe_hash = format!("{:x}", hasher.finalize());
+
+        let signature_bytes = signing_key.sign(mock_exe_data).to_bytes();
+        let signature_b64 = BASE64.encode(signature_bytes);
+
+        // 3. Bind TCP listener on a dynamic port for our mock HTTP server
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let addr_str = addr.to_string();
+
+        // 4. Spawn the mock HTTP server
+        let mock_exe_data_clone = mock_exe_data.to_vec();
+        let mock_exe_hash_clone = mock_exe_hash.clone();
+        let signature_b64_clone = signature_b64.clone();
+        let addr_str_server = addr_str.clone();
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let mock_exe_data_local = mock_exe_data_clone.clone();
+                let mock_exe_hash_local = mock_exe_hash_clone.clone();
+                let signature_b64_local = signature_b64_clone.clone();
+                let addr_str_local = addr_str_server.clone();
+
+                tokio::spawn(async move {
+                    let mut buf = vec![0; 4096];
+                    let n = match socket.read(&mut buf).await {
+                        Ok(n) => n,
+                        Err(_) => return,
+                    };
+                    let req = String::from_utf8_lossy(&buf[..n]);
+
+                    if req.contains("GET /releases/latest") {
+                        let body = format!(
+                            r#"{{
+                                "draft": false,
+                                "prerelease": false,
+                                "tag_name": "v999.0.0",
+                                "html_url": "https://github.com/Lucashamburguru/RL-Platform-Overlay/releases/tag/v999.0.0",
+                                "assets": [
+                                    {{
+                                        "name": "rl-platform-overlay.exe",
+                                        "browser_download_url": "http://{}/download/rl-platform-overlay.exe"
+                                    }},
+                                    {{
+                                        "name": "rl-platform-overlay.exe.sha256",
+                                        "browser_download_url": "http://{}/download/rl-platform-overlay.exe.sha256"
+                                    }},
+                                    {{
+                                        "name": "rl-platform-overlay.exe.sig",
+                                        "browser_download_url": "http://{}/download/rl-platform-overlay.exe.sig"
+                                    }}
+                                ]
+                            }}"#,
+                            addr_str_local, addr_str_local, addr_str_local
+                        );
+                        let resp = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            body.len(),
+                            body
+                        );
+                        let _ = socket.write_all(resp.as_bytes()).await;
+                    } else if req.contains("GET /download/rl-platform-overlay.exe.sha256") {
+                        let body = format!("{}  rl-platform-overlay.exe\n", mock_exe_hash_local);
+                        let resp = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            body.len(),
+                            body
+                        );
+                        let _ = socket.write_all(resp.as_bytes()).await;
+                    } else if req.contains("GET /download/rl-platform-overlay.exe.sig") {
+                        let body = format!("{}  rl-platform-overlay.exe\n", signature_b64_local);
+                        let resp = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            body.len(),
+                            body
+                        );
+                        let _ = socket.write_all(resp.as_bytes()).await;
+                    } else if req.contains("GET /download/rl-platform-overlay.exe") {
+                        let resp = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            mock_exe_data_local.len()
+                        );
+                        let _ = socket.write_all(resp.as_bytes()).await;
+                        let _ = socket.write_all(&mock_exe_data_local).await;
+                    }
+                });
+            }
+        });
+
+        // 5. Initialize AppState
+        let state = AppState::new();
+        state
+            .system
+            .release_url
+            .store(Arc::new(format!("http://{}/releases/latest", addr_str)));
+        state
+            .system
+            .release_public_key
+            .store(Arc::new(public_key_b64));
+
+        // 6. Start the version check and wait for it to run
+        start_version_check(state.clone());
+
+        let start_time = std::time::Instant::now();
+        let timeout = Duration::from_secs(5);
+        let mut check_succeeded = false;
+
+        while start_time.elapsed() < timeout {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let check = state.system.version_check.load();
+            if check.checked {
+                assert!(check.update_available, "Expected update to be available");
+                assert_eq!(check.latest_tag, "v999.0.0");
+                assert!(
+                    check.error.is_empty(),
+                    "Expected no check error, got: {}",
+                    check.error
+                );
+                check_succeeded = true;
+                break;
+            }
+        }
+        assert!(check_succeeded, "Version check timed out");
+
+        // 7. Start the auto update download and verification flow
+        start_auto_update(state.clone());
+
+        let mut update_succeeded = false;
+        let start_time = std::time::Instant::now();
+
+        while start_time.elapsed() < timeout {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let status = state.system.auto_update_status.load();
+
+            if !status.running {
+                assert!(
+                    status.error.is_empty(),
+                    "Expected no update error, got: {}",
+                    status.error
+                );
+                update_succeeded = true;
+                break;
+            }
+
+            // Check if should_exit is already set to true (which is set at the end of download_and_apply_update)
+            if state
+                .flags
+                .should_exit
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
+                update_succeeded = true;
+                break;
+            }
+        }
+        assert!(update_succeeded, "Auto update timed out or failed");
+
+        // 8. Verify the updated file is written properly in the staged path
+        let update_dir = state.paths.config_dir.join("update");
+        let staged_exe = update_dir.join("rl-platform-overlay-v999.0.0.exe");
+
+        assert!(
+            staged_exe.exists(),
+            "Staged executable does not exist at {:?}",
+            staged_exe
+        );
+        let read_bytes = tokio::fs::read(&staged_exe).await.unwrap();
+        assert_eq!(read_bytes, mock_exe_data);
+
+        // Cleanup temp directory
+        let _ = tokio::fs::remove_dir_all(&state.paths.config_dir).await;
     }
 }

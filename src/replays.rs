@@ -1,9 +1,20 @@
 use crate::state::{AppState, ReplayUploadProgress};
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
+
+/// Spawns a background task. Logs `error_prefix` + the error string if the future returns `Err`.
+fn spawn_task<F>(error_prefix: &'static str, fut: F)
+where
+    F: std::future::Future<Output = Result<(), String>> + Send + 'static,
+{
+    tokio::spawn(async move {
+        if let Err(e) = fut.await {
+            log::error!("{}: {}", error_prefix, e);
+        }
+    });
+}
 
 const BULK_UPLOAD_DELAY_SECS: u64 = 30;
 
@@ -62,9 +73,24 @@ pub async fn verify_token(client: &wreq::Client, api_key: &str) -> Result<(), St
 
 /// Helper function to spawn the asynchronous replay uploader trigger.
 pub fn trigger_replay_upload(state: Arc<AppState>, scan_all_as_uploaded: bool) {
+    // Kept inline: must clear auto_upload_running and surface status on error.
     tokio::spawn(async move {
-        if let Err(e) = run_replay_upload(state, scan_all_as_uploaded).await {
-            log::error!("Replay upload execution error: {}", e);
+        if state
+            .replays
+            .auto_upload_running
+            .swap(true, Ordering::SeqCst)
+        {
+            return;
+        }
+        let state_clone = state.clone();
+        let res = run_replay_upload(state, scan_all_as_uploaded).await;
+        state_clone
+            .replays
+            .auto_upload_running
+            .store(false, Ordering::SeqCst);
+        if let Err(e) = res {
+            log::error!("Replay uploader execution error: {}", e);
+            set_status(&state_clone, &format!("Error: Upload trigger failed ({e})"));
         }
     });
 }
@@ -86,7 +112,7 @@ async fn run_replay_upload(state: Arc<AppState>, scan_all_as_uploaded: bool) -> 
         return Ok(());
     }
 
-    let found_files = match replay_files_in_dir(&replays_dir) {
+    let found_files = match replay_files_in_dir(&replays_dir).await {
         Ok(files) => files,
         Err(error) => {
             log::error!("Failed to scan replays directory: {error}");
@@ -104,10 +130,13 @@ async fn run_replay_upload(state: Arc<AppState>, scan_all_as_uploaded: bool) -> 
 
         if config.ballchasing_enabled && !api_key.is_empty() {
             for replay in found_files {
-                if uploaded_set.contains(&replay.filename) {
+                let has_uploaded = uploaded_set
+                    .iter()
+                    .any(|x| x.eq_ignore_ascii_case(&replay.filename));
+                if has_uploaded {
                     continue;
                 }
-                if let Ok(metadata) = fs::metadata(&replay.path)
+                if let Ok(metadata) = tokio::fs::metadata(&replay.path).await
                     && let Ok(modified) = metadata.modified()
                     && let Ok(elapsed) = now.duration_since(modified)
                     && elapsed.as_secs() < 15 * 60
@@ -160,7 +189,10 @@ async fn run_replay_upload(state: Arc<AppState>, scan_all_as_uploaded: bool) -> 
     let uploaded_set = &config.uploaded_replays;
 
     for replay in found_files {
-        if uploaded_set.contains(&replay.filename) {
+        let has_uploaded = uploaded_set
+            .iter()
+            .any(|x| x.eq_ignore_ascii_case(&replay.filename));
+        if has_uploaded {
             continue;
         }
 
@@ -233,11 +265,13 @@ async fn run_replay_upload(state: Arc<AppState>, scan_all_as_uploaded: bool) -> 
     Ok(())
 }
 
-fn replay_files_in_dir(replays_dir: &Path) -> Result<Vec<ReplayFile>, std::io::Error> {
+async fn replay_files_in_dir(replays_dir: &Path) -> Result<Vec<ReplayFile>, std::io::Error> {
     let mut files = Vec::new();
-    for entry in fs::read_dir(replays_dir)?.flatten() {
+    let mut entries = tokio::fs::read_dir(replays_dir).await?;
+    while let Some(entry) = entries.next_entry().await? {
         let path = entry.path();
-        if path.is_file()
+        if let Ok(file_type) = entry.file_type().await
+            && file_type.is_file()
             && path.extension().and_then(|s| s.to_str()) == Some("replay")
             && let Some(filename) = path.file_name().and_then(|s| s.to_str())
         {
@@ -250,16 +284,17 @@ fn replay_files_in_dir(replays_dir: &Path) -> Result<Vec<ReplayFile>, std::io::E
     Ok(files)
 }
 
-fn pending_replay_files(
+async fn pending_replay_files(
     replays_dir: &Path,
     uploaded_replays: &[String],
 ) -> Result<Vec<ReplayFile>, std::io::Error> {
-    Ok(replay_files_in_dir(replays_dir)?
+    Ok(replay_files_in_dir(replays_dir)
+        .await?
         .into_iter()
         .filter(|replay| {
             !uploaded_replays
                 .iter()
-                .any(|uploaded| uploaded == &replay.filename)
+                .any(|uploaded| uploaded.eq_ignore_ascii_case(&replay.filename))
         })
         .collect())
 }
@@ -303,28 +338,28 @@ fn set_status(state: &AppState, status: &str) {
 
 /// Waits for a file to stabilize by sleeping initially and checking if its size stops changing.
 async fn wait_for_file_stability(path: &Path) -> bool {
-    if !path.exists() {
+    if tokio::fs::metadata(path).await.is_err() {
         return false;
     }
     // Sleep initially to let the game start writing the file
     tokio::time::sleep(Duration::from_secs(5)).await;
 
-    if !path.exists() {
+    if tokio::fs::metadata(path).await.is_err() {
         return false;
     }
 
     // Check if the file size remains the same (confirm writing is complete)
-    let mut last_size = match fs::metadata(path) {
+    let mut last_size = match tokio::fs::metadata(path).await {
         Ok(m) => m.len(),
         Err(_) => return false,
     };
 
     for _ in 0..5 {
         tokio::time::sleep(Duration::from_millis(500)).await;
-        if !path.exists() {
+        if tokio::fs::metadata(path).await.is_err() {
             return false;
         }
-        let current_size = match fs::metadata(path) {
+        let current_size = match tokio::fs::metadata(path).await {
             Ok(m) => m.len(),
             Err(_) => return false,
         };
@@ -338,7 +373,7 @@ async fn wait_for_file_stability(path: &Path) -> bool {
 }
 
 pub fn start_bulk_upload_task(state: Arc<AppState>) {
-    if state.replays.upload_progress.load().running {
+    if state.replays.upload_running.swap(true, Ordering::SeqCst) {
         set_status(&state, "Bulk upload already running");
         return;
     }
@@ -356,9 +391,14 @@ pub fn start_bulk_upload_task(state: Arc<AppState>) {
             ..Default::default()
         }));
 
+    // Bulk upload has its own finish/status calls inside the error path, so we use a
+    // slightly customised inline spawn rather than spawn_task.
     tokio::spawn(async move {
+        let state_clone = state.clone();
         if let Err(e) = run_bulk_upload(state).await {
             log::error!("Bulk upload execution error: {}", e);
+            set_status(&state_clone, &format!("Error: Bulk upload failed ({e})"));
+            finish_bulk_upload(&state_clone, &format!("Execution error: {e}"));
         }
     });
 }
@@ -390,7 +430,7 @@ async fn run_bulk_upload(state: Arc<AppState>) -> Result<(), String> {
     let uploaded_replays = config.uploaded_replays.clone();
     drop(config);
 
-    let Ok(to_upload) = pending_replay_files(&replays_dir, &uploaded_replays) else {
+    let Ok(to_upload) = pending_replay_files(&replays_dir, &uploaded_replays).await else {
         set_status(&state, "Error: Could not read directory");
         finish_bulk_upload(&state, "Could not read directory");
         return Ok(());
@@ -398,6 +438,7 @@ async fn run_bulk_upload(state: Arc<AppState>) -> Result<(), String> {
 
     if to_upload.is_empty() {
         set_status(&state, "Success: All local replays already uploaded!");
+        state.replays.upload_running.store(false, Ordering::SeqCst);
         state
             .replays
             .upload_progress
@@ -479,6 +520,7 @@ async fn run_bulk_upload(state: Arc<AppState>) -> Result<(), String> {
             ),
         );
     }
+    state.replays.upload_running.store(false, Ordering::SeqCst);
     update_upload_progress(&state, |progress| {
         progress.running = false;
         progress.paused = false;
@@ -546,7 +588,7 @@ async fn upload_bulk_replay(
         return BulkReplayOutcome::Continue;
     }
 
-    let Ok(file_bytes) = fs::read(&replay.path) else {
+    let Ok(file_bytes) = tokio::fs::read(&replay.path).await else {
         set_status(
             state,
             &format!(
@@ -754,6 +796,7 @@ async fn wait_while_paused(state: &AppState) {
 }
 
 fn finish_bulk_upload(state: &AppState, reason: &str) {
+    state.replays.upload_running.store(false, Ordering::SeqCst);
     update_upload_progress(state, |progress| {
         progress.running = false;
         progress.paused = false;
@@ -783,10 +826,13 @@ fn push_event(progress: &mut ReplayUploadProgress, event: String) {
 }
 
 pub fn start_sync_replays_task(state: Arc<AppState>) {
-    tokio::spawn(async move {
+    let state_clone = state.clone();
+    spawn_task("Sync replays execution error", async move {
         if let Err(e) = run_sync_replays(state).await {
-            log::error!("Sync replays execution error: {}", e);
+            set_status(&state_clone, &format!("Error: Sync failed ({e})"));
+            return Err(e);
         }
+        Ok(())
     });
 }
 
@@ -932,7 +978,15 @@ async fn run_sync_replays(state: Arc<AppState>) -> Result<(), String> {
     // Merge cloud entries into metadata cache
     let current_snapshot = state.replays.metadata_cache.load();
     let mut new_snapshot = (**current_snapshot).clone();
-    for entry in cloud_entries {
+    for mut entry in cloud_entries {
+        if let Some(existing) = new_snapshot.entries.get(&entry.filename)
+            && existing.file_size > 0
+        {
+            // Preserve local file size and modified timestamp so that
+            // subsequent local scans don't think the file has changed.
+            entry.file_size = existing.file_size;
+            entry.modified_unix_secs = existing.modified_unix_secs;
+        }
         new_snapshot.entries.insert(entry.filename.clone(), entry);
     }
     state.replays.metadata_cache.store(Arc::new(new_snapshot));
@@ -961,6 +1015,7 @@ pub fn start_download_replay_task(state: Arc<AppState>, replay_id: String) {
     }
     state.replays.download_active.store(true, Ordering::SeqCst);
 
+    // Kept inline: must clear download_active regardless of success or failure.
     tokio::spawn(async move {
         if let Err(e) = run_download_replay(state.clone(), replay_id).await {
             log::error!("Replay download execution error: {}", e);
@@ -1031,7 +1086,7 @@ async fn run_download_replay(state: Arc<AppState>, replay_id: String) -> Result<
     let target_filename = format!("{}.replay", id_formatted);
     let target_path = replays_dir.join(&target_filename);
 
-    if target_path.exists() {
+    if tokio::fs::metadata(&target_path).await.is_ok() {
         set_status(
             &state,
             &format!("Success: Replay {id_formatted} already exists locally"),
@@ -1040,17 +1095,26 @@ async fn run_download_replay(state: Arc<AppState>, replay_id: String) -> Result<
     }
 
     // Also scan directory case-insensitively just to be nice
-    if let Ok(entries) = fs::read_dir(&replays_dir) {
-        for entry in entries.flatten() {
-            if entry.file_name().to_str().map(|s| s.to_lowercase())
-                == Some(target_filename.to_lowercase())
-            {
-                set_status(
-                    &state,
-                    &format!("Success: Replay {id_formatted} already exists locally"),
-                );
-                return Ok(());
+    match tokio::fs::read_dir(&replays_dir).await {
+        Ok(mut entries) => {
+            while let Ok(Some(entry)) = entries.next_entry().await {
+                if entry.file_name().to_str().map(|s| s.to_lowercase())
+                    == Some(target_filename.to_lowercase())
+                {
+                    set_status(
+                        &state,
+                        &format!("Success: Replay {id_formatted} already exists locally"),
+                    );
+                    return Ok(());
+                }
             }
+        }
+        Err(e) => {
+            log::warn!(
+                "Could not read replays directory for duplicate check ({}): {}",
+                replays_dir.display(),
+                e
+            );
         }
     }
 
@@ -1097,7 +1161,7 @@ async fn run_download_replay(state: Arc<AppState>, replay_id: String) -> Result<
         return Ok(());
     }
 
-    if let Err(e) = fs::write(&target_path, &bytes) {
+    if let Err(e) = tokio::fs::write(&target_path, &bytes).await {
         let err_msg = format!("Failed to write file to disk: {e}");
         set_status(&state, &format!("Error: {}", err_msg));
         return Err(err_msg);
@@ -1119,7 +1183,7 @@ pub fn mark_replays_uploaded(state: &Arc<AppState>, filenames: &[String]) -> usi
         if let Some(pos) = config_edit
             .uploaded_replays
             .iter()
-            .position(|x| x == filename)
+            .position(|x| x.eq_ignore_ascii_case(filename))
         {
             config_edit.uploaded_replays.remove(pos);
             config_edit.uploaded_replays.push(filename.clone());
@@ -1128,8 +1192,9 @@ pub fn mark_replays_uploaded(state: &Arc<AppState>, filenames: &[String]) -> usi
             added += 1;
         }
     }
-    if config_edit.uploaded_replays.len() > 500 {
-        let overflow = config_edit.uploaded_replays.len() - 500;
+    const MAX_UPLOADED_CACHE: usize = 10_000;
+    if config_edit.uploaded_replays.len() > MAX_UPLOADED_CACHE {
+        let overflow = config_edit.uploaded_replays.len() - MAX_UPLOADED_CACHE;
         config_edit.uploaded_replays.drain(0..overflow);
     }
     if !filenames.is_empty() {
@@ -1156,9 +1221,6 @@ mod tests {
 
     #[test]
     fn test_mark_replays_uploaded() {
-        unsafe {
-            std::env::set_var("RL_OVERLAY_TEST", "1");
-        }
         let state = AppState::new();
 
         // Initially config should be empty
@@ -1188,25 +1250,29 @@ mod tests {
             assert_eq!(config.uploaded_replays.len(), 2);
         }
 
-        // Max limit of 500 replays
+        // Max limit of 10000 replays
         let mut massive_list = Vec::new();
-        for i in 0..600 {
+        for i in 0..10100 {
             massive_list.push(format!("r{i}.replay"));
         }
         mark_replays_uploaded(&state, &massive_list);
 
         {
             let config = state.system.config.load();
-            assert_eq!(config.uploaded_replays.len(), 500);
+            assert_eq!(config.uploaded_replays.len(), 10000);
             // Verify newer ones exist
-            assert!(config.uploaded_replays.contains(&"r599.replay".to_string()));
+            assert!(
+                config
+                    .uploaded_replays
+                    .contains(&"r10099.replay".to_string())
+            );
             // Verify older ones were pruned
             assert!(!config.uploaded_replays.contains(&"r0.replay".to_string()));
         }
     }
 
-    #[test]
-    fn test_pending_replay_files() {
+    #[tokio::test]
+    async fn test_pending_replay_files() {
         let root = temp_dir("pending");
 
         // Create a fake replay file and a regular file
@@ -1215,9 +1281,30 @@ mod tests {
         fs::write(root.join("not_a_replay.txt"), b"some-text").unwrap();
 
         // Verify replay_files_in_dir finds it
-        let files = replay_files_in_dir(&root).unwrap();
+        let files = replay_files_in_dir(&root).await.unwrap();
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].path, replay_path);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn bulk_upload_empty_queue_clears_running_guard() {
+        let root = temp_dir("bulk-empty");
+        fs::write(root.join("already_uploaded.replay"), b"fake-replay").unwrap();
+
+        let state = AppState::new();
+        let current = state.system.config.load();
+        let mut config = (**current).clone();
+        config.replays_folder = root.to_string_lossy().to_string();
+        config.ballchasing_api_key = "test-key".to_string();
+        config.uploaded_replays = vec!["already_uploaded.replay".to_string()];
+        state.system.config.store(Arc::new(config));
+        state.replays.upload_running.store(true, Ordering::SeqCst);
+
+        run_bulk_upload(state.clone()).await.unwrap();
+
+        assert!(!state.replays.upload_running.load(Ordering::SeqCst));
 
         let _ = fs::remove_dir_all(root);
     }

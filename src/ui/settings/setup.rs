@@ -28,12 +28,22 @@ pub(crate) fn render_setup_settings_tab(
                     .changed()
                 {
                     *changed = true;
+                    request_stats_api_setup_refresh(
+                        state,
+                        config_edit.rocket_league_path.clone(),
+                        false,
+                    );
                 }
                 let auto_detect_btn = ui.button("Auto-detect");
                 if auto_detect_btn.clicked() {
                     if let Some(path) = crate::state::detect_rocket_league_path() {
                         config_edit.rocket_league_path = path;
                         *changed = true;
+                        request_stats_api_setup_refresh(
+                            state,
+                            config_edit.rocket_league_path.clone(),
+                            true,
+                        );
                         ui.data_mut(|d| {
                             d.insert_temp(ui.make_persistent_id("rl_path_autodetect_failed"), false)
                         });
@@ -57,7 +67,13 @@ pub(crate) fn render_setup_settings_tab(
             );
         }
 
-        let status = crate::setup::inspect_stats_api_setup(&config_edit.rocket_league_path);
+        let expected_ini_path = crate::setup::stats_ini_path(&config_edit.rocket_league_path)
+            .display()
+            .to_string();
+        let status = state.system.stats_api_setup_status.load();
+        if status.message.is_empty() || status.ini_path != expected_ini_path {
+            request_stats_api_setup_refresh(state, config_edit.rocket_league_path.clone(), false);
+        }
         ui.add_space(8.0);
         debug_status_row(ui, "Config File", &status.ini_path);
         debug_status_row(
@@ -78,11 +94,11 @@ pub(crate) fn render_setup_settings_tab(
         );
 
         if status.configured {
-            status_text(ui, StatusTone::Success, status.message);
+            status_text(ui, StatusTone::Success, &status.message);
         } else if status.exists {
-            status_text(ui, StatusTone::Warning, status.message);
+            status_text(ui, StatusTone::Warning, &status.message);
         } else {
-            status_text(ui, StatusTone::Error, status.message);
+            status_text(ui, StatusTone::Error, &status.message);
         }
 
         if is_rl_running {
@@ -210,7 +226,10 @@ pub(crate) fn render_setup_settings_tab(
 
 fn apply_stats_api_setup_rate(state: &Arc<AppState>, rocket_league_path: &str, rate: u16) {
     match crate::setup::ensure_stats_api_setup_with_rate(rocket_league_path, rate) {
-        Ok(result) => state.system.stats_api_setup_result.store(Arc::new(result)),
+        Ok(result) => {
+            state.system.stats_api_setup_result.store(Arc::new(result));
+            request_stats_api_setup_refresh(state, rocket_league_path.to_string(), true);
+        }
         Err(error) => {
             state
                 .system
@@ -221,6 +240,60 @@ fn apply_stats_api_setup_rate(state: &Arc<AppState>, rocket_league_path: &str, r
                 }))
         }
     }
+}
+
+pub(crate) fn request_stats_api_setup_refresh(
+    state: &Arc<AppState>,
+    rocket_league_path: String,
+    force: bool,
+) -> bool {
+    if !force
+        && state
+            .system
+            .stats_api_setup_refresh_running
+            .load(Ordering::SeqCst)
+    {
+        return false;
+    }
+    if state
+        .system
+        .stats_api_setup_refresh_running
+        .swap(true, Ordering::SeqCst)
+    {
+        return false;
+    }
+
+    let current = state.system.stats_api_setup_status.load();
+    state
+        .system
+        .stats_api_setup_status
+        .store(Arc::new(crate::setup::StatsApiSetupStatus {
+            message: if current.message.is_empty() {
+                "Checking Stats API config...".to_string()
+            } else {
+                "Refreshing Stats API config...".to_string()
+            },
+            ..(**current).clone()
+        }));
+
+    let state_clone = state.clone();
+    let run = move || {
+        let status = crate::setup::inspect_stats_api_setup(&rocket_league_path);
+        state_clone
+            .system
+            .stats_api_setup_status
+            .store(Arc::new(status));
+        state_clone
+            .system
+            .stats_api_setup_refresh_running
+            .store(false, Ordering::SeqCst);
+    };
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        handle.spawn_blocking(run);
+    } else {
+        std::thread::spawn(run);
+    }
+    true
 }
 
 fn render_support_diagnostics_section(
@@ -291,4 +364,24 @@ fn render_support_diagnostics_section(
             status_text(ui, StatusTone::Success, "Diagnostics copied to clipboard.");
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn setup_refresh_request_dedupes_while_running() {
+        let state = AppState::new();
+        state
+            .system
+            .stats_api_setup_refresh_running
+            .store(true, Ordering::SeqCst);
+
+        assert!(!request_stats_api_setup_refresh(
+            &state,
+            "/tmp/rocket-league".to_string(),
+            false
+        ));
+    }
 }

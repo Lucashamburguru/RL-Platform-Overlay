@@ -28,3 +28,7 @@ Thumbs.db
 # Temp test files
 *_temp.rs
 test_mmr.rs
+
+# Review documents and archives
+/docs/reviews/
+/docs/archive/
