@@ -453,21 +453,29 @@ pub fn parse_platform(id: &str) -> (String, bool) {
     }
 }
 
+// ⚡ Bolt: Avoid allocating string in hot path by using eq_ignore_ascii_case
 pub fn format_platform(platform: &str) -> &str {
-    let lower = platform.to_lowercase();
-    if lower == "ps4" || lower == "ps5" || lower == "playstation" || lower == "psn" {
+    if platform.eq_ignore_ascii_case("ps4")
+        || platform.eq_ignore_ascii_case("ps5")
+        || platform.eq_ignore_ascii_case("playstation")
+        || platform.eq_ignore_ascii_case("psn")
+    {
         "PSN"
-    } else if lower == "xbox" || lower == "xboxone" || lower == "xboxseries" || lower == "xbl" {
+    } else if platform.eq_ignore_ascii_case("xbox")
+        || platform.eq_ignore_ascii_case("xboxone")
+        || platform.eq_ignore_ascii_case("xboxseries")
+        || platform.eq_ignore_ascii_case("xbl")
+    {
         "Xbox"
-    } else if lower == "steam" {
+    } else if platform.eq_ignore_ascii_case("steam") {
         "Steam"
-    } else if lower == "epic" {
+    } else if platform.eq_ignore_ascii_case("epic") {
         "Epic"
-    } else if lower == "switch" || lower == "nintendo" {
+    } else if platform.eq_ignore_ascii_case("switch") || platform.eq_ignore_ascii_case("nintendo") {
         "Switch"
-    } else if lower == "bot" {
+    } else if platform.eq_ignore_ascii_case("bot") {
         "BOT"
-    } else if lower == "unknown" {
+    } else if platform.eq_ignore_ascii_case("unknown") {
         "Unknown"
     } else {
         platform
