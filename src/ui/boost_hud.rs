@@ -75,7 +75,8 @@ pub(super) fn render_teammate_boost(ctx: &egui::Context, state: &Arc<AppState>) 
                 .values()
                 .find(|p| {
                     p.is_local
-                        || (!local_name.is_empty() && p.name.trim().eq_ignore_ascii_case(local_name))
+                        || (!local_name.is_empty()
+                            && p.name.trim().eq_ignore_ascii_case(local_name))
                 })
                 .map(|p| p.team)
         }
