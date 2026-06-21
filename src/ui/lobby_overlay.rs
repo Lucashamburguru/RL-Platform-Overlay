@@ -314,7 +314,13 @@ pub(super) fn draw_lobby_panel(
                 a.team
                     .cmp(&b.team)
                     .then_with(|| b_local.cmp(&a_local))
-                    .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+                    // Performance optimization: Avoid allocating Strings via .to_lowercase() during sorting
+                    .then_with(|| {
+                        a.name
+                            .bytes()
+                            .map(|b| b.to_ascii_lowercase())
+                            .cmp(b.name.bytes().map(|b| b.to_ascii_lowercase()))
+                    })
             });
 
             if sorted_players.is_empty() {
