@@ -76,7 +76,7 @@ pub(super) fn render_teammate_boost(ctx: &egui::Context, state: &Arc<AppState>) 
                 .find(|p| {
                     p.is_local
                         // Performance optimization: Avoid allocating Strings in high-frequency filtering
-                        || (!local_name.is_empty() && p.name.trim().eq_ignore_ascii_case(&local_name))
+                        || (!local_name.is_empty() && p.name.trim().eq_ignore_ascii_case(local_name))
                 })
                 .map(|p| p.team)
         }
@@ -92,7 +92,7 @@ pub(super) fn render_teammate_boost(ctx: &egui::Context, state: &Arc<AppState>) 
             p.team == my_team
                 && !p.is_local
                 // Performance optimization: Avoid allocating Strings in high-frequency filtering
-                && (local_name.is_empty() || !p.name.trim().eq_ignore_ascii_case(&local_name))
+                && (local_name.is_empty() || !p.name.trim().eq_ignore_ascii_case(local_name))
         })
         .cloned()
         .collect();
