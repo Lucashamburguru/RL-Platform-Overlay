@@ -19,7 +19,8 @@ pub(super) fn teammate_boost_display_label(display: TeammateBoostDisplay) -> &'s
 
 pub(super) fn preview_teammates(state: &Arc<AppState>) -> Vec<PlayerInfo> {
     let players = state.game.players.load();
-    let local_name = state.game.local_player_name.load().trim().to_lowercase();
+    let local_name_raw = state.game.local_player_name.load();
+    let local_name = local_name_raw.trim();
     let local_team = state.game.local_team.load(Ordering::SeqCst);
     let mut teammates: Vec<_> = players
         .values()
@@ -27,7 +28,8 @@ pub(super) fn preview_teammates(state: &Arc<AppState>) -> Vec<PlayerInfo> {
             local_team != crate::state::NO_TEAM
                 && p.team == local_team
                 && !p.is_local
-                && (local_name.is_empty() || p.name.trim().to_lowercase() != local_name)
+                // Optimization: Avoid String allocations per player every frame
+                && (local_name.is_empty() || !p.name.trim().eq_ignore_ascii_case(local_name))
         })
         .cloned()
         .collect();
@@ -60,7 +62,7 @@ pub(super) fn preview_teammates(state: &Arc<AppState>) -> Vec<PlayerInfo> {
 pub(super) fn render_teammate_boost(ctx: &egui::Context, state: &Arc<AppState>) {
     let players = state.game.players.load();
     let local_name_raw = state.game.local_player_name.load();
-    let local_name = local_name_raw.trim().to_lowercase();
+    let local_name = local_name_raw.trim();
     let config = state.system.config.load();
 
     // Find our team (preferring the stabilized local_team from state)
@@ -74,7 +76,8 @@ pub(super) fn render_teammate_boost(ctx: &egui::Context, state: &Arc<AppState>) 
                 .values()
                 .find(|p| {
                     p.is_local
-                        || (!local_name.is_empty() && p.name.trim().to_lowercase() == local_name)
+                        // Optimization: Avoid String allocations per player every frame
+                        || (!local_name.is_empty() && p.name.trim().eq_ignore_ascii_case(local_name))
                 })
                 .map(|p| p.team)
         }
@@ -89,7 +92,8 @@ pub(super) fn render_teammate_boost(ctx: &egui::Context, state: &Arc<AppState>) 
         .filter(|p| {
             p.team == my_team
                 && !p.is_local
-                && (local_name.is_empty() || p.name.trim().to_lowercase() != local_name)
+                // Optimization: Avoid String allocations per player every frame
+                && (local_name.is_empty() || !p.name.trim().eq_ignore_ascii_case(local_name))
         })
         .cloned()
         .collect();
