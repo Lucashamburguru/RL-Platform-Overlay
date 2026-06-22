@@ -136,10 +136,10 @@ fn windows_monitors(pixels_per_point: f32) -> Vec<MonitorInfo> {
         _rect: LPRECT,
         data: LPARAM,
     ) -> BOOL {
-        let state = &mut *(data as *mut MonitorEnumState);
-        let mut info: MONITORINFO = std::mem::zeroed();
+        let state = unsafe { &mut *(data as *mut MonitorEnumState) };
+        let mut info: MONITORINFO = unsafe { std::mem::zeroed() };
         info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
-        if GetMonitorInfoW(monitor, &mut info as *mut MONITORINFO) != 0 {
+        if unsafe { GetMonitorInfoW(monitor, &mut info as *mut MONITORINFO) } != 0 {
             let scale = state.scale.max(0.1);
             let left = info.rcMonitor.left as f32 / scale;
             let top = info.rcMonitor.top as f32 / scale;
