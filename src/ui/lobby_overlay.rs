@@ -314,7 +314,13 @@ pub(super) fn draw_lobby_panel(
                 a.team
                     .cmp(&b.team)
                     .then_with(|| b_local.cmp(&a_local))
-                    .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+                    // ⚡ Bolt: Use zero-allocation iterator for case-insensitive sort to prevent heap allocations in render loop
+                    .then_with(|| {
+                        a.name
+                            .bytes()
+                            .map(|b| b.to_ascii_lowercase())
+                            .cmp(b.name.bytes().map(|b| b.to_ascii_lowercase()))
+                    })
             });
 
             if sorted_players.is_empty() {
