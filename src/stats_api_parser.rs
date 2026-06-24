@@ -455,7 +455,6 @@ pub fn parse_platform(id: &str) -> (String, bool) {
     }
 }
 
-
 #[inline]
 fn is_platform(platform: &str, names: &[&str]) -> bool {
     names.iter().any(|n| platform.eq_ignore_ascii_case(n))

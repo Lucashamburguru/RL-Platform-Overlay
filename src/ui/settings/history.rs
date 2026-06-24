@@ -223,7 +223,6 @@ fn formatted_platform(platform: &str) -> String {
     crate::stats_api_parser::format_platform(platform).to_string()
 }
 
-
 fn render_platform_label(ui: &mut egui::Ui, platform: &str) {
     if crate::ui::common::contains_ignore_ascii_case(platform, "epic") {
         let mut job = egui::text::LayoutJob::default();
@@ -249,11 +248,17 @@ fn render_platform_label(ui: &mut egui::Ui, platform: &str) {
         }
         ui.label(job);
     } else {
-        let color = if crate::ui::common::contains_ignore_ascii_case(platform, "xbox") || crate::ui::common::contains_ignore_ascii_case(platform, "xbl") {
+        let color = if crate::ui::common::contains_ignore_ascii_case(platform, "xbox")
+            || crate::ui::common::contains_ignore_ascii_case(platform, "xbl")
+        {
             egui::Color32::from_rgb(30, 200, 80) // Xbox Green
-        } else if crate::ui::common::contains_ignore_ascii_case(platform, "playstation") || crate::ui::common::contains_ignore_ascii_case(platform, "ps") {
+        } else if crate::ui::common::contains_ignore_ascii_case(platform, "playstation")
+            || crate::ui::common::contains_ignore_ascii_case(platform, "ps")
+        {
             egui::Color32::from_rgb(41, 140, 255) // PSN Blue
-        } else if crate::ui::common::contains_ignore_ascii_case(platform, "switch") || crate::ui::common::contains_ignore_ascii_case(platform, "nintendo") {
+        } else if crate::ui::common::contains_ignore_ascii_case(platform, "switch")
+            || crate::ui::common::contains_ignore_ascii_case(platform, "nintendo")
+        {
             egui::Color32::from_rgb(255, 65, 80) // Switch Red
         } else {
             egui::Color32::from_gray(160) // Steam / Default stays gray
