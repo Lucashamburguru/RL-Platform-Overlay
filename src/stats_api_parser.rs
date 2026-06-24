@@ -235,14 +235,16 @@ pub fn result_signature(
 }
 
 pub fn result_from_winner(winner: &str, local_team: u8) -> Option<MatchResult> {
-    let normalized = winner.trim().to_lowercase();
+    let normalized = winner.trim();
     if normalized.is_empty() {
         return None;
     }
-    let winner_team = match normalized.as_str() {
-        "blue" => Some(0),
-        "orange" => Some(1),
-        _ => None,
+    let winner_team = if normalized.eq_ignore_ascii_case("blue") {
+        Some(0)
+    } else if normalized.eq_ignore_ascii_case("orange") {
+        Some(1)
+    } else {
+        None
     }?;
     Some(if winner_team == local_team {
         MatchResult::Win
@@ -453,21 +455,26 @@ pub fn parse_platform(id: &str) -> (String, bool) {
     }
 }
 
+
+#[inline]
+fn is_platform(platform: &str, names: &[&str]) -> bool {
+    names.iter().any(|n| platform.eq_ignore_ascii_case(n))
+}
+
 pub fn format_platform(platform: &str) -> &str {
-    let lower = platform.to_lowercase();
-    if lower == "ps4" || lower == "ps5" || lower == "playstation" || lower == "psn" {
+    if is_platform(platform, &["ps4", "ps5", "playstation", "psn"]) {
         "PSN"
-    } else if lower == "xbox" || lower == "xboxone" || lower == "xboxseries" || lower == "xbl" {
+    } else if is_platform(platform, &["xbox", "xboxone", "xboxseries", "xbl"]) {
         "Xbox"
-    } else if lower == "steam" {
+    } else if platform.eq_ignore_ascii_case("steam") {
         "Steam"
-    } else if lower == "epic" {
+    } else if platform.eq_ignore_ascii_case("epic") {
         "Epic"
-    } else if lower == "switch" || lower == "nintendo" {
+    } else if is_platform(platform, &["switch", "nintendo"]) {
         "Switch"
-    } else if lower == "bot" {
+    } else if platform.eq_ignore_ascii_case("bot") {
         "BOT"
-    } else if lower == "unknown" {
+    } else if platform.eq_ignore_ascii_case("unknown") {
         "Unknown"
     } else {
         platform
