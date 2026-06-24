@@ -80,8 +80,8 @@ pub fn parse_stats_api_event(raw: &Value, context: StatsApiParseContext<'_>) -> 
     let data = raw
         .get("Data")
         .or_else(|| raw.get("data"))
-        .map(|data| (*decode_json_string_value(data)).clone())
-        .unwrap_or_else(|| (*decode_json_string_value(raw)).clone());
+        .map(|data| decode_json_string_value(data).into_owned())
+        .unwrap_or_else(|| decode_json_string_value(raw).into_owned());
     parse_stats_api_data(event_name, data, context)
 }
 
