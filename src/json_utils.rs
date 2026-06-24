@@ -5,6 +5,15 @@ pub enum DecodedValue<'a> {
     Owned(Value),
 }
 
+impl<'a> DecodedValue<'a> {
+    pub fn into_owned(self) -> Value {
+        match self {
+            Self::Borrowed(v) => v.clone(),
+            Self::Owned(v) => v,
+        }
+    }
+}
+
 impl<'a> std::ops::Deref for DecodedValue<'a> {
     type Target = Value;
     fn deref(&self) -> &Self::Target {

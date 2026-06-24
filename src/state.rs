@@ -820,6 +820,7 @@ impl AppState {
             wreq::Client::builder()
                 .timeout(std::time::Duration::from_secs(15))
                 .emulation(wreq_util::Emulation::Chrome128)
+                .redirect(wreq::redirect::Policy::limited(10))
                 .build()
                 .expect("Failed to build shared HTTP client"),
         );

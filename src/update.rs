@@ -7,7 +7,7 @@ use semver::Version;
 use serde_json::Value;
 #[cfg(any(target_os = "windows", test))]
 use sha2::{Digest, Sha256};
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", not(test)))]
 use std::path::Path;
 use std::sync::Arc;
 
@@ -212,13 +212,13 @@ async fn download_and_apply_update(state: Arc<AppState>) -> Result<(), String> {
 
         set_update_status(&state, true, "Restarting to apply update...", "");
 
-        #[cfg(target_os = "windows")]
+        #[cfg(all(target_os = "windows", not(test)))]
         spawn_update_script(&update_dir, &staged_exe)
             .map_err(|error| format!("Could not start updater: {error}"))?;
 
-        #[cfg(not(target_os = "windows"))]
+        #[cfg(any(not(target_os = "windows"), test))]
         {
-            // Stub/noop for testing on Linux
+            // Stub/noop for tests and non-Windows builds.
             let _ = update_dir;
             let _ = staged_exe;
         }
@@ -243,7 +243,7 @@ fn set_update_status(state: &AppState, running: bool, message: &str, error: &str
         }));
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", not(test)))]
 fn spawn_update_script(update_dir: &Path, staged_exe: &Path) -> std::io::Result<()> {
     use std::os::windows::process::CommandExt;
 
@@ -704,6 +704,15 @@ mod tests {
                         );
                         let _ = socket.write_all(resp.as_bytes()).await;
                     } else if req.contains("GET /download/rl-platform-overlay.exe.sha256") {
+                        let location = format!(
+                            "http://{addr_str_local}/redirected/rl-platform-overlay.exe.sha256"
+                        );
+                        let resp = format!(
+                            "HTTP/1.1 302 Found\r\nLocation: {}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                            location
+                        );
+                        let _ = socket.write_all(resp.as_bytes()).await;
+                    } else if req.contains("GET /redirected/rl-platform-overlay.exe.sha256") {
                         let body = format!("{}  rl-platform-overlay.exe\n", mock_exe_hash_local);
                         let resp = format!(
                             "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -712,6 +721,15 @@ mod tests {
                         );
                         let _ = socket.write_all(resp.as_bytes()).await;
                     } else if req.contains("GET /download/rl-platform-overlay.exe.sig") {
+                        let location = format!(
+                            "http://{addr_str_local}/redirected/rl-platform-overlay.exe.sig"
+                        );
+                        let resp = format!(
+                            "HTTP/1.1 302 Found\r\nLocation: {}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                            location
+                        );
+                        let _ = socket.write_all(resp.as_bytes()).await;
+                    } else if req.contains("GET /redirected/rl-platform-overlay.exe.sig") {
                         let body = format!("{}  rl-platform-overlay.exe\n", signature_b64_local);
                         let resp = format!(
                             "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -720,6 +738,14 @@ mod tests {
                         );
                         let _ = socket.write_all(resp.as_bytes()).await;
                     } else if req.contains("GET /download/rl-platform-overlay.exe") {
+                        let location =
+                            format!("http://{addr_str_local}/redirected/rl-platform-overlay.exe");
+                        let resp = format!(
+                            "HTTP/1.1 302 Found\r\nLocation: {}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                            location
+                        );
+                        let _ = socket.write_all(resp.as_bytes()).await;
+                    } else if req.contains("GET /redirected/rl-platform-overlay.exe") {
                         let resp = format!(
                             "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                             mock_exe_data_local.len()
