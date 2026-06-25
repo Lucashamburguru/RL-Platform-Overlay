@@ -449,9 +449,17 @@ pub fn parse_platform(id: &str) -> (String, bool) {
         ("Steam".to_string(), false)
     } else if platform.eq_ignore_ascii_case("epic") {
         ("Epic".to_string(), false)
-    } else if platform.eq_ignore_ascii_case("ps4") || platform.eq_ignore_ascii_case("ps5") || platform.eq_ignore_ascii_case("playstation") || platform.eq_ignore_ascii_case("psn") {
+    } else if platform.eq_ignore_ascii_case("ps4")
+        || platform.eq_ignore_ascii_case("ps5")
+        || platform.eq_ignore_ascii_case("playstation")
+        || platform.eq_ignore_ascii_case("psn")
+    {
         ("PSN".to_string(), false)
-    } else if platform.eq_ignore_ascii_case("xbox") || platform.eq_ignore_ascii_case("xboxone") || platform.eq_ignore_ascii_case("xboxseries") || platform.eq_ignore_ascii_case("xbl") {
+    } else if platform.eq_ignore_ascii_case("xbox")
+        || platform.eq_ignore_ascii_case("xboxone")
+        || platform.eq_ignore_ascii_case("xboxseries")
+        || platform.eq_ignore_ascii_case("xbl")
+    {
         ("Xbox".to_string(), false)
     } else if platform.eq_ignore_ascii_case("switch") || platform.eq_ignore_ascii_case("nintendo") {
         ("Switch".to_string(), false)
@@ -464,9 +472,17 @@ pub fn parse_platform(id: &str) -> (String, bool) {
 
 // ⚡ Bolt: Prevent string allocations during hot API parsing by using eq_ignore_ascii_case
 pub fn format_platform(platform: &str) -> &str {
-    if platform.eq_ignore_ascii_case("ps4") || platform.eq_ignore_ascii_case("ps5") || platform.eq_ignore_ascii_case("playstation") || platform.eq_ignore_ascii_case("psn") {
+    if platform.eq_ignore_ascii_case("ps4")
+        || platform.eq_ignore_ascii_case("ps5")
+        || platform.eq_ignore_ascii_case("playstation")
+        || platform.eq_ignore_ascii_case("psn")
+    {
         "PSN"
-    } else if platform.eq_ignore_ascii_case("xbox") || platform.eq_ignore_ascii_case("xboxone") || platform.eq_ignore_ascii_case("xboxseries") || platform.eq_ignore_ascii_case("xbl") {
+    } else if platform.eq_ignore_ascii_case("xbox")
+        || platform.eq_ignore_ascii_case("xboxone")
+        || platform.eq_ignore_ascii_case("xboxseries")
+        || platform.eq_ignore_ascii_case("xbl")
+    {
         "Xbox"
     } else if platform.eq_ignore_ascii_case("steam") {
         "Steam"

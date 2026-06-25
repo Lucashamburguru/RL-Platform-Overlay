@@ -714,7 +714,10 @@ fn contains_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
     if needle.is_empty() {
         return true;
     }
-    haystack.as_bytes().windows(needle.len()).any(|w| w.eq_ignore_ascii_case(needle.as_bytes()))
+    haystack
+        .as_bytes()
+        .windows(needle.len())
+        .any(|w| w.eq_ignore_ascii_case(needle.as_bytes()))
 }
 
 pub(super) fn render_platform_name(ui: &mut egui::Ui, platform: &str, size: f32) {
@@ -743,11 +746,17 @@ pub(super) fn render_platform_name(ui: &mut egui::Ui, platform: &str, size: f32)
         }
         ui.label(job);
     } else {
-        let color = if contains_ignore_ascii_case(normalized, "xbox") || contains_ignore_ascii_case(normalized, "xbl") {
+        let color = if contains_ignore_ascii_case(normalized, "xbox")
+            || contains_ignore_ascii_case(normalized, "xbl")
+        {
             egui::Color32::from_rgb(30, 200, 80) // Xbox Green
-        } else if contains_ignore_ascii_case(normalized, "playstation") || contains_ignore_ascii_case(normalized, "ps") {
+        } else if contains_ignore_ascii_case(normalized, "playstation")
+            || contains_ignore_ascii_case(normalized, "ps")
+        {
             egui::Color32::from_rgb(41, 140, 255) // PSN Blue
-        } else if contains_ignore_ascii_case(normalized, "switch") || contains_ignore_ascii_case(normalized, "nintendo") {
+        } else if contains_ignore_ascii_case(normalized, "switch")
+            || contains_ignore_ascii_case(normalized, "nintendo")
+        {
             egui::Color32::from_rgb(255, 65, 80) // Switch Red
         } else {
             egui::Color32::from_gray(160) // Steam / Default stays gray
@@ -877,29 +886,83 @@ fn best_rank(mmr: Option<&TrackerSnapshot>) -> Option<(String, i32)> {
 // ⚡ Bolt: Use zero-allocation eq_ignore_ascii_case checks rather than to_lowercase() to prevent string allocations per frame
 pub(super) fn rank_icon(rank: &str) -> Option<egui::ImageSource<'static>> {
     let r = rank.trim();
-    if r.eq_ignore_ascii_case("bronze i") { return Some(egui::include_image!("../../assets/ranks/bronze_1.png")); }
-    if r.eq_ignore_ascii_case("bronze ii") { return Some(egui::include_image!("../../assets/ranks/bronze_2.png")); }
-    if r.eq_ignore_ascii_case("bronze iii") { return Some(egui::include_image!("../../assets/ranks/bronze_3.png")); }
-    if r.eq_ignore_ascii_case("silver i") { return Some(egui::include_image!("../../assets/ranks/silver_1.png")); }
-    if r.eq_ignore_ascii_case("silver ii") { return Some(egui::include_image!("../../assets/ranks/silver_2.png")); }
-    if r.eq_ignore_ascii_case("silver iii") { return Some(egui::include_image!("../../assets/ranks/silver_3.png")); }
-    if r.eq_ignore_ascii_case("gold i") { return Some(egui::include_image!("../../assets/ranks/gold_1.png")); }
-    if r.eq_ignore_ascii_case("gold ii") { return Some(egui::include_image!("../../assets/ranks/gold_2.png")); }
-    if r.eq_ignore_ascii_case("gold iii") { return Some(egui::include_image!("../../assets/ranks/gold_3.png")); }
-    if r.eq_ignore_ascii_case("platinum i") { return Some(egui::include_image!("../../assets/ranks/platinum_1.png")); }
-    if r.eq_ignore_ascii_case("platinum ii") { return Some(egui::include_image!("../../assets/ranks/platinum_2.png")); }
-    if r.eq_ignore_ascii_case("platinum iii") { return Some(egui::include_image!("../../assets/ranks/platinum_3.png")); }
-    if r.eq_ignore_ascii_case("diamond i") { return Some(egui::include_image!("../../assets/ranks/diamond_1.png")); }
-    if r.eq_ignore_ascii_case("diamond ii") { return Some(egui::include_image!("../../assets/ranks/diamond_2.png")); }
-    if r.eq_ignore_ascii_case("diamond iii") { return Some(egui::include_image!("../../assets/ranks/diamond_3.png")); }
-    if r.eq_ignore_ascii_case("champion i") { return Some(egui::include_image!("../../assets/ranks/champion_1.png")); }
-    if r.eq_ignore_ascii_case("champion ii") { return Some(egui::include_image!("../../assets/ranks/champion_2.png")); }
-    if r.eq_ignore_ascii_case("champion iii") { return Some(egui::include_image!("../../assets/ranks/champion_3.png")); }
-    if r.eq_ignore_ascii_case("grand champion i") { return Some(egui::include_image!("../../assets/ranks/grand_champion_1.png")); }
-    if r.eq_ignore_ascii_case("grand champion ii") { return Some(egui::include_image!("../../assets/ranks/grand_champion_2.png")); }
-    if r.eq_ignore_ascii_case("grand champion iii") { return Some(egui::include_image!("../../assets/ranks/grand_champion_3.png")); }
-    if r.eq_ignore_ascii_case("supersonic legend") { return Some(egui::include_image!("../../assets/ranks/supersonic_legend.png")); }
-    if r.eq_ignore_ascii_case("unranked") { return Some(egui::include_image!("../../assets/ranks/unranked.png")); }
+    if r.eq_ignore_ascii_case("bronze i") {
+        return Some(egui::include_image!("../../assets/ranks/bronze_1.png"));
+    }
+    if r.eq_ignore_ascii_case("bronze ii") {
+        return Some(egui::include_image!("../../assets/ranks/bronze_2.png"));
+    }
+    if r.eq_ignore_ascii_case("bronze iii") {
+        return Some(egui::include_image!("../../assets/ranks/bronze_3.png"));
+    }
+    if r.eq_ignore_ascii_case("silver i") {
+        return Some(egui::include_image!("../../assets/ranks/silver_1.png"));
+    }
+    if r.eq_ignore_ascii_case("silver ii") {
+        return Some(egui::include_image!("../../assets/ranks/silver_2.png"));
+    }
+    if r.eq_ignore_ascii_case("silver iii") {
+        return Some(egui::include_image!("../../assets/ranks/silver_3.png"));
+    }
+    if r.eq_ignore_ascii_case("gold i") {
+        return Some(egui::include_image!("../../assets/ranks/gold_1.png"));
+    }
+    if r.eq_ignore_ascii_case("gold ii") {
+        return Some(egui::include_image!("../../assets/ranks/gold_2.png"));
+    }
+    if r.eq_ignore_ascii_case("gold iii") {
+        return Some(egui::include_image!("../../assets/ranks/gold_3.png"));
+    }
+    if r.eq_ignore_ascii_case("platinum i") {
+        return Some(egui::include_image!("../../assets/ranks/platinum_1.png"));
+    }
+    if r.eq_ignore_ascii_case("platinum ii") {
+        return Some(egui::include_image!("../../assets/ranks/platinum_2.png"));
+    }
+    if r.eq_ignore_ascii_case("platinum iii") {
+        return Some(egui::include_image!("../../assets/ranks/platinum_3.png"));
+    }
+    if r.eq_ignore_ascii_case("diamond i") {
+        return Some(egui::include_image!("../../assets/ranks/diamond_1.png"));
+    }
+    if r.eq_ignore_ascii_case("diamond ii") {
+        return Some(egui::include_image!("../../assets/ranks/diamond_2.png"));
+    }
+    if r.eq_ignore_ascii_case("diamond iii") {
+        return Some(egui::include_image!("../../assets/ranks/diamond_3.png"));
+    }
+    if r.eq_ignore_ascii_case("champion i") {
+        return Some(egui::include_image!("../../assets/ranks/champion_1.png"));
+    }
+    if r.eq_ignore_ascii_case("champion ii") {
+        return Some(egui::include_image!("../../assets/ranks/champion_2.png"));
+    }
+    if r.eq_ignore_ascii_case("champion iii") {
+        return Some(egui::include_image!("../../assets/ranks/champion_3.png"));
+    }
+    if r.eq_ignore_ascii_case("grand champion i") {
+        return Some(egui::include_image!(
+            "../../assets/ranks/grand_champion_1.png"
+        ));
+    }
+    if r.eq_ignore_ascii_case("grand champion ii") {
+        return Some(egui::include_image!(
+            "../../assets/ranks/grand_champion_2.png"
+        ));
+    }
+    if r.eq_ignore_ascii_case("grand champion iii") {
+        return Some(egui::include_image!(
+            "../../assets/ranks/grand_champion_3.png"
+        ));
+    }
+    if r.eq_ignore_ascii_case("supersonic legend") {
+        return Some(egui::include_image!(
+            "../../assets/ranks/supersonic_legend.png"
+        ));
+    }
+    if r.eq_ignore_ascii_case("unranked") {
+        return Some(egui::include_image!("../../assets/ranks/unranked.png"));
+    }
     None
 }
 
@@ -963,11 +1026,17 @@ pub(super) fn platform_icon_for(platform: &str, is_bot: bool) -> egui::ImageSour
         egui::include_image!("../../assets/steam.png")
     } else if contains_ignore_ascii_case(platform, "epic") {
         egui::include_image!("../../assets/epic.png")
-    } else if contains_ignore_ascii_case(platform, "xbox") || contains_ignore_ascii_case(platform, "xbl") {
+    } else if contains_ignore_ascii_case(platform, "xbox")
+        || contains_ignore_ascii_case(platform, "xbl")
+    {
         egui::include_image!("../../assets/xbox.png")
-    } else if contains_ignore_ascii_case(platform, "playstation") || contains_ignore_ascii_case(platform, "ps") {
+    } else if contains_ignore_ascii_case(platform, "playstation")
+        || contains_ignore_ascii_case(platform, "ps")
+    {
         egui::include_image!("../../assets/ps.png")
-    } else if contains_ignore_ascii_case(platform, "switch") || contains_ignore_ascii_case(platform, "nintendo") {
+    } else if contains_ignore_ascii_case(platform, "switch")
+        || contains_ignore_ascii_case(platform, "nintendo")
+    {
         egui::include_image!("../../assets/switch.png")
     } else {
         egui::include_image!("../../assets/bot.png")
