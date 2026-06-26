@@ -473,9 +473,7 @@ pub fn format_platform(platform: &str) -> &str {
         "Steam"
     } else if platform.eq_ignore_ascii_case("epic") {
         "Epic"
-    } else if platform.eq_ignore_ascii_case("switch")
-        || platform.eq_ignore_ascii_case("nintendo")
-    {
+    } else if platform.eq_ignore_ascii_case("switch") || platform.eq_ignore_ascii_case("nintendo") {
         "Switch"
     } else if platform.eq_ignore_ascii_case("bot") {
         "BOT"

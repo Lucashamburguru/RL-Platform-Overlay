@@ -714,9 +714,16 @@ fn render_history_badge(
 // allocating strings via `.to_lowercase()` inside `egui` render loops.
 fn contains_ignore_ascii_case_zero_alloc(haystack: &str, needle: &str) -> bool {
     let needle_len = needle.len();
-    if needle_len == 0 { return true; }
-    if haystack.len() < needle_len { return false; }
-    haystack.as_bytes().windows(needle_len).any(|w| w.eq_ignore_ascii_case(needle.as_bytes()))
+    if needle_len == 0 {
+        return true;
+    }
+    if haystack.len() < needle_len {
+        return false;
+    }
+    haystack
+        .as_bytes()
+        .windows(needle_len)
+        .any(|w| w.eq_ignore_ascii_case(needle.as_bytes()))
 }
 
 pub(super) fn render_platform_name(ui: &mut egui::Ui, platform: &str, size: f32) {
@@ -745,11 +752,17 @@ pub(super) fn render_platform_name(ui: &mut egui::Ui, platform: &str, size: f32)
         }
         ui.label(job);
     } else {
-        let color = if contains_ignore_ascii_case_zero_alloc(normalized, "xbox") || contains_ignore_ascii_case_zero_alloc(normalized, "xbl") {
+        let color = if contains_ignore_ascii_case_zero_alloc(normalized, "xbox")
+            || contains_ignore_ascii_case_zero_alloc(normalized, "xbl")
+        {
             egui::Color32::from_rgb(30, 200, 80) // Xbox Green
-        } else if contains_ignore_ascii_case_zero_alloc(normalized, "playstation") || contains_ignore_ascii_case_zero_alloc(normalized, "ps") {
+        } else if contains_ignore_ascii_case_zero_alloc(normalized, "playstation")
+            || contains_ignore_ascii_case_zero_alloc(normalized, "ps")
+        {
             egui::Color32::from_rgb(41, 140, 255) // PSN Blue
-        } else if contains_ignore_ascii_case_zero_alloc(normalized, "switch") || contains_ignore_ascii_case_zero_alloc(normalized, "nintendo") {
+        } else if contains_ignore_ascii_case_zero_alloc(normalized, "switch")
+            || contains_ignore_ascii_case_zero_alloc(normalized, "nintendo")
+        {
             egui::Color32::from_rgb(255, 65, 80) // Switch Red
         } else {
             egui::Color32::from_gray(160) // Steam / Default stays gray
@@ -973,11 +986,17 @@ pub(super) fn platform_icon_for(platform: &str, is_bot: bool) -> egui::ImageSour
         egui::include_image!("../../assets/steam.png")
     } else if contains_ignore_ascii_case_zero_alloc(platform, "epic") {
         egui::include_image!("../../assets/epic.png")
-    } else if contains_ignore_ascii_case_zero_alloc(platform, "xbox") || contains_ignore_ascii_case_zero_alloc(platform, "xbl") {
+    } else if contains_ignore_ascii_case_zero_alloc(platform, "xbox")
+        || contains_ignore_ascii_case_zero_alloc(platform, "xbl")
+    {
         egui::include_image!("../../assets/xbox.png")
-    } else if contains_ignore_ascii_case_zero_alloc(platform, "playstation") || contains_ignore_ascii_case_zero_alloc(platform, "ps") {
+    } else if contains_ignore_ascii_case_zero_alloc(platform, "playstation")
+        || contains_ignore_ascii_case_zero_alloc(platform, "ps")
+    {
         egui::include_image!("../../assets/ps.png")
-    } else if contains_ignore_ascii_case_zero_alloc(platform, "switch") || contains_ignore_ascii_case_zero_alloc(platform, "nintendo") {
+    } else if contains_ignore_ascii_case_zero_alloc(platform, "switch")
+        || contains_ignore_ascii_case_zero_alloc(platform, "nintendo")
+    {
         egui::include_image!("../../assets/switch.png")
     } else {
         egui::include_image!("../../assets/bot.png")
