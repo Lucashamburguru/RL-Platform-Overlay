@@ -114,17 +114,32 @@ pub(super) fn render_local_mmr_panel(
 }
 
 fn ranked_playlist_sort_priority(playlist_id: i32, playlist_name: &str) -> i32 {
-    let name = playlist_name.to_lowercase();
-    if playlist_id == 10 || name.contains("duel") || name.contains("1v1") {
+    let bytes = playlist_name.as_bytes();
+    if playlist_id == 10
+        || bytes.windows(4).any(|w| w.eq_ignore_ascii_case(b"duel"))
+        || bytes.windows(3).any(|w| w.eq_ignore_ascii_case(b"1v1"))
+    {
         0
-    } else if playlist_id == 11 || name.contains("doubles") || name.contains("2v2") {
+    } else if playlist_id == 11
+        || bytes.windows(7).any(|w| w.eq_ignore_ascii_case(b"doubles"))
+        || bytes.windows(3).any(|w| w.eq_ignore_ascii_case(b"2v2"))
+    {
         1
-    } else if playlist_id == 13 || name.contains("standard") || name.contains("3v3") {
+    } else if playlist_id == 13
+        || bytes
+            .windows(8)
+            .any(|w| w.eq_ignore_ascii_case(b"standard"))
+        || bytes.windows(3).any(|w| w.eq_ignore_ascii_case(b"3v3"))
+    {
         2
     } else if playlist_id == 0
-        || name.contains("unranked")
-        || name.contains("un-ranked")
-        || name.contains("casual")
+        || bytes
+            .windows(8)
+            .any(|w| w.eq_ignore_ascii_case(b"unranked"))
+        || bytes
+            .windows(9)
+            .any(|w| w.eq_ignore_ascii_case(b"un-ranked"))
+        || bytes.windows(6).any(|w| w.eq_ignore_ascii_case(b"casual"))
     {
         3
     } else {
@@ -133,14 +148,29 @@ fn ranked_playlist_sort_priority(playlist_id: i32, playlist_name: &str) -> i32 {
 }
 
 fn compact_playlist_name(playlist_name: &str) -> String {
-    let name = playlist_name.to_lowercase();
-    if name.contains("duel") || name.contains("1v1") {
+    let bytes = playlist_name.as_bytes();
+    if bytes.windows(4).any(|w| w.eq_ignore_ascii_case(b"duel"))
+        || bytes.windows(3).any(|w| w.eq_ignore_ascii_case(b"1v1"))
+    {
         "1v1".to_string()
-    } else if name.contains("doubles") || name.contains("2v2") {
+    } else if bytes.windows(7).any(|w| w.eq_ignore_ascii_case(b"doubles"))
+        || bytes.windows(3).any(|w| w.eq_ignore_ascii_case(b"2v2"))
+    {
         "2v2".to_string()
-    } else if name.contains("standard") || name.contains("3v3") {
+    } else if bytes
+        .windows(8)
+        .any(|w| w.eq_ignore_ascii_case(b"standard"))
+        || bytes.windows(3).any(|w| w.eq_ignore_ascii_case(b"3v3"))
+    {
         "3v3".to_string()
-    } else if name.contains("unranked") || name.contains("un-ranked") || name.contains("casual") {
+    } else if bytes
+        .windows(8)
+        .any(|w| w.eq_ignore_ascii_case(b"unranked"))
+        || bytes
+            .windows(9)
+            .any(|w| w.eq_ignore_ascii_case(b"un-ranked"))
+        || bytes.windows(6).any(|w| w.eq_ignore_ascii_case(b"casual"))
+    {
         "Casual".to_string()
     } else {
         playlist_name
