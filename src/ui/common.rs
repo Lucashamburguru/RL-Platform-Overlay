@@ -98,3 +98,13 @@ pub(super) fn status_text(ui: &mut egui::Ui, tone: StatusTone, text: impl Into<S
             .color(status_color(tone)),
     );
 }
+
+pub(crate) fn contains_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    haystack
+        .as_bytes()
+        .windows(needle.len())
+        .any(|w| w.eq_ignore_ascii_case(needle.as_bytes()))
+}
