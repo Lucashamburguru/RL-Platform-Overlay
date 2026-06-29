@@ -649,7 +649,16 @@ mod tests {
         let signature_b64 = BASE64.encode(signature_bytes);
 
         // 3. Bind TCP listener on a dynamic port for our mock HTTP server
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let listener = match TcpListener::bind("127.0.0.1:0").await {
+            Ok(listener) => listener,
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+                eprintln!(
+                    "Skipping auto-update integration test: loopback TCP bind is not permitted"
+                );
+                return;
+            }
+            Err(error) => panic!("Failed to bind mock update server: {error}"),
+        };
         let addr = listener.local_addr().unwrap();
         let addr_str = addr.to_string();
 

@@ -11,6 +11,8 @@ pub(crate) fn render_replays_settings_tab(
     changed: &mut bool,
     confirm_modal: &mut Option<crate::ui::app::ConfirmAction>,
 ) {
+    crate::replays::maybe_start_initial_replay_cache_sync(state);
+
     settings_section(ui, "Ballchasing.com Replay Uploader", |ui| {
         if ui
             .checkbox(&mut config_edit.ballchasing_enabled, "Enable Auto-Upload")
@@ -236,6 +238,7 @@ pub(crate) fn render_replays_settings_tab(
             let progress = state.replays.upload_progress.load();
             let bulk_running = progress.running;
             let bulk_paused = progress.paused;
+            let sync_running = state.replays.sync_running.load(Ordering::SeqCst);
 
             // Upload Existing
             let upload_btn = ui.add_enabled(
@@ -258,8 +261,12 @@ pub(crate) fn render_replays_settings_tab(
 
             // Sync Cache
             let sync_btn = ui.add_enabled(
-                !api_key_empty && !bulk_running,
-                egui::Button::new("Sync Uploaded Cache"),
+                !api_key_empty && !bulk_running && !sync_running,
+                egui::Button::new(if sync_running {
+                    "Syncing Uploaded Cache..."
+                } else {
+                    "Sync Uploaded Cache"
+                }),
             );
             if sync_btn.clicked() {
                 crate::replays::start_sync_replays_task(state.clone());

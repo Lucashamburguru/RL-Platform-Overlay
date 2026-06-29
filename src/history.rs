@@ -225,8 +225,11 @@ pub fn refresh_lobby_history(state: &Arc<AppState>) {
     drop(config);
 
     let players = state.game.players.load();
+    let local_identity = state.game.local_player_identity.load();
+    let local_player_name = state.game.local_player_name.load();
     let keys: Vec<String> = players
         .values()
+        .filter(|player| !is_local_history_player(player, &local_identity, &local_player_name))
         .filter_map(player_key)
         .map(|key| key.0)
         .collect();
@@ -247,6 +250,38 @@ pub fn refresh_lobby_history(state: &Arc<AppState>) {
     } else {
         run();
     }
+}
+
+fn is_local_history_player(
+    player: &PlayerInfo,
+    local_identity: &crate::state::LocalPlayerIdentity,
+    local_player_name: &str,
+) -> bool {
+    if player.is_local {
+        return true;
+    }
+
+    let player_name = player.name.trim();
+    if !local_player_name.trim().is_empty()
+        && player_name.eq_ignore_ascii_case(local_player_name.trim())
+    {
+        return true;
+    }
+
+    if !local_identity.is_known() {
+        return false;
+    }
+
+    let same_account = !player.primary_id.trim().is_empty()
+        && !player.platform.trim().is_empty()
+        && local_identity
+            .primary_id
+            .eq_ignore_ascii_case(player.primary_id.trim())
+        && local_identity
+            .platform
+            .eq_ignore_ascii_case(player.platform.trim());
+
+    same_account || player_name.eq_ignore_ascii_case(local_identity.name.trim())
 }
 
 pub fn refresh_totals(state: &Arc<AppState>) {
@@ -869,6 +904,50 @@ mod tests {
         assert!(player_key(&bot).is_none());
         assert!(player_key(&unknown).is_none());
         assert_eq!(player_key(&human).unwrap().as_str(), "steam:steam|abc|0");
+    }
+
+    #[test]
+    fn local_history_player_matches_flag_identity_or_local_name() {
+        let identity = crate::state::LocalPlayerIdentity {
+            name: "CachedName".to_string(),
+            primary_id: "Steam|123|0".to_string(),
+            platform: "Steam".to_string(),
+        };
+        let local_by_flag = PlayerInfo {
+            is_local: true,
+            ..PlayerInfo::default()
+        };
+        let local_by_identity = PlayerInfo {
+            name: "Renamed".to_string(),
+            primary_id: "steam|123|0".to_string(),
+            platform: "steam".to_string(),
+            ..Default::default()
+        };
+        let local_by_name = PlayerInfo {
+            name: "CurrentName".to_string(),
+            primary_id: "Epic|999|0".to_string(),
+            platform: "Epic".to_string(),
+            ..Default::default()
+        };
+        let opponent = PlayerInfo {
+            name: "Opponent".to_string(),
+            primary_id: "Steam|999|0".to_string(),
+            platform: "Steam".to_string(),
+            ..Default::default()
+        };
+
+        assert!(is_local_history_player(&local_by_flag, &identity, ""));
+        assert!(is_local_history_player(&local_by_identity, &identity, ""));
+        assert!(is_local_history_player(
+            &local_by_name,
+            &crate::state::LocalPlayerIdentity::default(),
+            "currentname"
+        ));
+        assert!(!is_local_history_player(
+            &opponent,
+            &identity,
+            "CurrentName"
+        ));
     }
 
     #[test]

@@ -152,6 +152,22 @@ pub(crate) fn render_overlay_settings_tab(
             });
 
             right.add_space(8.0);
+            setting_row(right, "Touch Counters", |ui| {
+                if ui
+                    .checkbox(
+                        &mut config_edit.debounce_touch_counters,
+                        "Debounce duplicate touches",
+                    )
+                    .on_hover_text(
+                        "Filters rapid duplicate touch increments before they appear in overlays, dashboard, and history. Ball touches use 200ms; car touches use 450ms.",
+                    )
+                    .changed()
+                {
+                    *changed = true;
+                }
+            });
+
+            right.add_space(8.0);
             setting_row(right, "Matches", |ui| {
                 if ui
                     .checkbox(&mut config_edit.show_lobby_matches, "Show Match Counts")
@@ -212,6 +228,7 @@ pub(crate) fn render_overlay_settings_tab(
         let preview = preview_lobby_players(state);
         let session = state.game.session.load();
         let local_identity = state.game.local_player_identity.load();
+        let local_player_name = state.game.local_player_name.load();
         let local_mmr = state.mmr.local_mmr.load();
         draw_lobby_panel(
             ui,
@@ -219,6 +236,7 @@ pub(crate) fn render_overlay_settings_tab(
             config_edit,
             true,
             Some(&local_identity),
+            Some(local_player_name.as_str()),
             local_mmr.current.as_ref(),
             session.active_mode,
             None,

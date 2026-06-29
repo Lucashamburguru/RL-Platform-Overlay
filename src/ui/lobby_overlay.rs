@@ -200,6 +200,7 @@ pub(super) fn render_overlay(ctx: &egui::Context, state: &Arc<AppState>) {
             players.values().cloned().collect()
         };
         let local_identity = state.game.local_player_identity.load();
+        let local_player_name = state.game.local_player_name.load();
         let local_mmr = state.mmr.local_mmr.load();
         let session = state.game.session.load();
         let history_summaries = state.history.player_summaries.load();
@@ -209,6 +210,7 @@ pub(super) fn render_overlay(ctx: &egui::Context, state: &Arc<AppState>) {
             &config,
             state.flags.is_connected.load(Ordering::SeqCst),
             Some(&local_identity),
+            Some(local_player_name.as_str()),
             local_mmr.current.as_ref(),
             session.active_mode,
             Some(&history_summaries),
@@ -235,6 +237,7 @@ pub(super) fn draw_lobby_panel(
     config: &crate::state::Config,
     is_connected: bool,
     local_identity: Option<&LocalPlayerIdentity>,
+    local_player_name: Option<&str>,
     local_mmr: Option<&TrackerSnapshot>,
     session_mode: SessionMode,
     history_summaries: Option<&HashMap<String, crate::history::PlayerHistorySummary>>,
@@ -309,8 +312,10 @@ pub(super) fn draw_lobby_panel(
                 .filter(|p| config.show_bots || !p.is_bot)
                 .collect();
             sorted_players.sort_by(|a, b| {
-                let a_local = is_local_lobby_player(a, local_identity, player_count);
-                let b_local = is_local_lobby_player(b, local_identity, player_count);
+                let a_local =
+                    is_local_lobby_player(a, local_identity, local_player_name, player_count);
+                let b_local =
+                    is_local_lobby_player(b, local_identity, local_player_name, player_count);
                 a.team
                     .cmp(&b.team)
                     .then_with(|| b_local.cmp(&a_local))
@@ -349,6 +354,7 @@ pub(super) fn draw_lobby_panel(
                         scale,
                         content_width,
                         local_identity,
+                        local_player_name,
                         local_mmr,
                         player_count,
                         session_mode,
@@ -385,13 +391,14 @@ fn render_lobby_player_row(
     scale: f32,
     content_width: f32,
     local_identity: Option<&LocalPlayerIdentity>,
+    local_player_name: Option<&str>,
     local_mmr: Option<&TrackerSnapshot>,
     player_count: usize,
     session_mode: SessionMode,
     history_summaries: Option<&HashMap<String, crate::history::PlayerHistorySummary>>,
 ) {
     let team_color = team_color(player.team);
-    let is_local = is_local_lobby_player(player, local_identity, player_count);
+    let is_local = is_local_lobby_player(player, local_identity, local_player_name, player_count);
     let mmr = player
         .mmr
         .as_ref()
@@ -735,17 +742,23 @@ pub(super) fn render_platform_name(ui: &mut egui::Ui, platform: &str, size: f32)
         }
         ui.label(job);
     } else {
-        let color = if normalized == "Xbox" {
-            egui::Color32::from_rgb(30, 200, 80) // Xbox Green
-        } else if normalized == "PSN" {
-            egui::Color32::from_rgb(41, 140, 255) // PSN Blue
-        } else if normalized == "Switch" {
-            egui::Color32::from_rgb(255, 65, 80) // Switch Red
-        } else {
-            egui::Color32::from_gray(160) // Steam / Default stays gray
-        };
+        let color = platform_name_color(normalized);
 
         ui.label(egui::RichText::new(normalized).size(size).color(color));
+    }
+}
+
+fn platform_name_color(normalized_platform: &str) -> egui::Color32 {
+    if normalized_platform == "Steam" {
+        egui::Color32::from_rgb(245, 247, 250)
+    } else if normalized_platform == "Xbox" {
+        egui::Color32::from_rgb(30, 200, 80)
+    } else if normalized_platform == "PSN" {
+        egui::Color32::from_rgb(41, 140, 255)
+    } else if normalized_platform == "Switch" {
+        egui::Color32::from_rgb(255, 65, 80)
+    } else {
+        egui::Color32::from_gray(150)
     }
 }
 
@@ -910,12 +923,22 @@ fn should_fetch_rank(player: &PlayerInfo) -> bool {
         && !player.platform.eq_ignore_ascii_case("unknown")
 }
 
-fn is_local_lobby_player(
+pub(super) fn is_local_lobby_player(
     player: &PlayerInfo,
     local_identity: Option<&LocalPlayerIdentity>,
+    local_player_name: Option<&str>,
     player_count: usize,
 ) -> bool {
     if player.is_local || (player_count == 1 && !player.is_bot) {
+        return true;
+    }
+    if let Some(local_player_name) = local_player_name
+        && !local_player_name.trim().is_empty()
+        && player
+            .name
+            .trim()
+            .eq_ignore_ascii_case(local_player_name.trim())
+    {
         return true;
     }
     let Some(identity) = local_identity else {
@@ -1003,7 +1026,7 @@ mod tests {
             ..player("Someone", "Epic|2|0", "Epic")
         };
 
-        assert!(is_local_lobby_player(&player, None, 2));
+        assert!(is_local_lobby_player(&player, None, None, 2));
     }
 
     #[test]
@@ -1011,7 +1034,7 @@ mod tests {
         let identity = identity();
         let player = player("Renamed", "steam|123|0", "steam");
 
-        assert!(is_local_lobby_player(&player, Some(&identity), 2));
+        assert!(is_local_lobby_player(&player, Some(&identity), None, 2));
     }
 
     #[test]
@@ -1019,7 +1042,19 @@ mod tests {
         let identity = identity();
         let player = player("cachedname", "Unknown|0|0", "Unknown");
 
-        assert!(is_local_lobby_player(&player, Some(&identity), 2));
+        assert!(is_local_lobby_player(&player, Some(&identity), None, 2));
+    }
+
+    #[test]
+    fn local_player_name_marks_lobby_player_local_without_cached_identity() {
+        let player = player("cachedname", "Steam|123|0", "Steam");
+
+        assert!(is_local_lobby_player(
+            &player,
+            Some(&LocalPlayerIdentity::default()),
+            Some("CachedName"),
+            2
+        ));
     }
 
     #[test]
@@ -1027,19 +1062,31 @@ mod tests {
         let identity = identity();
         let player = player("Opponent", "Steam|999|0", "Steam");
 
-        assert!(!is_local_lobby_player(&player, Some(&identity), 2));
+        assert!(!is_local_lobby_player(&player, Some(&identity), None, 2));
     }
 
     #[test]
     fn single_player_lobby_marks_player_local() {
         let p = player("Player", "Unknown|0|0", "Unknown");
-        assert!(is_local_lobby_player(&p, None, 1));
+        assert!(is_local_lobby_player(&p, None, None, 1));
 
         let bot = PlayerInfo {
             is_bot: true,
             ..player("Bot", "Unknown|0|0", "Unknown")
         };
-        assert!(!is_local_lobby_player(&bot, None, 1));
+        assert!(!is_local_lobby_player(&bot, None, None, 1));
+    }
+
+    #[test]
+    fn platform_name_color_gives_steam_silver_not_default_gray() {
+        assert_eq!(
+            platform_name_color("Steam"),
+            egui::Color32::from_rgb(245, 247, 250)
+        );
+        assert_eq!(
+            platform_name_color("Unknown"),
+            egui::Color32::from_gray(150)
+        );
     }
 
     #[test]

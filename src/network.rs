@@ -1,5 +1,5 @@
 use crate::session::SessionMode;
-use crate::state::{AppState, DashboardMatchSnapshot, PlayerInfo};
+use crate::state::{AppState, DashboardMatchSnapshot, PlayerInfo, TouchCounterDebounce};
 use crate::stats_api::{StatsApiTransport, TcpJsonSplitter};
 use crate::stats_api_parser::{
     RosterSignature, StatsApiEvent, StatsApiParseContext, parse_stats_api_event,
@@ -15,6 +15,9 @@ use tokio_tungstenite::connect_async;
 
 fn clear_lobby_state(state: &AppState) {
     state.game.players.store(Arc::new(HashMap::new()));
+    if let Ok(mut debounce) = state.game.touch_counter_debounce.lock() {
+        debounce.clear();
+    }
     state.game.match_roster.store(Arc::new(HashMap::new()));
     state.game.match_roster_guid.store(Arc::new(String::new()));
     state.game.local_player_name.store(Arc::new("".to_string()));
@@ -291,11 +294,19 @@ fn handle_update_state(state: &Arc<AppState>, parsed_event: &StatsApiEvent) {
     if !parsed_event.players.is_empty() {
         // println!("State Updated: {} players in lobby", new_players.len());
     }
-    let roster_changed = store_players_preserving_mmr(state, parsed_event.players.clone());
-    update_match_roster(state, parsed_event);
+    let mut players = parsed_event.players.clone();
+    if state.system.config.load().debounce_touch_counters {
+        debounce_touch_counters(state, &mut players, std::time::Instant::now());
+    }
+    let roster_changed = store_players_preserving_mmr(state, players.clone());
+    let parsed_event = StatsApiEvent {
+        players,
+        ..parsed_event.clone()
+    };
+    update_match_roster(state, &parsed_event);
 
-    update_session_from_event(state, parsed_event, roster_changed);
-    update_dashboard_match_snapshot(state, parsed_event);
+    update_session_from_event(state, &parsed_event, roster_changed);
+    update_dashboard_match_snapshot(state, &parsed_event);
 }
 
 fn update_match_roster(state: &Arc<AppState>, parsed_event: &StatsApiEvent) {
@@ -393,6 +404,87 @@ fn store_players_preserving_mmr(
         crate::history::refresh_lobby_history(state);
     }
     history_roster_changed
+}
+
+const BALL_TOUCH_DEBOUNCE_MS: u64 = 200;
+const CAR_TOUCH_DEBOUNCE_MS: u64 = 450;
+
+fn debounce_touch_counters(
+    state: &Arc<AppState>,
+    players: &mut HashMap<String, PlayerInfo>,
+    now: std::time::Instant,
+) {
+    let Ok(mut debounce) = state.game.touch_counter_debounce.lock() else {
+        return;
+    };
+    debounce.retain(|key, _| {
+        players
+            .values()
+            .any(|player| touch_debounce_key(player) == *key)
+    });
+
+    for player in players.values_mut() {
+        let key = touch_debounce_key(player);
+        let entry = match debounce.entry(key) {
+            std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                let mut state = TouchCounterDebounce::new(player);
+                if state.accepted_touches > 0 {
+                    state.last_touch_increment_at = Some(now);
+                }
+                if state.accepted_car_touches > 0 {
+                    state.last_car_touch_increment_at = Some(now);
+                }
+                entry.insert(state)
+            }
+        };
+
+        player.touches = debounced_touch_value(
+            player.touches,
+            &mut entry.accepted_touches,
+            &mut entry.last_touch_increment_at,
+            std::time::Duration::from_millis(BALL_TOUCH_DEBOUNCE_MS),
+            now,
+        );
+        player.car_touches = debounced_touch_value(
+            player.car_touches,
+            &mut entry.accepted_car_touches,
+            &mut entry.last_car_touch_increment_at,
+            std::time::Duration::from_millis(CAR_TOUCH_DEBOUNCE_MS),
+            now,
+        );
+    }
+}
+
+fn debounced_touch_value(
+    raw_value: u32,
+    accepted_value: &mut u32,
+    last_increment_at: &mut Option<std::time::Instant>,
+    debounce_window: std::time::Duration,
+    now: std::time::Instant,
+) -> u32 {
+    if raw_value < *accepted_value {
+        *accepted_value = raw_value;
+        *last_increment_at = None;
+        return raw_value;
+    }
+    if raw_value == *accepted_value {
+        return raw_value;
+    }
+
+    if last_increment_at.is_some_and(|last| now.duration_since(last) < debounce_window) {
+        return *accepted_value;
+    }
+
+    *accepted_value = raw_value;
+    *last_increment_at = Some(now);
+    raw_value
+}
+
+fn touch_debounce_key(player: &PlayerInfo) -> String {
+    crate::history::player_key(player)
+        .map(|key| key.as_str().to_string())
+        .unwrap_or_else(|| player.name.trim().to_ascii_lowercase())
 }
 
 fn update_session_from_event(
@@ -714,6 +806,85 @@ mod tests {
         let preserved = players["Opponent"].mmr.as_ref().unwrap();
         assert_eq!(preserved.playlists[&13].rating, 1234);
         assert_eq!(players["Opponent"].boost, 80);
+    }
+
+    #[test]
+    fn touch_counter_debounce_suppresses_rapid_duplicate_increments() {
+        let state = AppState::new();
+        let start = std::time::Instant::now();
+        let mut players = HashMap::new();
+        players.insert(
+            "Me".to_string(),
+            PlayerInfo {
+                name: "Me".to_string(),
+                primary_id: "Steam|1|0".to_string(),
+                platform: "Steam".to_string(),
+                touches: 1,
+                car_touches: 1,
+                ..Default::default()
+            },
+        );
+        debounce_touch_counters(&state, &mut players, start);
+        assert_eq!(players["Me"].touches, 1);
+        assert_eq!(players["Me"].car_touches, 1);
+
+        players.get_mut("Me").unwrap().touches = 2;
+        players.get_mut("Me").unwrap().car_touches = 2;
+        debounce_touch_counters(
+            &state,
+            &mut players,
+            start + std::time::Duration::from_millis(199),
+        );
+        assert_eq!(players["Me"].touches, 1);
+        assert_eq!(players["Me"].car_touches, 1);
+
+        players.get_mut("Me").unwrap().touches = 2;
+        players.get_mut("Me").unwrap().car_touches = 2;
+        debounce_touch_counters(
+            &state,
+            &mut players,
+            start + std::time::Duration::from_millis(200),
+        );
+        assert_eq!(players["Me"].touches, 2);
+        assert_eq!(players["Me"].car_touches, 1);
+
+        players.get_mut("Me").unwrap().car_touches = 2;
+        debounce_touch_counters(
+            &state,
+            &mut players,
+            start + std::time::Duration::from_millis(450),
+        );
+        assert_eq!(players["Me"].car_touches, 2);
+    }
+
+    #[test]
+    fn touch_counter_debounce_accepts_counter_resets() {
+        let state = AppState::new();
+        let start = std::time::Instant::now();
+        let mut players = HashMap::new();
+        players.insert(
+            "Me".to_string(),
+            PlayerInfo {
+                name: "Me".to_string(),
+                primary_id: "Steam|1|0".to_string(),
+                platform: "Steam".to_string(),
+                touches: 4,
+                car_touches: 3,
+                ..Default::default()
+            },
+        );
+        debounce_touch_counters(&state, &mut players, start);
+
+        players.get_mut("Me").unwrap().touches = 0;
+        players.get_mut("Me").unwrap().car_touches = 0;
+        debounce_touch_counters(
+            &state,
+            &mut players,
+            start + std::time::Duration::from_millis(20),
+        );
+
+        assert_eq!(players["Me"].touches, 0);
+        assert_eq!(players["Me"].car_touches, 0);
     }
 
     #[test]

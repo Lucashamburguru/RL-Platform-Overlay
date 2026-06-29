@@ -1,7 +1,7 @@
 use crate::history::{PlayerHistorySummary, player_key};
-use crate::mmr::{TrackerPlaylistSnapshot, TrackerSnapshot};
+use crate::mmr::TrackerSnapshot;
 use crate::session::SessionMode;
-use crate::state::{AppState, Config, DashboardPlayerLayout, PlayerInfo};
+use crate::state::{AppState, Config, DashboardPlayerLayout, LocalPlayerIdentity, PlayerInfo};
 use eframe::egui;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -130,6 +130,7 @@ pub(crate) fn render_dashboard(ui: &mut egui::Ui, state: &Arc<AppState>, config:
     let dashboard_snapshot = state.game.dashboard_match_snapshot.load();
     let session = state.game.session.load();
     let local_identity = state.game.local_player_identity.load();
+    let local_player_name = state.game.local_player_name.load();
     let local_mmr = state.mmr.local_mmr.load();
     let history = state.history.player_summaries.load();
     let is_connected = state.flags.is_connected.load(Ordering::SeqCst);
@@ -156,12 +157,16 @@ pub(crate) fn render_dashboard(ui: &mut egui::Ui, state: &Arc<AppState>, config:
     };
     let rows = build_dashboard_rows(
         dashboard_players,
-        config,
-        dashboard_session.active_mode,
-        local_team,
-        dashboard_session.is_watching_replay,
-        local_mmr.current.as_ref(),
-        &history,
+        DashboardRowsContext {
+            config,
+            mode: dashboard_session.active_mode,
+            local_team,
+            is_replay: dashboard_session.is_watching_replay,
+            local_identity: Some(&local_identity),
+            local_player_name: Some(local_player_name.as_str()),
+            local_mmr: local_mmr.current.as_ref(),
+            history_summaries: &history,
+        },
     );
 
     render_top_band(ui, is_connected, &dashboard_session, rows.len());
@@ -298,7 +303,9 @@ fn render_top_band(
         .inner_margin(egui::Margin::symmetric(18, 14));
 
     frame.show(ui, |ui| {
-        ui.set_min_width(target_width - 36.0);
+        let inner_width = (target_width - 36.0).max(0.0);
+        ui.set_min_width(inner_width);
+        ui.set_max_width(inner_width);
         ui.horizontal(|ui| {
             let connection = if is_connected {
                 ("CONNECTED", egui::Color32::from_rgb(105, 220, 135))
@@ -446,9 +453,9 @@ fn render_team_comparison(ui: &mut egui::Ui, rows: &[DashboardPlayerRow]) {
         .fill(egui::Color32::from_rgb(17, 20, 27))
         .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(48, 57, 70)))
         .corner_radius(8)
-        .inner_margin(egui::Margin::same(14));
+        .inner_margin(egui::Margin::symmetric(18, 14));
     frame.show(ui, |ui| {
-        ui.set_min_width(target_width - 28.0);
+        ui.set_min_width(target_width - 36.0);
         ui.horizontal(|ui| {
             ui.label(
                 egui::RichText::new("Team Comparison")
@@ -718,7 +725,9 @@ fn render_player_table(
         .inner_margin(egui::Margin::same(14));
 
     frame.show(ui, |ui| {
-        ui.set_min_width(target_width - 28.0);
+        let inner_width = (target_width - 28.0).max(0.0);
+        ui.set_min_width(inner_width);
+        ui.set_max_width(inner_width);
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new(title).strong().size(20.0).color(accent));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1190,14 +1199,20 @@ fn render_empty_state(ui: &mut egui::Ui, state: &Arc<AppState>, config: &Config)
     let preview = preview_lobby_players(state);
     let history = state.history.player_summaries.load();
     let session = state.game.session.load();
+    let local_identity = state.game.local_player_identity.load();
+    let local_player_name = state.game.local_player_name.load();
     let rows = build_dashboard_rows(
         preview,
-        config,
-        session.active_mode,
-        session.local_team,
-        session.is_watching_replay,
-        None,
-        &history,
+        DashboardRowsContext {
+            config,
+            mode: session.active_mode,
+            local_team: session.local_team,
+            is_replay: session.is_watching_replay,
+            local_identity: Some(&local_identity),
+            local_player_name: Some(local_player_name.as_str()),
+            local_mmr: None,
+            history_summaries: &history,
+        },
     );
     ui.set_min_size(ui.available_size());
     let frame = egui::Frame::default()
@@ -1564,33 +1579,48 @@ fn render_local_mmr_list(ui: &mut egui::Ui, snapshot: &TrackerSnapshot) {
         });
 }
 
-fn build_dashboard_rows(
-    players: Vec<PlayerInfo>,
-    config: &Config,
+struct DashboardRowsContext<'a> {
+    config: &'a Config,
     mode: SessionMode,
     local_team: Option<u8>,
     is_replay: bool,
-    local_mmr: Option<&TrackerSnapshot>,
-    history_summaries: &HashMap<String, PlayerHistorySummary>,
+    local_identity: Option<&'a LocalPlayerIdentity>,
+    local_player_name: Option<&'a str>,
+    local_mmr: Option<&'a TrackerSnapshot>,
+    history_summaries: &'a HashMap<String, PlayerHistorySummary>,
+}
+
+fn build_dashboard_rows(
+    players: Vec<PlayerInfo>,
+    context: DashboardRowsContext<'_>,
 ) -> Vec<DashboardPlayerRow> {
-    let player_count = players.len();
-    let inferred_local_team = local_team.or_else(|| {
+    let playlist_player_count = players.len();
+    let inferred_local_team = context.local_team.or_else(|| {
         players
             .iter()
             .find_map(|player| player.is_local.then_some(player.team))
     });
     let mut rows: Vec<_> = players
         .into_iter()
-        .filter(|player| config.show_bots || !player.is_bot)
+        .filter(|player| context.config.show_bots || !player.is_bot)
         .map(|player| {
-            let history_summary =
-                player_key(&player).and_then(|key| history_summaries.get(key.as_str()).cloned());
+            let is_local = super::lobby_overlay::is_local_lobby_player(
+                &player,
+                context.local_identity,
+                context.local_player_name,
+                playlist_player_count,
+            );
+            let history_summary = player_key(&player)
+                .and_then(|key| context.history_summaries.get(key.as_str()).cloned());
             let mmr_snapshot = player
                 .mmr
                 .as_ref()
-                .or_else(|| player.is_local.then_some(local_mmr).flatten());
-            let playlist =
-                super::lobby_overlay::select_lobby_playlist(mmr_snapshot, mode, player_count);
+                .or_else(|| is_local.then_some(context.local_mmr).flatten());
+            let playlist = super::lobby_overlay::select_lobby_playlist(
+                mmr_snapshot,
+                context.mode,
+                playlist_player_count,
+            );
             let (rank_label, mmr, matches_played) = if let Some(playlist) = playlist {
                 (
                     clean_rank_label(&playlist.tier_name),
@@ -1608,7 +1638,7 @@ fn build_dashboard_rows(
                 },
                 platform: player.platform,
                 team: player.team,
-                is_local: player.is_local,
+                is_local,
                 is_bot: player.is_bot,
                 boost: player.boost,
                 boost_known: player.boost_known,
@@ -1621,7 +1651,7 @@ fn build_dashboard_rows(
                 car_touches: player.car_touches,
                 demos: player.demos,
                 boost_available: player.boost_known
-                    && (is_replay || inferred_local_team == Some(player.team)),
+                    && (context.is_replay || inferred_local_team == Some(player.team)),
                 rank_label,
                 mmr,
                 matches_played,
@@ -1651,47 +1681,6 @@ fn team_sort_key(team: u8) -> u8 {
         1 => 1,
         _ => 2,
     }
-}
-
-#[allow(dead_code)]
-fn rank_for_mode(snapshot: Option<&TrackerSnapshot>, mode: SessionMode) -> (String, Option<i32>) {
-    let Some(snapshot) = snapshot else {
-        return ("Unranked".to_string(), None);
-    };
-    let playlist = playlist_id_for_mode(mode)
-        .and_then(|id| snapshot.playlists.get(&id))
-        .or_else(|| fallback_playlist(snapshot));
-
-    playlist
-        .map(|playlist| (clean_rank_label(&playlist.tier_name), Some(playlist.rating)))
-        .unwrap_or_else(|| ("Unranked".to_string(), None))
-}
-
-#[allow(dead_code)]
-fn playlist_id_for_mode(mode: SessionMode) -> Option<i32> {
-    match mode {
-        SessionMode::Ones => Some(10),
-        SessionMode::Twos => Some(11),
-        SessionMode::Threes => Some(13),
-        SessionMode::Hoops => Some(27),
-        SessionMode::Dropshot => Some(29),
-        SessionMode::Snowday => Some(30),
-        _ => None,
-    }
-}
-
-#[allow(dead_code)]
-fn fallback_playlist(snapshot: &TrackerSnapshot) -> Option<&TrackerPlaylistSnapshot> {
-    snapshot
-        .playlists
-        .iter()
-        .min_by_key(|(playlist_id, playlist)| {
-            (
-                playlist_sort_priority(**playlist_id, playlist.name.as_str()),
-                **playlist_id,
-            )
-        })
-        .map(|(_, playlist)| playlist)
 }
 
 fn playlist_sort_priority(playlist_id: i32, playlist_name: &str) -> i32 {
@@ -1777,6 +1766,7 @@ fn short_match_id(match_id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mmr::TrackerPlaylistSnapshot;
 
     fn player(name: &str, team: u8, score: u32, is_local: bool) -> PlayerInfo {
         PlayerInfo {
@@ -1791,6 +1781,26 @@ mod tests {
         }
     }
 
+    fn rows_context<'a>(
+        config: &'a Config,
+        mode: SessionMode,
+        local_team: Option<u8>,
+        is_replay: bool,
+        local_mmr: Option<&'a TrackerSnapshot>,
+        history_summaries: &'a HashMap<String, PlayerHistorySummary>,
+    ) -> DashboardRowsContext<'a> {
+        DashboardRowsContext {
+            config,
+            mode,
+            local_team,
+            is_replay,
+            local_identity: None,
+            local_player_name: None,
+            local_mmr,
+            history_summaries,
+        }
+    }
+
     #[test]
     fn dashboard_rows_sort_by_team_local_score_and_name() {
         let config = Config::default();
@@ -1801,12 +1811,14 @@ mod tests {
                 player("Local", 0, 10, true),
                 player("Alpha", 0, 100, false),
             ],
-            &config,
-            SessionMode::Twos,
-            Some(0),
-            false,
-            None,
-            &HashMap::new(),
+            rows_context(
+                &config,
+                SessionMode::Twos,
+                Some(0),
+                false,
+                None,
+                &HashMap::new(),
+            ),
         );
 
         let names: Vec<_> = rows.iter().map(|row| row.name.as_str()).collect();
@@ -1824,12 +1836,14 @@ mod tests {
 
         let rows = build_dashboard_rows(
             vec![player("Human", 0, 0, false), bot],
-            &config,
-            SessionMode::Twos,
-            Some(0),
-            false,
-            None,
-            &HashMap::new(),
+            rows_context(
+                &config,
+                SessionMode::Twos,
+                Some(0),
+                false,
+                None,
+                &HashMap::new(),
+            ),
         );
 
         assert_eq!(rows.len(), 1);
@@ -1837,16 +1851,74 @@ mod tests {
     }
 
     #[test]
+    fn dashboard_rank_playlist_uses_unfiltered_player_count_like_lobby_overlay() {
+        let config = Config {
+            show_bots: false,
+            ..Default::default()
+        };
+        let mut snapshot = TrackerSnapshot::default();
+        snapshot.playlists.insert(
+            11,
+            TrackerPlaylistSnapshot {
+                name: "Ranked Doubles 2v2".to_string(),
+                rating: 1100,
+                matches: 20,
+                tier_name: "Diamond III".to_string(),
+            },
+        );
+        snapshot.playlists.insert(
+            13,
+            TrackerPlaylistSnapshot {
+                name: "Ranked Standard 3v3".to_string(),
+                rating: 900,
+                matches: 15,
+                tier_name: "Platinum III".to_string(),
+            },
+        );
+
+        let mut local = player("Local", 0, 10, true);
+        local.mmr = Some(snapshot);
+        let mut bot_one = player("BotOne", 1, 0, false);
+        bot_one.is_bot = true;
+        let mut bot_two = player("BotTwo", 1, 0, false);
+        bot_two.is_bot = true;
+
+        let rows = build_dashboard_rows(
+            vec![
+                local,
+                player("Mate", 0, 100, false),
+                player("Opponent", 1, 100, false),
+                bot_one,
+                bot_two,
+            ],
+            rows_context(
+                &config,
+                SessionMode::Unknown,
+                Some(0),
+                false,
+                None,
+                &HashMap::new(),
+            ),
+        );
+
+        let local = rows.iter().find(|row| row.name == "Local").unwrap();
+        assert_eq!(local.rank_label, "Platinum III");
+        assert_eq!(local.mmr, Some(900));
+    }
+
+    #[test]
     fn dashboard_rows_hide_live_enemy_boost_but_show_replay_boost() {
         let config = Config::default();
         let live_rows = build_dashboard_rows(
             vec![player("Local", 0, 0, true), player("Opponent", 1, 0, false)],
-            &config,
-            SessionMode::Twos,
-            Some(0),
-            false,
-            None,
-            &HashMap::new(),
+            rows_context(
+                &config,
+                SessionMode::Twos,
+                Some(0),
+                false,
+                None,
+                &HashMap::new(),
+            ),
         );
         assert!(
             live_rows
@@ -1865,12 +1937,14 @@ mod tests {
 
         let replay_rows = build_dashboard_rows(
             vec![player("Local", 0, 0, true), player("Opponent", 1, 0, false)],
-            &config,
-            SessionMode::Twos,
-            Some(0),
-            true,
-            None,
-            &HashMap::new(),
+            rows_context(
+                &config,
+                SessionMode::Twos,
+                Some(0),
+                true,
+                None,
+                &HashMap::new(),
+            ),
         );
         assert!(
             replay_rows
@@ -1890,12 +1964,14 @@ mod tests {
 
         let rows = build_dashboard_rows(
             vec![player("Local", 0, 0, true), opponent],
-            &config,
-            SessionMode::Twos,
-            Some(0),
-            true,
-            None,
-            &HashMap::new(),
+            rows_context(
+                &config,
+                SessionMode::Twos,
+                Some(0),
+                true,
+                None,
+                &HashMap::new(),
+            ),
         );
 
         assert!(
@@ -1923,12 +1999,14 @@ mod tests {
 
         let rows = build_dashboard_rows(
             vec![player("Local", 0, 0, true)],
-            &config,
-            SessionMode::Hoops,
-            Some(0),
-            false,
-            Some(&snapshot),
-            &HashMap::new(),
+            rows_context(
+                &config,
+                SessionMode::Hoops,
+                Some(0),
+                false,
+                Some(&snapshot),
+                &HashMap::new(),
+            ),
         );
 
         let local = rows.iter().find(|row| row.name == "Local").unwrap();
@@ -1937,9 +2015,15 @@ mod tests {
     }
 
     #[test]
-    fn rank_for_mode_uses_active_playlist() {
-        let mut snapshot = TrackerSnapshot::default();
-        snapshot.playlists.insert(
+    fn dashboard_rows_use_lobby_local_identity_for_local_rank() {
+        let config = Config::default();
+        let identity = LocalPlayerIdentity {
+            name: "CachedName".to_string(),
+            primary_id: "Steam|123|0".to_string(),
+            platform: "Steam".to_string(),
+        };
+        let mut local_mmr = TrackerSnapshot::default();
+        local_mmr.playlists.insert(
             11,
             TrackerPlaylistSnapshot {
                 name: "Ranked Doubles 2v2".to_string(),
@@ -1948,10 +2032,29 @@ mod tests {
                 tier_name: "Champion I".to_string(),
             },
         );
+        let mut local_row = player("Renamed", 0, 10, false);
+        local_row.primary_id = "steam|123|0".to_string();
+        local_row.platform = "steam".to_string();
 
-        let (rank, mmr) = rank_for_mode(Some(&snapshot), SessionMode::Twos);
-        assert_eq!(rank, "Champion I");
-        assert_eq!(mmr, Some(1234));
+        let rows = build_dashboard_rows(
+            vec![local_row, player("Opponent", 1, 100, false)],
+            DashboardRowsContext {
+                local_identity: Some(&identity),
+                ..rows_context(
+                    &config,
+                    SessionMode::Twos,
+                    Some(0),
+                    false,
+                    Some(&local_mmr),
+                    &HashMap::new(),
+                )
+            },
+        );
+
+        let local = rows.iter().find(|row| row.name == "Renamed").unwrap();
+        assert!(local.is_local);
+        assert_eq!(local.rank_label, "Champion I");
+        assert_eq!(local.mmr, Some(1234));
     }
 
     #[test]

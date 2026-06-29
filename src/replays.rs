@@ -4,18 +4,6 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-/// Spawns a background task. Logs `error_prefix` + the error string if the future returns `Err`.
-fn spawn_task<F>(error_prefix: &'static str, fut: F)
-where
-    F: std::future::Future<Output = Result<(), String>> + Send + 'static,
-{
-    tokio::spawn(async move {
-        if let Err(e) = fut.await {
-            log::error!("{}: {}", error_prefix, e);
-        }
-    });
-}
-
 const BULK_UPLOAD_DELAY_SECS: u64 = 30;
 
 #[derive(Clone)]
@@ -825,15 +813,46 @@ fn push_event(progress: &mut ReplayUploadProgress, event: String) {
     }
 }
 
-pub fn start_sync_replays_task(state: Arc<AppState>) {
-    let state_clone = state.clone();
-    spawn_task("Sync replays execution error", async move {
+pub fn maybe_start_initial_replay_cache_sync(state: &Arc<AppState>) -> bool {
+    if state
+        .system
+        .config
+        .load()
+        .ballchasing_api_key
+        .trim()
+        .is_empty()
+    {
+        return false;
+    }
+
+    if state
+        .replays
+        .initial_cache_sync_started
+        .swap(true, Ordering::SeqCst)
+    {
+        return false;
+    }
+
+    start_sync_replays_task(state.clone())
+}
+
+pub fn start_sync_replays_task(state: Arc<AppState>) -> bool {
+    if state.replays.sync_running.swap(true, Ordering::SeqCst) {
+        return false;
+    }
+
+    tokio::spawn(async move {
+        let state_clone = state.clone();
         if let Err(e) = run_sync_replays(state).await {
             set_status(&state_clone, &format!("Error: Sync failed ({e})"));
-            return Err(e);
+            log::error!("Sync replays execution error: {e}");
         }
-        Ok(())
+        state_clone
+            .replays
+            .sync_running
+            .store(false, Ordering::SeqCst);
     });
+    true
 }
 
 fn parse_cloud_metadata(

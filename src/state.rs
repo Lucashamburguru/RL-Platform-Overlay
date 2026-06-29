@@ -64,6 +64,7 @@ pub struct Config {
     pub dashboard_show_replay_upload: bool,
     pub dashboard_player_layout: DashboardPlayerLayout,
     pub dashboard_scale: f32,
+    pub debounce_touch_counters: bool,
     pub hotkey_kb: String,
     pub hotkey_ctrl: String,
     pub hotkey_settings: String,
@@ -229,6 +230,7 @@ impl Default for Config {
             dashboard_show_replay_upload: true,
             dashboard_player_layout: DashboardPlayerLayout::Table,
             dashboard_scale: 1.0,
+            debounce_touch_counters: false,
             hotkey_kb: "Backspace".to_string(),
             hotkey_ctrl: "Select".to_string(),
             hotkey_settings: "F1".to_string(),
@@ -521,6 +523,7 @@ mod tests {
         assert!(config.dashboard_show_replay_upload);
         assert_eq!(config.dashboard_player_layout, DashboardPlayerLayout::Table);
         assert_eq!(config.dashboard_scale, 1.0);
+        assert!(!config.debounce_touch_counters);
     }
 
     #[test]
@@ -663,6 +666,25 @@ pub struct DashboardMatchSnapshot {
     pub local_team: Option<u8>,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct TouchCounterDebounce {
+    pub accepted_touches: u32,
+    pub last_touch_increment_at: Option<std::time::Instant>,
+    pub accepted_car_touches: u32,
+    pub last_car_touch_increment_at: Option<std::time::Instant>,
+}
+
+impl TouchCounterDebounce {
+    pub fn new(player: &PlayerInfo) -> Self {
+        Self {
+            accepted_touches: player.touches,
+            last_touch_increment_at: None,
+            accepted_car_touches: player.car_touches,
+            last_car_touch_increment_at: None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LocalPlayerIdentity {
     pub name: String,
@@ -718,6 +740,8 @@ pub struct ReplaysState {
     pub metadata_status: Arc<std::sync::Mutex<String>>,
     pub upload_running: AtomicBool,
     pub auto_upload_running: AtomicBool,
+    pub sync_running: AtomicBool,
+    pub initial_cache_sync_started: AtomicBool,
 }
 
 pub struct BoostState {
@@ -772,6 +796,7 @@ pub struct GameLobbyState {
     pub local_player_identity: ArcSwap<LocalPlayerIdentity>,
     pub local_team: std::sync::atomic::AtomicU8,
     pub players: ArcSwap<HashMap<String, PlayerInfo>>,
+    pub touch_counter_debounce: std::sync::Mutex<HashMap<String, TouchCounterDebounce>>,
     pub dashboard_match_snapshot: ArcSwap<DashboardMatchSnapshot>,
     pub match_roster: ArcSwap<HashMap<String, PlayerInfo>>,
     pub match_roster_guid: ArcSwap<String>,
@@ -879,6 +904,7 @@ impl AppState {
                 local_player_identity: ArcSwap::from_pointee(cached_local_player_identity),
                 local_team: std::sync::atomic::AtomicU8::new(NO_TEAM),
                 players: ArcSwap::from_pointee(HashMap::new()),
+                touch_counter_debounce: std::sync::Mutex::new(HashMap::new()),
                 dashboard_match_snapshot: ArcSwap::from_pointee(DashboardMatchSnapshot::default()),
                 match_roster: ArcSwap::from_pointee(HashMap::new()),
                 match_roster_guid: ArcSwap::from_pointee(String::new()),
@@ -925,6 +951,8 @@ impl AppState {
                 metadata_status: Arc::new(std::sync::Mutex::new("Not scanned".to_string())),
                 upload_running: AtomicBool::new(false),
                 auto_upload_running: AtomicBool::new(false),
+                sync_running: AtomicBool::new(false),
+                initial_cache_sync_started: AtomicBool::new(false),
             },
             boost: BoostState {
                 boost_swap_status: Arc::new(std::sync::Mutex::new("Idle".to_string())),
