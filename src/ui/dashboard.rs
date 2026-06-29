@@ -127,26 +127,44 @@ pub(crate) fn render_dashboard(ui: &mut egui::Ui, state: &Arc<AppState>, config:
     ui.set_min_size(ui.available_size());
 
     let players = state.game.players.load();
+    let dashboard_snapshot = state.game.dashboard_match_snapshot.load();
     let session = state.game.session.load();
     let local_identity = state.game.local_player_identity.load();
     let local_mmr = state.mmr.local_mmr.load();
     let history = state.history.player_summaries.load();
     let is_connected = state.flags.is_connected.load(Ordering::SeqCst);
-    let local_team = session.local_team.or_else(|| {
+    let snapshot_active =
+        !dashboard_snapshot.match_guid.is_empty() && !dashboard_snapshot.players.is_empty();
+    let dashboard_session = if snapshot_active {
+        dashboard_snapshot.session.clone()
+    } else {
+        (**session).clone()
+    };
+    let local_team = if snapshot_active {
+        dashboard_snapshot.local_team
+    } else {
+        dashboard_session.local_team
+    }
+    .or_else(|| {
         let team = state.game.local_team.load(Ordering::SeqCst);
         (team != crate::state::NO_TEAM).then_some(team)
     });
+    let dashboard_players: Vec<PlayerInfo> = if snapshot_active {
+        dashboard_snapshot.players.values().cloned().collect()
+    } else {
+        players.values().cloned().collect()
+    };
     let rows = build_dashboard_rows(
-        players.values().cloned().collect(),
+        dashboard_players,
         config,
-        session.active_mode,
+        dashboard_session.active_mode,
         local_team,
-        session.is_watching_replay,
+        dashboard_session.is_watching_replay,
         local_mmr.current.as_ref(),
         &history,
     );
 
-    render_top_band(ui, is_connected, &session, rows.len());
+    render_top_band(ui, is_connected, &dashboard_session, rows.len());
     ui.add_space(10.0);
 
     let available = ui.available_size();
@@ -183,7 +201,7 @@ pub(crate) fn render_dashboard(ui: &mut egui::Ui, state: &Arc<AppState>, config:
                         history: &history,
                         state,
                         rows: &rows,
-                        session: &session,
+                        session: &dashboard_session,
                     },
                 );
             },

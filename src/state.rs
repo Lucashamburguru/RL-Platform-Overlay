@@ -655,6 +655,14 @@ pub struct PlayerInfo {
     pub mmr: Option<TrackerSnapshot>,
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct DashboardMatchSnapshot {
+    pub match_guid: String,
+    pub players: HashMap<String, PlayerInfo>,
+    pub session: SessionState,
+    pub local_team: Option<u8>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LocalPlayerIdentity {
     pub name: String,
@@ -764,6 +772,7 @@ pub struct GameLobbyState {
     pub local_player_identity: ArcSwap<LocalPlayerIdentity>,
     pub local_team: std::sync::atomic::AtomicU8,
     pub players: ArcSwap<HashMap<String, PlayerInfo>>,
+    pub dashboard_match_snapshot: ArcSwap<DashboardMatchSnapshot>,
     pub match_roster: ArcSwap<HashMap<String, PlayerInfo>>,
     pub match_roster_guid: ArcSwap<String>,
     pub session: ArcSwap<SessionState>,
@@ -870,6 +879,7 @@ impl AppState {
                 local_player_identity: ArcSwap::from_pointee(cached_local_player_identity),
                 local_team: std::sync::atomic::AtomicU8::new(NO_TEAM),
                 players: ArcSwap::from_pointee(HashMap::new()),
+                dashboard_match_snapshot: ArcSwap::from_pointee(DashboardMatchSnapshot::default()),
                 match_roster: ArcSwap::from_pointee(HashMap::new()),
                 match_roster_guid: ArcSwap::from_pointee(String::new()),
                 session: ArcSwap::from_pointee(SessionState::default()),

@@ -1,5 +1,5 @@
 use crate::session::SessionMode;
-use crate::state::{AppState, PlayerInfo};
+use crate::state::{AppState, DashboardMatchSnapshot, PlayerInfo};
 use crate::stats_api::{StatsApiTransport, TcpJsonSplitter};
 use crate::stats_api_parser::{
     RosterSignature, StatsApiEvent, StatsApiParseContext, parse_stats_api_event,
@@ -295,6 +295,7 @@ fn handle_update_state(state: &Arc<AppState>, parsed_event: &StatsApiEvent) {
     update_match_roster(state, parsed_event);
 
     update_session_from_event(state, parsed_event, roster_changed);
+    update_dashboard_match_snapshot(state, parsed_event);
 }
 
 fn update_match_roster(state: &Arc<AppState>, parsed_event: &StatsApiEvent) {
@@ -448,6 +449,41 @@ fn update_session_from_event(
         }
         state.game.session.store(Arc::new(session));
     }
+}
+
+fn update_dashboard_match_snapshot(state: &Arc<AppState>, parsed_event: &StatsApiEvent) {
+    let match_guid = parsed_event.mode.match_guid.trim();
+    if match_guid.is_empty() || parsed_event.players.is_empty() {
+        return;
+    }
+
+    let current_session = state.game.session.load();
+    if current_session.is_watching_replay {
+        return;
+    }
+
+    let local_team = state.game.local_team.load(Ordering::SeqCst);
+    let local_team = (local_team != crate::state::NO_TEAM).then_some(local_team);
+    let session = (**current_session).clone();
+    state.game.dashboard_match_snapshot.rcu(|current| {
+        let mut snapshot = if current.match_guid == match_guid {
+            let mut snapshot = (**current).clone();
+            for (name, player) in &parsed_event.players {
+                snapshot.players.insert(name.clone(), player.clone());
+            }
+            snapshot
+        } else {
+            DashboardMatchSnapshot {
+                match_guid: match_guid.to_string(),
+                players: parsed_event.players.clone(),
+                ..Default::default()
+            }
+        };
+
+        snapshot.session = session.clone();
+        snapshot.local_team = local_team.or(session.local_team);
+        Arc::new(snapshot)
+    });
 }
 
 fn players_have_round_stats(parsed_event: &StatsApiEvent) -> bool {
@@ -678,6 +714,86 @@ mod tests {
         let preserved = players["Opponent"].mmr.as_ref().unwrap();
         assert_eq!(preserved.playlists[&13].rating, 1234);
         assert_eq!(players["Opponent"].boost, 80);
+    }
+
+    #[test]
+    fn dashboard_match_snapshot_keeps_players_until_next_match() {
+        let state = AppState::new();
+        handle_update_state_payload(
+            &state,
+            &json!({
+                "MatchGuid": "match-one",
+                "Game": {
+                    "Teams": [
+                        {"TeamNum": 0, "Score": 1},
+                        {"TeamNum": 1, "Score": 0}
+                    ]
+                },
+                "Players": [
+                    {
+                        "Name": "Me",
+                        "PrimaryId": "Steam|1|0",
+                        "TeamNum": 0,
+                        "Score": 500,
+                        "IsLocalPlayer": true
+                    },
+                    {
+                        "Name": "Opponent",
+                        "PrimaryId": "Epic|2|0",
+                        "TeamNum": 1,
+                        "Score": 300
+                    }
+                ]
+            }),
+        );
+
+        handle_update_state_payload(
+            &state,
+            &json!({
+                "MatchGuid": "match-one",
+                "Game": {
+                    "Teams": [
+                        {"TeamNum": 0, "Score": 2},
+                        {"TeamNum": 1, "Score": 0}
+                    ]
+                },
+                "Players": [
+                    {
+                        "Name": "Me",
+                        "PrimaryId": "Steam|1|0",
+                        "TeamNum": 0,
+                        "Score": 700,
+                        "IsLocalPlayer": true
+                    }
+                ]
+            }),
+        );
+
+        let snapshot = state.game.dashboard_match_snapshot.load();
+        assert_eq!(snapshot.match_guid, "match-one");
+        assert_eq!(snapshot.players["Me"].score, 700);
+        assert_eq!(snapshot.players["Opponent"].score, 300);
+        assert_eq!(snapshot.session.blue_score, 2);
+        drop(snapshot);
+
+        handle_update_state_payload(
+            &state,
+            &json!({
+                "Players": [
+                    {
+                        "Name": "Me",
+                        "PrimaryId": "Steam|1|0",
+                        "TeamNum": 0,
+                        "Score": 0,
+                        "IsLocalPlayer": true
+                    }
+                ]
+            }),
+        );
+
+        let snapshot = state.game.dashboard_match_snapshot.load();
+        assert_eq!(snapshot.match_guid, "match-one");
+        assert_eq!(snapshot.players["Opponent"].score, 300);
     }
 
     #[test]
