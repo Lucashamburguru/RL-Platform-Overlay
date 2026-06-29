@@ -174,8 +174,7 @@ fn compact_playlist_name(playlist_name: &str) -> String {
     } else {
         let trimmed = playlist_name.trim();
         // Case-insensitive equivalent of trim_start_matches("Ranked ")
-        if trimmed.len() >= 7 && trimmed.as_bytes()[..7].eq_ignore_ascii_case(b"ranked ")
-        {
+        if trimmed.len() >= 7 && trimmed.as_bytes()[..7].eq_ignore_ascii_case(b"ranked ") {
             let rest = &trimmed.as_bytes()[7..];
             // Since we know the first 7 bytes match "ranked ", the rest is guaranteed to be valid UTF-8
             // if the original string was valid UTF-8.
