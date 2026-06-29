@@ -5,7 +5,7 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use super::boost_hud::{render_teammate_boost, render_teammate_boost_position_preview};
-use super::dashboard::render_dashboard_viewport;
+use super::dashboard::{DashboardViewportState, render_dashboard_viewport};
 use super::debug::render_debug_settings_tab;
 use super::hotkeys::egui_to_rdev_key;
 use super::lobby_overlay::render_overlay;
@@ -35,6 +35,7 @@ pub struct MainApp {
     last_logged_show_settings: Option<bool>,
     #[allow(clippy::type_complexity)]
     last_viewport_state: Option<(bool, bool, bool, bool, Option<egui::Pos2>, [f32; 2])>,
+    dashboard_viewport_state: DashboardViewportState,
     #[allow(dead_code)]
     hwnd: Option<isize>,
     rocket_league_process_watcher: crate::assets::RocketLeagueProcessWatcher,
@@ -56,6 +57,7 @@ impl MainApp {
                 .unwrap_or_else(std::time::Instant::now),
             last_logged_show_settings: None,
             last_viewport_state: None,
+            dashboard_viewport_state: DashboardViewportState::default(),
             hwnd,
             rocket_league_process_watcher: crate::assets::RocketLeagueProcessWatcher::new(),
             launched_by_layout_mode: false,
@@ -564,7 +566,14 @@ impl eframe::App for MainApp {
         self.render_confirm_modal(ctx);
 
         if show_dashboard {
-            render_dashboard_viewport(ctx, self.state.clone(), (**config).clone());
+            render_dashboard_viewport(
+                ctx,
+                self.state.clone(),
+                (**config).clone(),
+                &mut self.dashboard_viewport_state,
+            );
+        } else {
+            self.dashboard_viewport_state = DashboardViewportState::default();
         }
 
         schedule_repaint(

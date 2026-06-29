@@ -12,6 +12,12 @@ use super::monitor;
 
 const DASHBOARD_VIEWPORT_ID_SOURCE: &str = "second_monitor_dashboard";
 
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct DashboardViewportState {
+    placement: Option<monitor::MonitorPlacement>,
+    pending_fullscreen_restore: Option<monitor::MonitorPlacement>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 struct DashboardPlayerRow {
     name: String,
@@ -36,22 +42,47 @@ struct DashboardPlayerRow {
     history_summary: Option<PlayerHistorySummary>,
 }
 
-pub(crate) fn render_dashboard_viewport(ctx: &egui::Context, state: Arc<AppState>, config: Config) {
+pub(crate) fn render_dashboard_viewport(
+    ctx: &egui::Context,
+    state: Arc<AppState>,
+    config: Config,
+    viewport_state: &mut DashboardViewportState,
+) {
     let placement = monitor::dashboard_placement(
         ctx,
         config.dashboard_monitor_index,
         config.dashboard_fullscreen,
     );
+    let pending_fullscreen_restore = viewport_state.pending_fullscreen_restore == Some(placement);
+    if viewport_state.pending_fullscreen_restore.is_some() && !pending_fullscreen_restore {
+        viewport_state.pending_fullscreen_restore = None;
+    }
+
+    let reset_fullscreen_for_monitor_change = cfg!(target_os = "windows")
+        && placement.fullscreen
+        && viewport_state.pending_fullscreen_restore.is_none()
+        && viewport_state
+            .placement
+            .is_some_and(|previous| previous.fullscreen && previous != placement);
+
+    let builder_fullscreen = placement.fullscreen && !reset_fullscreen_for_monitor_change;
     let viewport = egui::ViewportBuilder::default()
         .with_title("RL Second Screen Dashboard")
         .with_decorations(true)
         .with_resizable(true)
         .with_transparent(false)
         .with_mouse_passthrough(false)
-        .with_fullscreen(placement.fullscreen)
+        .with_fullscreen(builder_fullscreen)
         .with_position(placement.position)
         .with_inner_size(placement.size)
         .with_min_inner_size([960.0, 540.0]);
+
+    if reset_fullscreen_for_monitor_change {
+        viewport_state.pending_fullscreen_restore = Some(placement);
+    } else if pending_fullscreen_restore {
+        viewport_state.pending_fullscreen_restore = None;
+    }
+    viewport_state.placement = Some(placement);
 
     ctx.show_viewport_deferred(
         egui::ViewportId::from_hash_of(DASHBOARD_VIEWPORT_ID_SOURCE),
@@ -63,6 +94,18 @@ pub(crate) fn render_dashboard_viewport(ctx: &egui::Context, state: Arc<AppState
                 state.save_config(config_edit);
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
                 return;
+            }
+
+            if reset_fullscreen_for_monitor_change {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+                ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(placement.position));
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(placement.size.into()));
+                ctx.request_repaint();
+            } else if pending_fullscreen_restore {
+                ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(placement.position));
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(placement.size.into()));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
+                ctx.request_repaint();
             }
 
             egui::CentralPanel::default()
