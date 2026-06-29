@@ -711,8 +711,7 @@ fn render_history_badge(
 
 pub(super) fn render_platform_name(ui: &mut egui::Ui, platform: &str, size: f32) {
     let normalized = crate::stats_api_parser::format_platform(platform);
-    let plat_lower = normalized.to_lowercase();
-    if plat_lower.contains("epic") {
+    if normalized == "Epic" {
         let mut job = egui::text::LayoutJob::default();
         let colors = [
             egui::Color32::from_rgb(255, 90, 90),   // Red
@@ -736,11 +735,11 @@ pub(super) fn render_platform_name(ui: &mut egui::Ui, platform: &str, size: f32)
         }
         ui.label(job);
     } else {
-        let color = if plat_lower.contains("xbox") || plat_lower.contains("xbl") {
+        let color = if normalized == "Xbox" {
             egui::Color32::from_rgb(30, 200, 80) // Xbox Green
-        } else if plat_lower.contains("playstation") || plat_lower.contains("ps") {
+        } else if normalized == "PSN" {
             egui::Color32::from_rgb(41, 140, 255) // PSN Blue
-        } else if plat_lower.contains("switch") || plat_lower.contains("nintendo") {
+        } else if normalized == "Switch" {
             egui::Color32::from_rgb(255, 65, 80) // Switch Red
         } else {
             egui::Color32::from_gray(160) // Steam / Default stays gray
@@ -960,16 +959,16 @@ pub(super) fn platform_icon_for(platform: &str, is_bot: bool) -> egui::ImageSour
     if is_bot {
         return egui::include_image!("../../assets/bot.png");
     }
-    let plat = platform.to_lowercase();
-    if plat.contains("steam") {
+    let normalized = crate::stats_api_parser::format_platform(platform);
+    if normalized == "Steam" {
         egui::include_image!("../../assets/steam.png")
-    } else if plat.contains("epic") {
+    } else if normalized == "Epic" {
         egui::include_image!("../../assets/epic.png")
-    } else if plat.contains("xbox") || plat.contains("xbl") {
+    } else if normalized == "Xbox" {
         egui::include_image!("../../assets/xbox.png")
-    } else if plat.contains("playstation") || plat.contains("ps") {
+    } else if normalized == "PSN" {
         egui::include_image!("../../assets/ps.png")
-    } else if plat.contains("switch") || plat.contains("nintendo") {
+    } else if normalized == "Switch" {
         egui::include_image!("../../assets/switch.png")
     } else {
         egui::include_image!("../../assets/bot.png")

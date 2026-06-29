@@ -569,13 +569,31 @@ impl SessionState {
 }
 
 fn should_replace_active_mode(current: SessionMode, next: SessionMode) -> bool {
-    matches!(
+    let next_is_extra = matches!(
         next,
         SessionMode::Hoops | SessionMode::Dropshot | SessionMode::Snowday | SessionMode::Knockout
-    ) && !matches!(
+    );
+    let current_is_extra = matches!(
         current,
         SessionMode::Hoops | SessionMode::Dropshot | SessionMode::Snowday | SessionMode::Knockout
-    )
+    );
+
+    if next_is_extra && !current_is_extra {
+        return true;
+    }
+
+    standard_mode_size(next).is_some_and(|next_size| {
+        standard_mode_size(current).is_some_and(|current_size| next_size > current_size)
+    })
+}
+
+fn standard_mode_size(mode: SessionMode) -> Option<u8> {
+    match mode {
+        SessionMode::Ones => Some(1),
+        SessionMode::Twos => Some(2),
+        SessionMode::Threes => Some(3),
+        _ => None,
+    }
 }
 
 pub fn format_win_rate(wins: u32, losses: u32) -> String {
@@ -1048,6 +1066,54 @@ mod tests {
         });
         session.handle_update_state(&data, None, SessionMode::Twos);
         assert_eq!(session.active_mode, SessionMode::Threes);
+    }
+
+    #[test]
+    fn corrects_standard_mode_up_after_round_started() {
+        let mut session = SessionState {
+            active_match_id: "abc".to_string(),
+            active_mode: SessionMode::Ones,
+            round_started: true,
+            ..Default::default()
+        };
+        let data = json!({
+            "MatchGuid": "abc",
+            "Game": {
+                "bHasWinner": false,
+            }
+        });
+
+        session.handle_update_state(&data, None, SessionMode::Twos);
+
+        assert_eq!(session.active_mode, SessionMode::Twos);
+    }
+
+    #[test]
+    fn does_not_downgrade_standard_mode_after_round_started() {
+        let data = json!({
+            "MatchGuid": "abc",
+            "Game": {
+                "bHasWinner": false,
+            }
+        });
+        let mut twos_session = SessionState {
+            active_match_id: "abc".to_string(),
+            active_mode: SessionMode::Twos,
+            round_started: true,
+            ..Default::default()
+        };
+        let mut threes_session = SessionState {
+            active_match_id: "abc".to_string(),
+            active_mode: SessionMode::Threes,
+            round_started: true,
+            ..Default::default()
+        };
+
+        twos_session.handle_update_state(&data, None, SessionMode::Ones);
+        threes_session.handle_update_state(&data, None, SessionMode::Twos);
+
+        assert_eq!(twos_session.active_mode, SessionMode::Twos);
+        assert_eq!(threes_session.active_mode, SessionMode::Threes);
     }
 
     #[test]

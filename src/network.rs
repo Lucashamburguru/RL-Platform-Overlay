@@ -993,6 +993,50 @@ mod tests {
     }
 
     #[test]
+    fn test_round_started_partial_roster_can_correct_to_twos() {
+        let state = AppState::new();
+        handle_update_state_payload(
+            &state,
+            &json!({
+                "MatchGuid": "guid123",
+                "Players": [
+                    {"Name": "Me", "PrimaryId": "Steam|1|0", "TeamNum": 0, "IsLocalPlayer": true},
+                    {"Name": "Opp1", "PrimaryId": "Xbox|3|0", "TeamNum": 1}
+                ],
+                "Game": {
+                    "Arena": "Stadium_P"
+                }
+            }),
+        );
+
+        assert_eq!(
+            state.game.session.load().active_mode,
+            crate::session::SessionMode::Ones
+        );
+
+        handle_event(&state, &json!({ "Event": "RoundStarted" }));
+        handle_update_state_payload(
+            &state,
+            &json!({
+                "MatchGuid": "guid123",
+                "Players": [
+                    {"Name": "Me", "PrimaryId": "Steam|1|0", "TeamNum": 0, "IsLocalPlayer": true},
+                    {"Name": "Mate", "PrimaryId": "Epic|2|0", "TeamNum": 0},
+                    {"Name": "Opp1", "PrimaryId": "Xbox|3|0", "TeamNum": 1},
+                    {"Name": "Opp2", "PrimaryId": "Ps4|4|0", "TeamNum": 1}
+                ],
+                "Game": {
+                    "Arena": "Stadium_P"
+                }
+            }),
+        );
+
+        let session = state.game.session.load();
+        assert!(session.round_started);
+        assert_eq!(session.active_mode, crate::session::SessionMode::Twos);
+    }
+
+    #[test]
     fn test_update_state_without_players_uses_unknown_session_mode() {
         let state = AppState::new();
         handle_update_state_payload(

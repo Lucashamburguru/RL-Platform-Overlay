@@ -1576,8 +1576,9 @@ fn build_dashboard_rows(
             .then_with(|| b.score.cmp(&a.score))
             .then_with(|| {
                 a.name
-                    .to_ascii_lowercase()
-                    .cmp(&b.name.to_ascii_lowercase())
+                    .bytes()
+                    .map(|b| b.to_ascii_lowercase())
+                    .cmp(b.name.bytes().map(|b| b.to_ascii_lowercase()))
             })
     });
     rows
