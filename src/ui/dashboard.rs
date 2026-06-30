@@ -168,6 +168,20 @@ pub(crate) fn render_dashboard(ui: &mut egui::Ui, state: &Arc<AppState>, config:
             history_summaries: &history,
         },
     );
+    let team_bumps = if config.debounce_touch_counters && config.estimate_teammate_bumps {
+        if snapshot_active {
+            dashboard_snapshot.team_bumps
+        } else {
+            state
+                .game
+                .teammate_bump_estimator
+                .lock()
+                .map(|estimator| estimator.team_bumps)
+                .unwrap_or([0, 0])
+        }
+    } else {
+        [0, 0]
+    };
 
     render_top_band(ui, is_connected, &dashboard_session, rows.len());
     ui.add_space(10.0);
@@ -190,7 +204,7 @@ pub(crate) fn render_dashboard(ui: &mut egui::Ui, state: &Arc<AppState>, config:
         ui.allocate_ui_with_layout(
             egui::vec2(main_width, available.y),
             egui::Layout::top_down(egui::Align::Min),
-            |ui| render_team_columns(ui, state, config, &rows),
+            |ui| render_team_columns(ui, state, config, &rows, team_bumps),
         );
         ui.add_space(gap);
         ui.allocate_ui_with_layout(
@@ -386,6 +400,7 @@ fn render_team_columns(
     state: &Arc<AppState>,
     config: &Config,
     rows: &[DashboardPlayerRow],
+    team_bumps: [u32; 2],
 ) {
     if rows.is_empty() {
         render_empty_state(ui, state, config);
@@ -393,9 +408,10 @@ fn render_team_columns(
     }
 
     ui.set_min_size(ui.available_size());
-    render_team_panel(ui, "Blue Team", 0, rows, config);
+    let section_width = ui.available_width();
+    render_team_panel(ui, "Blue Team", 0, rows, config, section_width);
     ui.add_space(14.0);
-    render_team_panel(ui, "Orange Team", 1, rows, config);
+    render_team_panel(ui, "Orange Team", 1, rows, config, section_width);
 
     let unknown: Vec<_> = rows
         .iter()
@@ -403,12 +419,12 @@ fn render_team_columns(
         .collect();
     if !unknown.is_empty() {
         ui.add_space(14.0);
-        render_player_table(ui, "Unknown Team", unknown, config);
+        render_player_table(ui, "Unknown Team", unknown, config, section_width);
     }
 
     if config.dashboard_show_team_comparison {
         ui.add_space(14.0);
-        render_team_comparison(ui, rows);
+        render_team_comparison(ui, rows, section_width, team_bumps, config);
     }
 }
 
@@ -418,9 +434,30 @@ fn render_team_panel(
     team: u8,
     rows: &[DashboardPlayerRow],
     config: &Config,
+    section_width: f32,
 ) {
     let team_rows: Vec<_> = rows.iter().filter(|row| row.team == team).collect();
-    render_player_table(ui, title, team_rows, config);
+    render_player_table(ui, title, team_rows, config, section_width);
+}
+
+fn frame_content_width(frame: &egui::Frame, outer_width: f32) -> f32 {
+    let horizontal_margin = frame.inner_margin.sum().x + frame.outer_margin.sum().x;
+    let horizontal_stroke = frame.stroke.width * 2.0;
+    (outer_width - horizontal_margin - horizontal_stroke).max(0.0)
+}
+
+fn fixed_width_frame<R>(
+    ui: &mut egui::Ui,
+    frame: egui::Frame,
+    outer_width: f32,
+    add_contents: impl FnOnce(&mut egui::Ui, f32) -> R,
+) -> egui::InnerResponse<R> {
+    let inner_width = frame_content_width(&frame, outer_width);
+    frame.show(ui, |ui| {
+        ui.set_min_width(inner_width);
+        ui.set_max_width(inner_width);
+        add_contents(ui, inner_width)
+    })
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -438,7 +475,13 @@ struct TeamComparison {
     ranked_players: u32,
 }
 
-fn render_team_comparison(ui: &mut egui::Ui, rows: &[DashboardPlayerRow]) {
+fn render_team_comparison(
+    ui: &mut egui::Ui,
+    rows: &[DashboardPlayerRow],
+    target_width: f32,
+    team_bumps: [u32; 2],
+    config: &Config,
+) {
     let blue = team_comparison(rows, 0);
     let orange = team_comparison(rows, 1);
     let total_touches = blue.touches + orange.touches;
@@ -448,14 +491,12 @@ fn render_team_comparison(ui: &mut egui::Ui, rows: &[DashboardPlayerRow]) {
     let blue_shot_share = possession_pct(blue.shots, total_shots);
     let orange_shot_share = possession_pct(orange.shots, total_shots);
 
-    let target_width = ui.available_width();
     let frame = egui::Frame::default()
         .fill(egui::Color32::from_rgb(17, 20, 27))
         .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(48, 57, 70)))
         .corner_radius(8)
         .inner_margin(egui::Margin::symmetric(18, 14));
-    frame.show(ui, |ui| {
-        ui.set_min_width(target_width - 36.0);
+    fixed_width_frame(ui, frame, target_width, |ui, inner_width| {
         ui.horizontal(|ui| {
             ui.label(
                 egui::RichText::new("Team Comparison")
@@ -488,23 +529,28 @@ fn render_team_comparison(ui: &mut egui::Ui, rows: &[DashboardPlayerRow]) {
             format!("{orange_shot_share}%"),
         );
         ui.add_space(10.0);
-        let num_cols = 5.0;
+        let num_cols = if inner_width < 820.0 { 2 } else { 5 };
         let spacing_x = 12.0;
-        let total_avail = ui.available_width();
-        let tile_width =
-            ((total_avail - (spacing_x * (num_cols - 1.0))) / num_cols).clamp(120.0, 420.0);
+        let tile_width = ((inner_width - (spacing_x * (num_cols - 1) as f32)) / num_cols as f32)
+            .clamp(120.0, 420.0);
 
         egui::Grid::new("dashboard_team_comparison")
-            .num_columns(5)
+            .num_columns(num_cols)
             .spacing(egui::vec2(spacing_x, 10.0))
             .show(ui, |ui| {
+                let mut index = 0;
                 comparison_tile(ui, "Score", blue.score, orange.score, tile_width);
+                end_comparison_cell_row(ui, num_cols, &mut index);
                 comparison_tile(ui, "Goals", blue.goals, orange.goals, tile_width);
+                end_comparison_cell_row(ui, num_cols, &mut index);
                 comparison_tile(ui, "Assists", blue.assists, orange.assists, tile_width);
+                end_comparison_cell_row(ui, num_cols, &mut index);
                 comparison_tile(ui, "Saves", blue.saves, orange.saves, tile_width);
+                end_comparison_cell_row(ui, num_cols, &mut index);
                 comparison_tile(ui, "Shots", blue.shots, orange.shots, tile_width);
-                ui.end_row();
+                end_comparison_cell_row(ui, num_cols, &mut index);
                 comparison_tile(ui, "Touches", blue.touches, orange.touches, tile_width);
+                end_comparison_cell_row(ui, num_cols, &mut index);
                 comparison_tile(
                     ui,
                     "Car Touches",
@@ -512,7 +558,19 @@ fn render_team_comparison(ui: &mut egui::Ui, rows: &[DashboardPlayerRow]) {
                     orange.car_touches,
                     tile_width,
                 );
+                end_comparison_cell_row(ui, num_cols, &mut index);
                 comparison_tile(ui, "Demos", blue.demos, orange.demos, tile_width);
+                end_comparison_cell_row(ui, num_cols, &mut index);
+                if config.debounce_touch_counters && config.estimate_teammate_bumps {
+                    comparison_tile(
+                        ui,
+                        "Est. Team Bumps",
+                        team_bumps[0],
+                        team_bumps[1],
+                        tile_width,
+                    );
+                    end_comparison_cell_row(ui, num_cols, &mut index);
+                }
                 comparison_text_tile(
                     ui,
                     "Avg MMR",
@@ -520,6 +578,7 @@ fn render_team_comparison(ui: &mut egui::Ui, rows: &[DashboardPlayerRow]) {
                     avg_mmr_label(orange),
                     tile_width,
                 );
+                end_comparison_cell_row(ui, num_cols, &mut index);
                 comparison_text_tile(
                     ui,
                     "Ranked Players",
@@ -527,9 +586,17 @@ fn render_team_comparison(ui: &mut egui::Ui, rows: &[DashboardPlayerRow]) {
                     format!("{}/{}", orange.ranked_players, orange.players),
                     tile_width,
                 );
-                ui.end_row();
+                end_comparison_cell_row(ui, num_cols, &mut index);
             });
     });
+}
+
+fn end_comparison_cell_row(ui: &mut egui::Ui, num_cols: usize, index: &mut usize) {
+    *index += 1;
+    if *index == num_cols {
+        ui.end_row();
+        *index = 0;
+    }
 }
 
 fn team_comparison(rows: &[DashboardPlayerRow], team: u8) -> TeamComparison {
@@ -620,73 +687,73 @@ fn comparison_tile(ui: &mut egui::Ui, label: &str, blue: u32, orange: u32, width
     } else {
         ("Even".to_string(), egui::Color32::from_gray(145))
     };
-    egui::Frame::default()
+    let frame = egui::Frame::default()
         .fill(egui::Color32::from_rgb(21, 25, 33))
         .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(38, 45, 56)))
         .corner_radius(6)
-        .inner_margin(egui::Margin::symmetric(10, 8))
-        .show(ui, |ui| {
-            ui.set_width(width);
+        .inner_margin(egui::Margin::symmetric(10, 8));
+    fixed_width_frame(ui, frame, width, |ui, inner_width| {
+        ui.set_width(inner_width);
+        ui.label(
+            egui::RichText::new(label)
+                .size(11.0)
+                .strong()
+                .color(egui::Color32::from_gray(155)),
+        );
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(8.0, 0.0);
             ui.label(
-                egui::RichText::new(label)
-                    .size(11.0)
+                egui::RichText::new(blue.to_string())
+                    .size(18.0)
                     .strong()
-                    .color(egui::Color32::from_gray(155)),
+                    .color(egui::Color32::from_rgb(110, 185, 245)),
             );
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(8.0, 0.0);
-                ui.label(
-                    egui::RichText::new(blue.to_string())
-                        .size(18.0)
-                        .strong()
-                        .color(egui::Color32::from_rgb(110, 185, 245)),
-                );
-                ui.label(
-                    egui::RichText::new(orange.to_string())
-                        .size(18.0)
-                        .strong()
-                        .color(egui::Color32::from_rgb(245, 160, 95)),
-                );
-            });
-            ui.label(egui::RichText::new(edge_text).size(11.0).color(edge_color));
+            ui.label(
+                egui::RichText::new(orange.to_string())
+                    .size(18.0)
+                    .strong()
+                    .color(egui::Color32::from_rgb(245, 160, 95)),
+            );
         });
+        ui.label(egui::RichText::new(edge_text).size(11.0).color(edge_color));
+    });
 }
 
 fn comparison_text_tile(ui: &mut egui::Ui, label: &str, blue: String, orange: String, width: f32) {
-    egui::Frame::default()
+    let frame = egui::Frame::default()
         .fill(egui::Color32::from_rgb(21, 25, 33))
         .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(38, 45, 56)))
         .corner_radius(6)
-        .inner_margin(egui::Margin::symmetric(10, 8))
-        .show(ui, |ui| {
-            ui.set_width(width);
+        .inner_margin(egui::Margin::symmetric(10, 8));
+    fixed_width_frame(ui, frame, width, |ui, inner_width| {
+        ui.set_width(inner_width);
+        ui.label(
+            egui::RichText::new(label)
+                .size(11.0)
+                .strong()
+                .color(egui::Color32::from_gray(155)),
+        );
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(8.0, 0.0);
             ui.label(
-                egui::RichText::new(label)
-                    .size(11.0)
+                egui::RichText::new(blue)
+                    .size(18.0)
                     .strong()
-                    .color(egui::Color32::from_gray(155)),
+                    .color(egui::Color32::from_rgb(110, 185, 245)),
             );
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(8.0, 0.0);
-                ui.label(
-                    egui::RichText::new(blue)
-                        .size(18.0)
-                        .strong()
-                        .color(egui::Color32::from_rgb(110, 185, 245)),
-                );
-                ui.label(
-                    egui::RichText::new(orange)
-                        .size(18.0)
-                        .strong()
-                        .color(egui::Color32::from_rgb(245, 160, 95)),
-                );
-            });
             ui.label(
-                egui::RichText::new("—")
-                    .size(11.0)
-                    .color(egui::Color32::from_gray(50)),
+                egui::RichText::new(orange)
+                    .size(18.0)
+                    .strong()
+                    .color(egui::Color32::from_rgb(245, 160, 95)),
             );
         });
+        ui.label(
+            egui::RichText::new("—")
+                .size(11.0)
+                .color(egui::Color32::from_gray(50)),
+        );
+    });
 }
 
 fn possession_pct(touches: u32, total_touches: u32) -> u32 {
@@ -702,8 +769,8 @@ fn render_player_table(
     title: &str,
     rows: Vec<&DashboardPlayerRow>,
     config: &Config,
+    target_width: f32,
 ) {
-    let target_width = ui.available_width();
     let accent = if title.contains("Blue") {
         egui::Color32::from_rgb(85, 170, 245)
     } else if title.contains("Orange") {
@@ -724,10 +791,7 @@ fn render_player_table(
         .corner_radius(8)
         .inner_margin(egui::Margin::same(14));
 
-    frame.show(ui, |ui| {
-        let inner_width = (target_width - 28.0).max(0.0);
-        ui.set_min_width(inner_width);
-        ui.set_max_width(inner_width);
+    fixed_width_frame(ui, frame, target_width, |ui, _inner_width| {
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new(title).strong().size(20.0).color(accent));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1243,7 +1307,7 @@ fn render_empty_state(ui: &mut egui::Ui, state: &Arc<AppState>, config: &Config)
             });
         });
         ui.add_space(18.0);
-        render_team_columns(ui, state, config, &rows);
+        render_team_columns(ui, state, config, &rows, [0, 0]);
     });
 }
 
@@ -1610,7 +1674,9 @@ fn build_dashboard_rows(
                 context.local_player_name,
                 playlist_player_count,
             );
-            let history_summary = player_key(&player)
+            let history_summary = (!is_local)
+                .then(|| player_key(&player))
+                .flatten()
                 .and_then(|key| context.history_summaries.get(key.as_str()).cloned());
             let mmr_snapshot = player
                 .mmr
@@ -2055,6 +2121,31 @@ mod tests {
         assert!(local.is_local);
         assert_eq!(local.rank_label, "Champion I");
         assert_eq!(local.mmr, Some(1234));
+    }
+
+    #[test]
+    fn dashboard_rows_do_not_attach_history_to_local_player() {
+        let config = Config::default();
+        let local = player("Local", 0, 10, true);
+        let local_key = player_key(&local).unwrap().as_str().to_string();
+        let mut history = HashMap::new();
+        history.insert(
+            local_key,
+            PlayerHistorySummary {
+                games_with: 12,
+                games_against: 3,
+                ..Default::default()
+            },
+        );
+
+        let rows = build_dashboard_rows(
+            vec![local],
+            rows_context(&config, SessionMode::Twos, Some(0), false, None, &history),
+        );
+
+        let local = rows.iter().find(|row| row.name == "Local").unwrap();
+        assert!(local.is_local);
+        assert!(local.history_summary.is_none());
     }
 
     #[test]

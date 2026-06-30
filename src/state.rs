@@ -65,6 +65,7 @@ pub struct Config {
     pub dashboard_player_layout: DashboardPlayerLayout,
     pub dashboard_scale: f32,
     pub debounce_touch_counters: bool,
+    pub estimate_teammate_bumps: bool,
     pub hotkey_kb: String,
     pub hotkey_ctrl: String,
     pub hotkey_settings: String,
@@ -231,6 +232,7 @@ impl Default for Config {
             dashboard_player_layout: DashboardPlayerLayout::Table,
             dashboard_scale: 1.0,
             debounce_touch_counters: false,
+            estimate_teammate_bumps: false,
             hotkey_kb: "Backspace".to_string(),
             hotkey_ctrl: "Select".to_string(),
             hotkey_settings: "F1".to_string(),
@@ -524,6 +526,7 @@ mod tests {
         assert_eq!(config.dashboard_player_layout, DashboardPlayerLayout::Table);
         assert_eq!(config.dashboard_scale, 1.0);
         assert!(!config.debounce_touch_counters);
+        assert!(!config.estimate_teammate_bumps);
     }
 
     #[test]
@@ -540,6 +543,7 @@ mod tests {
             dashboard_show_event_feed: false,
             dashboard_show_replay_upload: false,
             dashboard_player_layout: DashboardPlayerLayout::Cards,
+            estimate_teammate_bumps: true,
             ..Default::default()
         };
 
@@ -560,6 +564,7 @@ mod tests {
             decoded.dashboard_player_layout,
             DashboardPlayerLayout::Cards
         );
+        assert!(decoded.estimate_teammate_bumps);
     }
 }
 
@@ -664,6 +669,7 @@ pub struct DashboardMatchSnapshot {
     pub players: HashMap<String, PlayerInfo>,
     pub session: SessionState,
     pub local_team: Option<u8>,
+    pub team_bumps: [u32; 2],
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -672,6 +678,18 @@ pub struct TouchCounterDebounce {
     pub last_touch_increment_at: Option<std::time::Instant>,
     pub accepted_car_touches: u32,
     pub last_car_touch_increment_at: Option<std::time::Instant>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct TeammateBumpTouch {
+    pub team: u8,
+    pub at: std::time::Instant,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct TeammateBumpEstimateState {
+    pub pending: HashMap<String, TeammateBumpTouch>,
+    pub team_bumps: [u32; 2],
 }
 
 impl TouchCounterDebounce {
@@ -797,6 +815,7 @@ pub struct GameLobbyState {
     pub local_team: std::sync::atomic::AtomicU8,
     pub players: ArcSwap<HashMap<String, PlayerInfo>>,
     pub touch_counter_debounce: std::sync::Mutex<HashMap<String, TouchCounterDebounce>>,
+    pub teammate_bump_estimator: std::sync::Mutex<TeammateBumpEstimateState>,
     pub dashboard_match_snapshot: ArcSwap<DashboardMatchSnapshot>,
     pub match_roster: ArcSwap<HashMap<String, PlayerInfo>>,
     pub match_roster_guid: ArcSwap<String>,
@@ -905,6 +924,7 @@ impl AppState {
                 local_team: std::sync::atomic::AtomicU8::new(NO_TEAM),
                 players: ArcSwap::from_pointee(HashMap::new()),
                 touch_counter_debounce: std::sync::Mutex::new(HashMap::new()),
+                teammate_bump_estimator: std::sync::Mutex::new(TeammateBumpEstimateState::default()),
                 dashboard_match_snapshot: ArcSwap::from_pointee(DashboardMatchSnapshot::default()),
                 match_roster: ArcSwap::from_pointee(HashMap::new()),
                 match_roster_guid: ArcSwap::from_pointee(String::new()),

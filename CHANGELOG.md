@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.38] - 2026-06-30
+
+### Added
+- **Persistent Dashboard Match Snapshot**: Keeps completed match player stats visible until the next game starts instead of dropping stats when players leave the post-match lobby.
+- **Touch Counter Controls**: Added optional duplicate touch debouncing for ball touches and car touches, plus an experimental estimated teammate bumps comparison stat.
+- **Replay Upload Cache Sync**: Syncs replay upload cache state when the replays tab is first opened so uploaded status is available immediately.
+- **Platform Styling**: Added distinct Steam platform coloring in lobby and dashboard player displays.
+
+### Fixed
+- **Dashboard Replay Filtering**: Ignores replay/background postgame `UpdateState` player stats so replay playback no longer inflates touches, car touches, or estimated bump totals after a match ends.
+- **Windows Local Player Detection**: Resolves local player hints from Stats API target name or shortcut data, improving session and dashboard local-player detection on Windows.
+- **Local History Display**: Prevents local players from showing their own played-with history in lobby overlay and dashboard views.
+- **Dashboard Rank Consistency**: Aligns dashboard rank selection with lobby overlay behavior.
+- **Dashboard Layout Stability**: Keeps scoreboard/team panels and team comparison widths aligned across fullscreen and monitor changes.
+
+---
+
 ## [0.1.17] - 2026-06-05
 
 ### Fixed

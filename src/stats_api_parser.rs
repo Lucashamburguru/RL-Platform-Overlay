@@ -24,6 +24,7 @@ pub struct StatsApiEvent {
     pub winner_hint: Option<String>,
     pub winner_team_num: Option<u8>,
     pub has_winner: bool,
+    pub is_replay: bool,
     pub target_name: Option<String>,
     pub target_team: Option<u8>,
     pub has_target: bool,
@@ -92,6 +93,7 @@ pub fn parse_stats_api_data(
 ) -> StatsApiEvent {
     let game = data.get("Game").or_else(|| data.get("game")).cloned();
     let hints = game.as_ref().map(extract_game_hints).unwrap_or_default();
+    let target_player_name = target_player_name(&data, &hints);
     let effective_local_name = hints
         .local_name
         .as_deref()
@@ -99,11 +101,7 @@ pub fn parse_stats_api_data(
             let name = context.current_local_name.trim();
             (!name.is_empty()).then_some(name)
         })
-        .or(if !hints.has_target {
-            hints.target_name.as_deref()
-        } else {
-            None
-        })
+        .or(target_player_name.as_deref())
         .unwrap_or("");
     let players = parse_players(
         &data,
@@ -147,6 +145,10 @@ pub fn parse_stats_api_data(
         .as_ref()
         .and_then(|game| bool_field(game, &["bHasWinner", "hasWinner"]))
         .unwrap_or(false);
+    let is_replay = game
+        .as_ref()
+        .and_then(|game| bool_field(game, &["bReplay", "b_replay", "replay"]))
+        .unwrap_or(false);
     let (blue_score, orange_score) = game.as_ref().map(team_scores).unwrap_or((0, 0));
     let score = ScoreSignature {
         match_guid: match_guid.clone().unwrap_or_default(),
@@ -173,6 +175,7 @@ pub fn parse_stats_api_data(
         winner_hint,
         winner_team_num,
         has_winner,
+        is_replay,
         target_name: hints.target_name,
         target_team: hints.target_team,
         has_target: hints.has_target,
@@ -288,6 +291,7 @@ pub fn team_scores(game: &Value) -> (u32, u32) {
 struct GameHints {
     local_name: Option<String>,
     target_name: Option<String>,
+    target_shortcut: Option<i64>,
     target_team: Option<u8>,
     has_target: bool,
 }
@@ -305,11 +309,52 @@ fn extract_game_hints(game: &Value) -> GameHints {
 
     if let Some(target) = game.get("target").or_else(|| game.get("Target")) {
         hints.target_name = string_field(target, &["Name", "name"]).map(str::to_string);
+        hints.target_shortcut = number_field(target, &["Shortcut", "shortcut"]);
         hints.target_team =
             number_field(target, &["TeamNum", "teamNum", "Team", "team"]).map(|team| team as u8);
     }
 
     hints
+}
+
+fn target_player_name(data: &Value, hints: &GameHints) -> Option<String> {
+    let target_name = hints
+        .target_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty());
+    let target_shortcut = hints.target_shortcut;
+    if target_name.is_none() && target_shortcut.is_none() {
+        return None;
+    }
+
+    data.get("Players")
+        .or_else(|| data.get("players"))
+        .and_then(Value::as_array)
+        .and_then(|players| {
+            players.iter().find_map(|player| {
+                let name = string_field(player, &["Name", "name"])?.trim();
+                if name.is_empty() {
+                    return None;
+                }
+
+                if let Some(target_team) = hints.target_team {
+                    let team = number_field(player, &["TeamNum", "teamNum", "Team", "team"])?;
+                    if team as u8 != target_team {
+                        return None;
+                    }
+                }
+
+                let name_matches =
+                    target_name.is_some_and(|target| name.eq_ignore_ascii_case(target));
+                let shortcut_matches = target_shortcut.is_some_and(|target| {
+                    number_field(player, &["Shortcut", "shortcut"])
+                        .is_some_and(|shortcut| shortcut == target)
+                });
+
+                (name_matches || shortcut_matches).then(|| name.to_string())
+            })
+        })
 }
 
 fn parse_players(
@@ -566,6 +611,25 @@ mod tests {
     }
 
     #[test]
+    fn marks_replay_update_state() {
+        let identity = LocalPlayerIdentity::default();
+        let previous = HashMap::new();
+        let event = parse_stats_api_event(
+            &json!({
+                "Event": "UpdateState",
+                "Data": {
+                    "Game": {
+                        "bReplay": true
+                    }
+                }
+            }),
+            context(&identity, &previous),
+        );
+
+        assert!(event.is_replay);
+    }
+
+    #[test]
     fn local_player_resolves_through_cached_identity_without_flag() {
         let identity = LocalPlayerIdentity {
             name: "CachedName".to_string(),
@@ -587,6 +651,72 @@ mod tests {
         );
 
         assert!(event.players["Renamed"].is_local);
+        assert_eq!(event.local_player_hint.as_ref().unwrap().team, 1);
+    }
+
+    #[test]
+    fn target_marks_local_player_even_when_has_target_true() {
+        let identity = LocalPlayerIdentity::default();
+        let previous = HashMap::new();
+        let event = parse_stats_api_event(
+            &json!({
+                "Event": "UpdateState",
+                "Data": {
+                    "Players": [
+                        {"Name": "cyberPeng", "PrimaryId": "Steam|1|0", "TeamNum": 0},
+                        {"Name": "Opponent", "PrimaryId": "Epic|2|0", "TeamNum": 1}
+                    ],
+                    "Game": {
+                        "bHasTarget": true,
+                        "Target": {"Name": "cyberPeng", "TeamNum": 0}
+                    }
+                }
+            }),
+            context(&identity, &previous),
+        );
+
+        assert!(event.players["cyberPeng"].is_local);
+        assert!(!event.players["Opponent"].is_local);
+        assert_eq!(event.local_player_hint.as_ref().unwrap().name, "cyberPeng");
+    }
+
+    #[test]
+    fn target_shortcut_marks_local_player_when_name_is_missing() {
+        let identity = LocalPlayerIdentity::default();
+        let previous = HashMap::new();
+        let event = parse_stats_api_event(
+            &json!({
+                "Event": "UpdateState",
+                "Data": {
+                    "Players": [
+                        {
+                            "Name": "WindowsPlayer",
+                            "PrimaryId": "Steam|1|0",
+                            "Shortcut": 5,
+                            "TeamNum": 1
+                        },
+                        {
+                            "Name": "Opponent",
+                            "PrimaryId": "Epic|2|0",
+                            "Shortcut": 6,
+                            "TeamNum": 0
+                        }
+                    ],
+                    "Game": {
+                        "bHasTarget": true,
+                        "Target": {"Shortcut": 5, "TeamNum": 1}
+                    }
+                }
+            }),
+            context(&identity, &previous),
+        );
+
+        assert!(event.players["WindowsPlayer"].is_local);
+        assert!(!event.players["Opponent"].is_local);
+        assert_eq!(
+            event.local_player_hint.as_ref().unwrap().name,
+            "WindowsPlayer"
+        );
         assert_eq!(event.local_player_hint.as_ref().unwrap().team, 1);
     }
 

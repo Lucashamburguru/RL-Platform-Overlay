@@ -495,8 +495,8 @@ fn render_compact_row(
                 render_mmr_badge(ui, &playlist.tier_name, playlist.rating, false, scale);
             }
 
-            if let Some(summary) = history_summary_for_player(player, history_summaries)
-                && !is_local
+            if !is_local
+                && let Some(summary) = history_summary_for_player(player, history_summaries)
             {
                 render_history_badge(ui, summary, scale);
             }
@@ -582,8 +582,8 @@ fn render_expanded_row_v2(
                     if is_local {
                         render_you_badge(ui, scale);
                     }
-                    if let Some(summary) = history_summary_for_player(player, history_summaries)
-                        && !is_local
+                    if !is_local
+                        && let Some(summary) = history_summary_for_player(player, history_summaries)
                     {
                         render_history_badge(ui, summary, scale);
                     }
