@@ -5,3 +5,6 @@
 ## 2026-06-17 - Avoid Unnecessary Clones for serde_json::Value
 **Learning:** During JSON processing, particularly extracting the payload of an envelope structure, dereferencing and cloning an entire JSON `Value` object recursively causes deep memory duplication which severely blocks the main thread.
 **Action:** Implemented a new enum variant extraction method `.into_owned()` that consumes the enum variants. When the string contains an encoded JSON, parsing creates an `Owned(Value)` which we can extract without cloning, only cloning `Borrowed` variants when absolutely necessary. This optimizes hot-path stats parsing when `decode_json_string_value` is called.
+## 2024-05-19 - Zero-allocation substring matching with .windows() panic trap
+**Learning:** When using the `.as_bytes().windows(needle.len())` pattern for zero-allocation substring matching in Rust, always handle `needle.is_empty()` explicitly, as `slice::windows(0)` will panic at runtime.
+**Action:** Add an explicit guard `if needle.is_empty() { return true; }` before using the `.windows()` approach for substring matching.
