@@ -686,6 +686,18 @@ pub struct TeammateBumpTouch {
     pub at: std::time::Instant,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ReplayTouchOffset {
+    pub touches: u32,
+    pub car_touches: u32,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ReplayTouchOffsetState {
+    pub match_guid: String,
+    pub player_offsets: HashMap<String, ReplayTouchOffset>,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct TeammateBumpEstimateState {
     pub pending: HashMap<String, TeammateBumpTouch>,
@@ -816,6 +828,7 @@ pub struct GameLobbyState {
     pub players: ArcSwap<HashMap<String, PlayerInfo>>,
     pub touch_counter_debounce: std::sync::Mutex<HashMap<String, TouchCounterDebounce>>,
     pub teammate_bump_estimator: std::sync::Mutex<TeammateBumpEstimateState>,
+    pub replay_touch_offsets: std::sync::Mutex<ReplayTouchOffsetState>,
     pub dashboard_match_snapshot: ArcSwap<DashboardMatchSnapshot>,
     pub match_roster: ArcSwap<HashMap<String, PlayerInfo>>,
     pub match_roster_guid: ArcSwap<String>,
@@ -925,6 +938,7 @@ impl AppState {
                 players: ArcSwap::from_pointee(HashMap::new()),
                 touch_counter_debounce: std::sync::Mutex::new(HashMap::new()),
                 teammate_bump_estimator: std::sync::Mutex::new(TeammateBumpEstimateState::default()),
+                replay_touch_offsets: std::sync::Mutex::new(ReplayTouchOffsetState::default()),
                 dashboard_match_snapshot: ArcSwap::from_pointee(DashboardMatchSnapshot::default()),
                 match_roster: ArcSwap::from_pointee(HashMap::new()),
                 match_roster_guid: ArcSwap::from_pointee(String::new()),

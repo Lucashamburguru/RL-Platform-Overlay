@@ -165,7 +165,8 @@ impl SessionState {
             return true;
         }
 
-        if mode_hint != SessionMode::Unknown && self.active_mode != mode_hint {
+        let effective_mode_hint = self.effective_mode_hint(real_data, mode_hint);
+        if effective_mode_hint != SessionMode::Unknown && self.active_mode != effective_mode_hint {
             return true;
         }
 
@@ -273,12 +274,13 @@ impl SessionState {
             self.is_watching_replay = b_replay;
         }
 
-        if mode_hint != SessionMode::Unknown
+        let effective_mode_hint = self.effective_mode_hint(&real_data, mode_hint);
+        if effective_mode_hint != SessionMode::Unknown
             && (!self.round_started
                 || self.active_mode == SessionMode::Unknown
-                || should_replace_active_mode(self.active_mode, mode_hint))
+                || should_replace_active_mode(self.active_mode, effective_mode_hint))
         {
-            self.active_mode = mode_hint;
+            self.active_mode = effective_mode_hint;
         }
 
         if let Some(team) = local_team_hint {
@@ -545,8 +547,9 @@ impl SessionState {
     ) -> Option<ResultSignature> {
         let game = real_data.get("Game").or_else(|| real_data.get("game"))?;
         let local_team = local_team_hint.or(self.local_team)?;
-        let mode = if mode_hint != SessionMode::Unknown {
-            mode_hint
+        let effective_mode_hint = self.effective_mode_hint(real_data, mode_hint);
+        let mode = if effective_mode_hint != SessionMode::Unknown {
+            effective_mode_hint
         } else {
             self.active_mode
         };
@@ -565,6 +568,29 @@ impl SessionState {
 
         let winner = string_field(game, &["Winner", "winner"]).unwrap_or("");
         result_signature(mode, Some(local_team), blue_score, orange_score, winner)
+    }
+
+    fn effective_mode_hint(&self, real_data: &Value, mode_hint: SessionMode) -> SessionMode {
+        if self.active_mode == SessionMode::Unknown
+            || mode_hint == SessionMode::Unknown
+            || !self.match_has_goal(real_data)
+        {
+            return mode_hint;
+        }
+
+        self.active_mode
+    }
+
+    fn match_has_goal(&self, real_data: &Value) -> bool {
+        if self.blue_score > 0 || self.orange_score > 0 {
+            return true;
+        }
+
+        real_data
+            .get("Game")
+            .or_else(|| real_data.get("game"))
+            .map(team_scores)
+            .is_some_and(|(blue, orange)| blue > 0 || orange > 0)
     }
 }
 
@@ -1084,6 +1110,31 @@ mod tests {
         });
 
         session.handle_update_state(&data, None, SessionMode::Twos);
+
+        assert_eq!(session.active_mode, SessionMode::Twos);
+    }
+
+    #[test]
+    fn locks_standard_mode_after_first_goal() {
+        let mut session = SessionState {
+            active_match_id: "abc".to_string(),
+            active_mode: SessionMode::Twos,
+            blue_score: 1,
+            round_started: true,
+            ..Default::default()
+        };
+        let data = json!({
+            "MatchGuid": "abc",
+            "Game": {
+                "Teams": [
+                    {"TeamNum": 0, "Score": 1},
+                    {"TeamNum": 1, "Score": 0}
+                ],
+                "bHasWinner": false,
+            }
+        });
+
+        session.handle_update_state(&data, None, SessionMode::Threes);
 
         assert_eq!(session.active_mode, SessionMode::Twos);
     }

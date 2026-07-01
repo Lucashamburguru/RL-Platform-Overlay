@@ -1,6 +1,7 @@
 use crate::session::SessionMode;
 use crate::state::{
-    AppState, DashboardMatchSnapshot, PlayerInfo, TeammateBumpTouch, TouchCounterDebounce,
+    AppState, DashboardMatchSnapshot, PlayerInfo, ReplayTouchOffset, ReplayTouchOffsetState,
+    TeammateBumpTouch, TouchCounterDebounce,
 };
 use crate::stats_api::{StatsApiTransport, TcpJsonSplitter};
 use crate::stats_api_parser::{
@@ -21,6 +22,7 @@ fn clear_lobby_state(state: &AppState) {
         debounce.clear();
     }
     clear_teammate_bump_estimator(state);
+    clear_replay_touch_offsets(state);
     state.game.match_roster.store(Arc::new(HashMap::new()));
     state.game.match_roster_guid.store(Arc::new(String::new()));
     state.game.local_player_name.store(Arc::new("".to_string()));
@@ -273,7 +275,13 @@ fn parse_event_for_state(state: &Arc<AppState>, json: &Value) -> StatsApiEvent {
 fn handle_update_state(state: &Arc<AppState>, parsed_event: &StatsApiEvent) {
     update_match_guid_diagnostics(state, parsed_event.match_guid.as_deref().unwrap_or(""));
 
-    if parsed_event.is_replay || state.flags.is_watching_replay.load(Ordering::SeqCst) {
+    let was_watching_replay = state.flags.is_watching_replay.load(Ordering::SeqCst);
+    if parsed_event.is_replay {
+        update_session_from_event(state, parsed_event, false);
+        return;
+    }
+    if was_watching_replay {
+        record_replay_touch_offsets(state, parsed_event);
         update_session_from_event(state, parsed_event, false);
         return;
     }
@@ -303,6 +311,7 @@ fn handle_update_state(state: &Arc<AppState>, parsed_event: &StatsApiEvent) {
         // println!("State Updated: {} players in lobby", new_players.len());
     }
     let mut players = parsed_event.players.clone();
+    apply_replay_touch_offsets(state, parsed_event.match_guid.as_deref(), &mut players);
     let previous_players = state.game.players.load();
     let config = state.system.config.load();
     if config.debounce_touch_counters {
@@ -521,6 +530,89 @@ fn clear_teammate_bump_estimator(state: &AppState) {
     if let Ok(mut estimator) = state.game.teammate_bump_estimator.lock() {
         estimator.pending.clear();
         estimator.team_bumps = [0, 0];
+    }
+}
+
+fn clear_replay_touch_offsets(state: &AppState) {
+    if let Ok(mut offsets) = state.game.replay_touch_offsets.lock() {
+        *offsets = ReplayTouchOffsetState::default();
+    }
+}
+
+fn record_replay_touch_offsets(state: &Arc<AppState>, parsed_event: &StatsApiEvent) {
+    let Some(match_guid) = parsed_event
+        .match_guid
+        .as_deref()
+        .map(str::trim)
+        .filter(|guid| !guid.is_empty())
+    else {
+        clear_replay_touch_offsets(state);
+        return;
+    };
+
+    let previous_players = state.game.players.load();
+    let previous_by_key: HashMap<_, _> = previous_players
+        .values()
+        .map(|player| (touch_debounce_key(player), player))
+        .collect();
+    let player_offsets = parsed_event
+        .players
+        .values()
+        .filter_map(|player| {
+            let key = touch_debounce_key(player);
+            let previous = previous_by_key.get(&key)?;
+            let touches = player.touches.saturating_sub(previous.touches);
+            let car_touches = player.car_touches.saturating_sub(previous.car_touches);
+            (touches > 0 || car_touches > 0).then_some((
+                key,
+                ReplayTouchOffset {
+                    touches,
+                    car_touches,
+                },
+            ))
+        })
+        .collect();
+    drop(previous_players);
+
+    if let Ok(mut offsets) = state.game.replay_touch_offsets.lock() {
+        *offsets = ReplayTouchOffsetState {
+            match_guid: match_guid.to_string(),
+            player_offsets,
+        };
+    }
+}
+
+fn apply_replay_touch_offsets(
+    state: &Arc<AppState>,
+    match_guid: Option<&str>,
+    players: &mut HashMap<String, PlayerInfo>,
+) {
+    let Some(match_guid) = match_guid.map(str::trim).filter(|guid| !guid.is_empty()) else {
+        return;
+    };
+
+    let Ok(mut offsets) = state.game.replay_touch_offsets.lock() else {
+        return;
+    };
+    if offsets.match_guid.is_empty() {
+        return;
+    }
+    if offsets.match_guid != match_guid {
+        *offsets = ReplayTouchOffsetState::default();
+        return;
+    }
+
+    offsets.player_offsets.retain(|key, _| {
+        players
+            .values()
+            .any(|player| touch_debounce_key(player) == *key)
+    });
+    for player in players.values_mut() {
+        let Some(offset) = offsets.player_offsets.get(&touch_debounce_key(player)) else {
+            continue;
+        };
+        player.touches = player.touches.saturating_sub(offset.touches);
+        player.car_touches = player.car_touches.saturating_sub(offset.car_touches);
     }
 }
 
@@ -1271,6 +1363,116 @@ mod tests {
     }
 
     #[test]
+    fn in_game_replay_touch_increments_are_subtracted_after_replay_ends() {
+        let state = AppState::new();
+
+        handle_update_state_payload(
+            &state,
+            &json!({
+                "MatchGuid": "match-one",
+                "Game": {
+                    "Teams": [
+                        {"TeamNum": 0, "Score": 1},
+                        {"TeamNum": 1, "Score": 0}
+                    ],
+                    "bReplay": false
+                },
+                "Players": [
+                    {
+                        "Name": "Me",
+                        "PrimaryId": "Steam|1|0",
+                        "TeamNum": 0,
+                        "Touches": 4,
+                        "CarTouches": 2,
+                        "IsLocalPlayer": true
+                    }
+                ]
+            }),
+        );
+
+        handle_update_state_payload(
+            &state,
+            &json!({
+                "MatchGuid": "match-one",
+                "Game": {
+                    "Teams": [
+                        {"TeamNum": 0, "Score": 1},
+                        {"TeamNum": 1, "Score": 0}
+                    ],
+                    "bReplay": true
+                },
+                "Players": [
+                    {
+                        "Name": "Me",
+                        "PrimaryId": "Steam|1|0",
+                        "TeamNum": 0,
+                        "Touches": 10,
+                        "CarTouches": 8,
+                        "IsLocalPlayer": true
+                    }
+                ]
+            }),
+        );
+
+        handle_update_state_payload(
+            &state,
+            &json!({
+                "MatchGuid": "match-one",
+                "Game": {
+                    "Teams": [
+                        {"TeamNum": 0, "Score": 1},
+                        {"TeamNum": 1, "Score": 0}
+                    ],
+                    "bReplay": false
+                },
+                "Players": [
+                    {
+                        "Name": "Me",
+                        "PrimaryId": "Steam|1|0",
+                        "TeamNum": 0,
+                        "Touches": 12,
+                        "CarTouches": 9,
+                        "IsLocalPlayer": true
+                    }
+                ]
+            }),
+        );
+
+        let players = state.game.players.load();
+        assert_eq!(players["Me"].touches, 4);
+        assert_eq!(players["Me"].car_touches, 2);
+        drop(players);
+
+        handle_update_state_payload(
+            &state,
+            &json!({
+                "MatchGuid": "match-one",
+                "Game": {
+                    "Teams": [
+                        {"TeamNum": 0, "Score": 1},
+                        {"TeamNum": 1, "Score": 0}
+                    ],
+                    "bReplay": false
+                },
+                "Players": [
+                    {
+                        "Name": "Me",
+                        "PrimaryId": "Steam|1|0",
+                        "TeamNum": 0,
+                        "Touches": 13,
+                        "CarTouches": 10,
+                        "IsLocalPlayer": true
+                    }
+                ]
+            }),
+        );
+
+        let players = state.game.players.load();
+        assert_eq!(players["Me"].touches, 5);
+        assert_eq!(players["Me"].car_touches, 3);
+    }
+
+    #[test]
     fn test_update_state_marks_local_player_and_teammate_team() {
         let state = AppState::new();
         let data = json!({
@@ -1624,6 +1826,62 @@ mod tests {
         let session = state.game.session.load();
         assert!(session.round_started);
         assert_eq!(session.active_mode, crate::session::SessionMode::Twos);
+    }
+
+    #[test]
+    fn test_scored_match_keeps_mode_when_roster_temporarily_grows() {
+        let state = AppState::new();
+        handle_update_state_payload(
+            &state,
+            &json!({
+                "MatchGuid": "guid123",
+                "Players": [
+                    {"Name": "Me", "PrimaryId": "Steam|1|0", "TeamNum": 0, "IsLocalPlayer": true},
+                    {"Name": "Mate", "PrimaryId": "Epic|2|0", "TeamNum": 0},
+                    {"Name": "Opp1", "PrimaryId": "Xbox|3|0", "TeamNum": 1},
+                    {"Name": "Opp2", "PrimaryId": "Ps4|4|0", "TeamNum": 1}
+                ],
+                "Game": {
+                    "Arena": "Stadium_P",
+                    "Teams": [
+                        {"TeamNum": 0, "Score": 1},
+                        {"TeamNum": 1, "Score": 0}
+                    ]
+                }
+            }),
+        );
+
+        let session = state.game.session.load();
+        assert_eq!(session.active_mode, crate::session::SessionMode::Twos);
+        assert_eq!(session.blue_score, 1);
+        drop(session);
+
+        handle_update_state_payload(
+            &state,
+            &json!({
+                "MatchGuid": "guid123",
+                "Players": [
+                    {"Name": "Me", "PrimaryId": "Steam|1|0", "TeamNum": 0, "IsLocalPlayer": true},
+                    {"Name": "Mate", "PrimaryId": "Epic|2|0", "TeamNum": 0},
+                    {"Name": "NewBlue", "PrimaryId": "Steam|5|0", "TeamNum": 0},
+                    {"Name": "Opp1", "PrimaryId": "Xbox|3|0", "TeamNum": 1},
+                    {"Name": "Opp2", "PrimaryId": "Ps4|4|0", "TeamNum": 1},
+                    {"Name": "NewOrange", "PrimaryId": "Epic|6|0", "TeamNum": 1}
+                ],
+                "Game": {
+                    "Arena": "Stadium_P",
+                    "Teams": [
+                        {"TeamNum": 0, "Score": 1},
+                        {"TeamNum": 1, "Score": 0}
+                    ]
+                }
+            }),
+        );
+
+        assert_eq!(
+            state.game.session.load().active_mode,
+            crate::session::SessionMode::Twos
+        );
     }
 
     #[test]

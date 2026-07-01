@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.39] - 2026-06-30
+
+### Added
+- **Replay Touch Deduplication**: Subtracts touch increments during goal replay playback, preventing inflated touch and car-touch stats on the dashboard and overlays.
+
+### Changed
+- **Settings tab migration**: Moved the "Touch Counters" (debounce duplicate touches) and "Estimate teammate bumps" options from the Overlay settings tab to the Dashboard settings tab.
+
+### Fixed
+- **Session Mode Locking**: Keeps the current match session mode locked (e.g., preventing Twos from switching to Threes) once the first goal of the match is scored, even if players temporarily join the lobby.
+
+---
+
 ## [0.1.38] - 2026-06-30
 
 ### Added

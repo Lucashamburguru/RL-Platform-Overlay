@@ -152,42 +152,6 @@ pub(crate) fn render_overlay_settings_tab(
             });
 
             right.add_space(8.0);
-            setting_row(right, "Touch Counters", |ui| {
-                let debounce_changed = ui
-                    .checkbox(
-                        &mut config_edit.debounce_touch_counters,
-                        "Debounce duplicate touches",
-                    )
-                    .on_hover_text(
-                        "Filters rapid duplicate touch increments before they appear in overlays, dashboard, and history. Ball touches use 200ms; car touches use 450ms.",
-                    )
-                    .changed();
-                if debounce_changed {
-                    if !config_edit.debounce_touch_counters {
-                        config_edit.estimate_teammate_bumps = false;
-                    }
-                    *changed = true;
-                }
-                ui.add_enabled_ui(config_edit.debounce_touch_counters, |ui| {
-                    if ui
-                        .checkbox(
-                            &mut config_edit.estimate_teammate_bumps,
-                            "Estimate teammate bumps",
-                        )
-                        .on_hover_text(
-                            "Adds an estimated Team Bumps comparison when two same-team players receive debounced car touches within 450ms and no opponent does.",
-                        )
-                        .changed()
-                    {
-                        *changed = true;
-                    }
-                });
-                if !config_edit.debounce_touch_counters {
-                    config_edit.estimate_teammate_bumps = false;
-                }
-            });
-
-            right.add_space(8.0);
             setting_row(right, "Matches", |ui| {
                 if ui
                     .checkbox(&mut config_edit.show_lobby_matches, "Show Match Counts")
