@@ -5,3 +5,6 @@
 ## 2026-06-17 - Avoid Unnecessary Clones for serde_json::Value
 **Learning:** During JSON processing, particularly extracting the payload of an envelope structure, dereferencing and cloning an entire JSON `Value` object recursively causes deep memory duplication which severely blocks the main thread.
 **Action:** Implemented a new enum variant extraction method `.into_owned()` that consumes the enum variants. When the string contains an encoded JSON, parsing creates an `Owned(Value)` which we can extract without cloning, only cloning `Borrowed` variants when absolutely necessary. This optimizes hot-path stats parsing when `decode_json_string_value` is called.
+## 2024-07-02 - Heap allocations in immediate-mode GUIs
+**Learning:** In immediate-mode GUIs like egui, functions called during the render loop execute on every single frame. Even small heap allocations (like `String` creation via `.to_lowercase()`) in these hot paths quickly accumulate and can cause noticeable performance degradation or excessive garbage collection overhead.
+**Action:** Always scan render path functions for hidden heap allocations. Use zero-allocation alternatives like `.eq_ignore_ascii_case()` for string comparisons to eliminate these bottlenecks.
