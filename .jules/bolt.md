@@ -5,3 +5,7 @@
 ## 2026-06-17 - Avoid Unnecessary Clones for serde_json::Value
 **Learning:** During JSON processing, particularly extracting the payload of an envelope structure, dereferencing and cloning an entire JSON `Value` object recursively causes deep memory duplication which severely blocks the main thread.
 **Action:** Implemented a new enum variant extraction method `.into_owned()` that consumes the enum variants. When the string contains an encoded JSON, parsing creates an `Owned(Value)` which we can extract without cloning, only cloning `Borrowed` variants when absolutely necessary. This optimizes hot-path stats parsing when `decode_json_string_value` is called.
+
+## 2024-10-19 - Case-Insensitive Substring Matching Without Allocations
+**Learning:** `str::contains()` is case-sensitive, and using `.to_lowercase().contains()` creates a heap allocation. For simple ASCII needles, a custom `contains_ignore_ascii_case` using `.as_bytes().windows(needle.len()).any(|w| w.eq_ignore_ascii_case(needle.as_bytes()))` achieves zero-allocation case-insensitive substring matching.
+**Action:** Use this byte-windowing pattern for fast substring matching in hot paths like egui render loops, but always handle `needle.is_empty()` explicitly, as `slice::windows(0)` will panic.
