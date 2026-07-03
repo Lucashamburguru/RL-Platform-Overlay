@@ -918,13 +918,21 @@ pub(super) fn rank_icon(rank: &str) -> Option<egui::ImageSource<'static>> {
     } else if rank_trimmed.eq_ignore_ascii_case("champion iii") {
         Some(egui::include_image!("../../assets/ranks/champion_3.png"))
     } else if rank_trimmed.eq_ignore_ascii_case("grand champion i") {
-        Some(egui::include_image!("../../assets/ranks/grand_champion_1.png"))
+        Some(egui::include_image!(
+            "../../assets/ranks/grand_champion_1.png"
+        ))
     } else if rank_trimmed.eq_ignore_ascii_case("grand champion ii") {
-        Some(egui::include_image!("../../assets/ranks/grand_champion_2.png"))
+        Some(egui::include_image!(
+            "../../assets/ranks/grand_champion_2.png"
+        ))
     } else if rank_trimmed.eq_ignore_ascii_case("grand champion iii") {
-        Some(egui::include_image!("../../assets/ranks/grand_champion_3.png"))
+        Some(egui::include_image!(
+            "../../assets/ranks/grand_champion_3.png"
+        ))
     } else if rank_trimmed.eq_ignore_ascii_case("supersonic legend") {
-        Some(egui::include_image!("../../assets/ranks/supersonic_legend.png"))
+        Some(egui::include_image!(
+            "../../assets/ranks/supersonic_legend.png"
+        ))
     } else if rank_trimmed.eq_ignore_ascii_case("unranked") {
         Some(egui::include_image!("../../assets/ranks/unranked.png"))
     } else {

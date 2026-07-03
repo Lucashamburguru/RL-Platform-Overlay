@@ -124,11 +124,20 @@ fn contains_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
 }
 
 fn ranked_playlist_sort_priority(playlist_id: i32, playlist_name: &str) -> i32 {
-    if playlist_id == 10 || contains_ignore_ascii_case(playlist_name, "duel") || contains_ignore_ascii_case(playlist_name, "1v1") {
+    if playlist_id == 10
+        || contains_ignore_ascii_case(playlist_name, "duel")
+        || contains_ignore_ascii_case(playlist_name, "1v1")
+    {
         0
-    } else if playlist_id == 11 || contains_ignore_ascii_case(playlist_name, "doubles") || contains_ignore_ascii_case(playlist_name, "2v2") {
+    } else if playlist_id == 11
+        || contains_ignore_ascii_case(playlist_name, "doubles")
+        || contains_ignore_ascii_case(playlist_name, "2v2")
+    {
         1
-    } else if playlist_id == 13 || contains_ignore_ascii_case(playlist_name, "standard") || contains_ignore_ascii_case(playlist_name, "3v3") {
+    } else if playlist_id == 13
+        || contains_ignore_ascii_case(playlist_name, "standard")
+        || contains_ignore_ascii_case(playlist_name, "3v3")
+    {
         2
     } else if playlist_id == 0
         || contains_ignore_ascii_case(playlist_name, "unranked")
@@ -142,13 +151,22 @@ fn ranked_playlist_sort_priority(playlist_id: i32, playlist_name: &str) -> i32 {
 }
 
 fn compact_playlist_name(playlist_name: &str) -> String {
-    if contains_ignore_ascii_case(playlist_name, "duel") || contains_ignore_ascii_case(playlist_name, "1v1") {
+    if contains_ignore_ascii_case(playlist_name, "duel")
+        || contains_ignore_ascii_case(playlist_name, "1v1")
+    {
         "1v1".to_string()
-    } else if contains_ignore_ascii_case(playlist_name, "doubles") || contains_ignore_ascii_case(playlist_name, "2v2") {
+    } else if contains_ignore_ascii_case(playlist_name, "doubles")
+        || contains_ignore_ascii_case(playlist_name, "2v2")
+    {
         "2v2".to_string()
-    } else if contains_ignore_ascii_case(playlist_name, "standard") || contains_ignore_ascii_case(playlist_name, "3v3") {
+    } else if contains_ignore_ascii_case(playlist_name, "standard")
+        || contains_ignore_ascii_case(playlist_name, "3v3")
+    {
         "3v3".to_string()
-    } else if contains_ignore_ascii_case(playlist_name, "unranked") || contains_ignore_ascii_case(playlist_name, "un-ranked") || contains_ignore_ascii_case(playlist_name, "casual") {
+    } else if contains_ignore_ascii_case(playlist_name, "unranked")
+        || contains_ignore_ascii_case(playlist_name, "un-ranked")
+        || contains_ignore_ascii_case(playlist_name, "casual")
+    {
         "Casual".to_string()
     } else {
         playlist_name
