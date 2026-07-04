@@ -880,40 +880,54 @@ fn best_rank(mmr: Option<&TrackerSnapshot>) -> Option<(String, i32)> {
 }
 
 pub(super) fn rank_icon(rank: &str) -> Option<egui::ImageSource<'static>> {
-    match rank.trim().to_lowercase().as_str() {
-        "bronze i" => Some(egui::include_image!("../../assets/ranks/bronze_1.png")),
-        "bronze ii" => Some(egui::include_image!("../../assets/ranks/bronze_2.png")),
-        "bronze iii" => Some(egui::include_image!("../../assets/ranks/bronze_3.png")),
-        "silver i" => Some(egui::include_image!("../../assets/ranks/silver_1.png")),
-        "silver ii" => Some(egui::include_image!("../../assets/ranks/silver_2.png")),
-        "silver iii" => Some(egui::include_image!("../../assets/ranks/silver_3.png")),
-        "gold i" => Some(egui::include_image!("../../assets/ranks/gold_1.png")),
-        "gold ii" => Some(egui::include_image!("../../assets/ranks/gold_2.png")),
-        "gold iii" => Some(egui::include_image!("../../assets/ranks/gold_3.png")),
-        "platinum i" => Some(egui::include_image!("../../assets/ranks/platinum_1.png")),
-        "platinum ii" => Some(egui::include_image!("../../assets/ranks/platinum_2.png")),
-        "platinum iii" => Some(egui::include_image!("../../assets/ranks/platinum_3.png")),
-        "diamond i" => Some(egui::include_image!("../../assets/ranks/diamond_1.png")),
-        "diamond ii" => Some(egui::include_image!("../../assets/ranks/diamond_2.png")),
-        "diamond iii" => Some(egui::include_image!("../../assets/ranks/diamond_3.png")),
-        "champion i" => Some(egui::include_image!("../../assets/ranks/champion_1.png")),
-        "champion ii" => Some(egui::include_image!("../../assets/ranks/champion_2.png")),
-        "champion iii" => Some(egui::include_image!("../../assets/ranks/champion_3.png")),
-        "grand champion i" => Some(egui::include_image!(
-            "../../assets/ranks/grand_champion_1.png"
-        )),
-        "grand champion ii" => Some(egui::include_image!(
-            "../../assets/ranks/grand_champion_2.png"
-        )),
-        "grand champion iii" => Some(egui::include_image!(
-            "../../assets/ranks/grand_champion_3.png"
-        )),
-        "supersonic legend" => Some(egui::include_image!(
-            "../../assets/ranks/supersonic_legend.png"
-        )),
-        "unranked" => Some(egui::include_image!("../../assets/ranks/unranked.png")),
-        _ => None,
+    let r = rank.trim();
+
+    // ⚡ Bolt: Avoid heap allocation (.to_lowercase()) in UI render loop.
+    macro_rules! check {
+        ($name:expr, $path:expr) => {
+            if r.eq_ignore_ascii_case($name) {
+                return Some(egui::include_image!($path));
+            }
+        };
     }
+
+    check!("bronze i", "../../assets/ranks/bronze_1.png");
+    check!("bronze ii", "../../assets/ranks/bronze_2.png");
+    check!("bronze iii", "../../assets/ranks/bronze_3.png");
+    check!("silver i", "../../assets/ranks/silver_1.png");
+    check!("silver ii", "../../assets/ranks/silver_2.png");
+    check!("silver iii", "../../assets/ranks/silver_3.png");
+    check!("gold i", "../../assets/ranks/gold_1.png");
+    check!("gold ii", "../../assets/ranks/gold_2.png");
+    check!("gold iii", "../../assets/ranks/gold_3.png");
+    check!("platinum i", "../../assets/ranks/platinum_1.png");
+    check!("platinum ii", "../../assets/ranks/platinum_2.png");
+    check!("platinum iii", "../../assets/ranks/platinum_3.png");
+    check!("diamond i", "../../assets/ranks/diamond_1.png");
+    check!("diamond ii", "../../assets/ranks/diamond_2.png");
+    check!("diamond iii", "../../assets/ranks/diamond_3.png");
+    check!("champion i", "../../assets/ranks/champion_1.png");
+    check!("champion ii", "../../assets/ranks/champion_2.png");
+    check!("champion iii", "../../assets/ranks/champion_3.png");
+    check!(
+        "grand champion i",
+        "../../assets/ranks/grand_champion_1.png"
+    );
+    check!(
+        "grand champion ii",
+        "../../assets/ranks/grand_champion_2.png"
+    );
+    check!(
+        "grand champion iii",
+        "../../assets/ranks/grand_champion_3.png"
+    );
+    check!(
+        "supersonic legend",
+        "../../assets/ranks/supersonic_legend.png"
+    );
+    check!("unranked", "../../assets/ranks/unranked.png");
+
+    None
 }
 
 fn should_fetch_rank(player: &PlayerInfo) -> bool {
