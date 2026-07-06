@@ -238,14 +238,16 @@ pub fn result_signature(
 }
 
 pub fn result_from_winner(winner: &str, local_team: u8) -> Option<MatchResult> {
-    let normalized = winner.trim().to_lowercase();
+    let normalized = winner.trim();
     if normalized.is_empty() {
         return None;
     }
-    let winner_team = match normalized.as_str() {
-        "blue" => Some(0),
-        "orange" => Some(1),
-        _ => None,
+    let winner_team = if normalized.eq_ignore_ascii_case("blue") {
+        Some(0)
+    } else if normalized.eq_ignore_ascii_case("orange") {
+        Some(1)
+    } else {
+        None
     }?;
     Some(if winner_team == local_team {
         MatchResult::Win
