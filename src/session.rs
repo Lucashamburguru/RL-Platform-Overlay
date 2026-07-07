@@ -1,4 +1,7 @@
-use crate::json_utils::{bool_field, decode_json_string_value, number_field, string_field};
+use crate::json_utils::{
+    bool_field, checked_u8, decode_json_string_value, number_field, number_field_u8,
+    number_field_u32, string_field,
+};
 use crate::stats_api_parser::{
     ResultSignature, result_from_score, result_from_winner, result_signature, team_scores,
 };
@@ -175,8 +178,8 @@ impl SessionState {
         }
 
         if let Some(game) = real_data.get("Game").or_else(|| real_data.get("game")) {
-            if let Some(time_seconds) = number_field(game, &["TimeSeconds", "timeSeconds"])
-                && self.time_seconds != Some(time_seconds.max(0) as u32)
+            if let Some(time_seconds) = time_seconds_field(game)
+                && self.time_seconds != Some(time_seconds)
             {
                 return true;
             }
@@ -186,24 +189,11 @@ impl SessionState {
                 return true;
             }
 
-            if let Some(teams) = game
-                .get("Teams")
-                .or_else(|| game.get("teams"))
-                .and_then(Value::as_array)
+            let (blue_score, orange_score) = payload_team_scores(game);
+            if blue_score.is_some_and(|score| self.blue_score != score)
+                || orange_score.is_some_and(|score| self.orange_score != score)
             {
-                for team in teams {
-                    let team_num = number_field(team, &["TeamNum", "teamNum", "Team", "team"]);
-                    let score = number_field(team, &["Score", "score"]);
-                    match (team_num, score) {
-                        (Some(0), Some(score)) if self.blue_score != score as u32 => {
-                            return true;
-                        }
-                        (Some(1), Some(score)) if self.orange_score != score as u32 => {
-                            return true;
-                        }
-                        _ => {}
-                    }
-                }
+                return true;
             }
 
             let has_winner = bool_field(game, &["bHasWinner", "hasWinner"]).unwrap_or(false);
@@ -225,12 +215,7 @@ impl SessionState {
                 .and_then(Value::as_array)
         {
             for p in players {
-                let score = number_field(p, &["Score", "score"]).unwrap_or(0);
-                let touches = number_field(p, &["Touches", "touches"]).unwrap_or(0);
-                let goals = number_field(p, &["Goals", "goals"]).unwrap_or(0);
-                let saves = number_field(p, &["Saves", "saves"]).unwrap_or(0);
-                let demos = number_field(p, &["Demos", "demos"]).unwrap_or(0);
-                if score > 0 || touches > 0 || goals > 0 || saves > 0 || demos > 0 {
+                if player_has_round_stats(p) {
                     return true;
                 }
             }
@@ -292,27 +277,19 @@ impl SessionState {
                 self.is_watching_replay = b_replay;
             }
 
-            if let Some(time_seconds) = number_field(game, &["TimeSeconds", "timeSeconds"]) {
-                self.time_seconds = Some(time_seconds.max(0) as u32);
+            if let Some(time_seconds) = time_seconds_field(game) {
+                self.time_seconds = Some(time_seconds);
             }
             if let Some(overtime) = bool_field(game, &["bOvertime", "overtime"]) {
                 self.overtime = overtime;
             }
 
-            if let Some(teams) = game
-                .get("Teams")
-                .or_else(|| game.get("teams"))
-                .and_then(Value::as_array)
-            {
-                for team in teams {
-                    let team_num = number_field(team, &["TeamNum", "teamNum", "Team", "team"]);
-                    let score = number_field(team, &["Score", "score"]);
-                    match (team_num, score) {
-                        (Some(0), Some(score)) => self.blue_score = score as u32,
-                        (Some(1), Some(score)) => self.orange_score = score as u32,
-                        _ => {}
-                    }
-                }
+            let (blue_score, orange_score) = payload_team_scores(game);
+            if let Some(score) = blue_score {
+                self.blue_score = score;
+            }
+            if let Some(score) = orange_score {
+                self.orange_score = score;
             }
 
             if has_winner && !self.is_watching_replay {
@@ -327,12 +304,7 @@ impl SessionState {
             .and_then(Value::as_array)
         {
             for p in players {
-                let score = number_field(p, &["Score", "score"]).unwrap_or(0);
-                let touches = number_field(p, &["Touches", "touches"]).unwrap_or(0);
-                let goals = number_field(p, &["Goals", "goals"]).unwrap_or(0);
-                let saves = number_field(p, &["Saves", "saves"]).unwrap_or(0);
-                let demos = number_field(p, &["Demos", "demos"]).unwrap_or(0);
-                if score > 0 || touches > 0 || goals > 0 || saves > 0 || demos > 0 {
+                if player_has_round_stats(p) {
                     self.round_started = true;
                 }
             }
@@ -345,8 +317,8 @@ impl SessionState {
 
     pub fn handle_clock_update(&mut self, data: &Value) {
         let real_data = decode_json_string_value(data);
-        if let Some(time_seconds) = number_field(&real_data, &["TimeSeconds", "timeSeconds"]) {
-            self.time_seconds = Some(time_seconds.max(0) as u32);
+        if let Some(time_seconds) = time_seconds_field(&real_data) {
+            self.time_seconds = Some(time_seconds);
         }
         if let Some(overtime) = bool_field(&real_data, &["bOvertime", "overtime"]) {
             self.overtime = overtime;
@@ -403,8 +375,9 @@ impl SessionState {
             &real_data,
             &["WinnerTeamNum", "winnerTeamNum", "WinnerTeam", "winnerTeam"],
         )
+        .and_then(checked_u8)
         .map(|winner_team| {
-            if winner_team as u8 == local_team {
+            if winner_team == local_team {
                 MatchResult::Win
             } else {
                 MatchResult::Loss
@@ -494,7 +467,7 @@ impl SessionState {
             MatchResult::Win => {
                 self.wins += 1;
                 self.streak = if self.streak >= 0 { self.streak + 1 } else { 1 };
-                self.best_win_streak = self.best_win_streak.max(self.streak as u32);
+                self.best_win_streak = self.best_win_streak.max(self.streak.unsigned_abs());
             }
             MatchResult::Loss => {
                 self.losses += 1;
@@ -620,6 +593,44 @@ fn standard_mode_size(mode: SessionMode) -> Option<u8> {
         SessionMode::Threes => Some(3),
         _ => None,
     }
+}
+
+fn time_seconds_field(value: &Value) -> Option<u32> {
+    let seconds = number_field(value, &["TimeSeconds", "timeSeconds"])?;
+    u32::try_from(seconds.max(0)).ok()
+}
+
+fn payload_team_scores(game: &Value) -> (Option<u32>, Option<u32>) {
+    let mut blue_score = None;
+    let mut orange_score = None;
+    if let Some(teams) = game
+        .get("Teams")
+        .or_else(|| game.get("teams"))
+        .and_then(Value::as_array)
+    {
+        for team in teams {
+            let team_num = number_field_u8(team, &["TeamNum", "teamNum", "Team", "team"]);
+            let score = number_field_u32(team, &["Score", "score"]);
+            match (team_num, score) {
+                (Some(0), Some(score)) => blue_score = Some(score),
+                (Some(1), Some(score)) => orange_score = Some(score),
+                _ => {}
+            }
+        }
+    }
+    (blue_score, orange_score)
+}
+
+fn player_has_round_stats(player: &Value) -> bool {
+    [
+        &["Score", "score"][..],
+        &["Touches", "touches"][..],
+        &["Goals", "goals"][..],
+        &["Saves", "saves"][..],
+        &["Demos", "demos"][..],
+    ]
+    .into_iter()
+    .any(|keys| number_field(player, keys).is_some_and(|value| value > 0))
 }
 
 pub fn format_win_rate(wins: u32, losses: u32) -> String {
@@ -832,6 +843,84 @@ mod tests {
         session.handle_update_state(&data, None, SessionMode::Twos);
         assert_eq!(session.time_seconds, Some(123));
         assert!(session.overtime);
+    }
+
+    #[test]
+    fn update_state_ignores_invalid_numeric_fields_without_wrapping() {
+        let mut session = SessionState {
+            active_match_id: "abc".to_string(),
+            blue_score: 2,
+            orange_score: 1,
+            time_seconds: Some(42),
+            ..Default::default()
+        };
+        let data = json!({
+            "MatchGuid": "abc",
+            "Game": {
+                "TimeSeconds": -5,
+                "Teams": [
+                    {"TeamNum": 0, "Score": -1},
+                    {"TeamNum": 1, "Score": 9223372036854775807_i64},
+                    {"TeamNum": 256, "Score": 9}
+                ],
+                "bHasWinner": false
+            }
+        });
+
+        session.handle_update_state(&data, None, SessionMode::Twos);
+
+        assert_eq!(session.blue_score, 2);
+        assert_eq!(session.orange_score, 1);
+        assert_eq!(session.time_seconds, Some(0));
+    }
+
+    #[test]
+    fn player_round_stats_require_positive_values() {
+        assert!(!player_has_round_stats(&json!({
+            "Score": 0,
+            "Touches": -1,
+            "Goals": 0,
+            "Saves": 0,
+            "Demos": 0
+        })));
+        assert!(player_has_round_stats(&json!({"Touches": 1})));
+        assert!(player_has_round_stats(&json!({"goals": 1})));
+    }
+
+    #[test]
+    fn payload_team_scores_preserves_zero_and_ignores_invalid_values() {
+        let data = json!({
+            "Teams": [
+                {"TeamNum": 0, "Score": 0},
+                {"TeamNum": 1, "Score": -1},
+                {"TeamNum": 2, "Score": 8},
+                {"TeamNum": 256, "Score": 9}
+            ]
+        });
+
+        assert_eq!(payload_team_scores(&data), (Some(0), None));
+    }
+
+    #[test]
+    fn match_ended_ignores_invalid_winner_team_num_without_wrapping() {
+        let mut session = SessionState {
+            active_match_id: "abc".to_string(),
+            active_mode: SessionMode::Twos,
+            local_team: Some(255),
+            ..Default::default()
+        };
+
+        session.handle_match_ended(
+            &json!({
+                "MatchGuid": "abc",
+                "WinnerTeamNum": -1
+            }),
+            None,
+        );
+
+        assert_eq!(session.last_result, MatchResult::Unknown);
+        assert_eq!(session.matches_played, 0);
+        assert!(!session.result_recorded_for_match);
     }
 
     #[test]

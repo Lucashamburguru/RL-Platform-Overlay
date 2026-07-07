@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[derive(thiserror::Error, Debug)]
 pub enum HistoryError {
@@ -833,8 +833,12 @@ fn result_key(result: MatchResult) -> &'static str {
 fn current_unix_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as i64)
+        .map(duration_millis_i64)
         .unwrap_or_default()
+}
+
+fn duration_millis_i64(duration: Duration) -> i64 {
+    i64::try_from(duration.as_millis()).unwrap_or(i64::MAX)
 }
 
 fn set_status(state: &Arc<AppState>, message: &str) {
@@ -904,6 +908,17 @@ mod tests {
         assert!(player_key(&bot).is_none());
         assert!(player_key(&unknown).is_none());
         assert_eq!(player_key(&human).unwrap().as_str(), "steam:steam|abc|0");
+    }
+
+    #[test]
+    fn duration_millis_i64_saturates_when_duration_exceeds_i64() {
+        assert_eq!(duration_millis_i64(Duration::from_millis(123)), 123);
+        assert_eq!(
+            duration_millis_i64(
+                Duration::from_millis(i64::MAX as u64).saturating_add(Duration::from_millis(1))
+            ),
+            i64::MAX
+        );
     }
 
     #[test]

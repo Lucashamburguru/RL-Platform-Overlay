@@ -520,7 +520,7 @@ fn estimate_teammate_bumps(
         return;
     }
 
-    estimator.team_bumps[team as usize] += 1;
+    estimator.team_bumps[usize::from(team)] += 1;
     for (key, _) in pending {
         estimator.pending.remove(&key);
     }
@@ -1872,6 +1872,36 @@ mod tests {
                     "Arena": "Stadium_P",
                     "Teams": [
                         {"TeamNum": 0, "Score": 1},
+                        {"TeamNum": 1, "Score": 0}
+                    ]
+                }
+            }),
+        );
+
+        assert_eq!(
+            state.game.session.load().active_mode,
+            crate::session::SessionMode::Twos
+        );
+    }
+
+    #[test]
+    fn test_late_join_uses_active_players_for_session_mode_before_score() {
+        let state = AppState::new();
+        handle_update_state_payload(
+            &state,
+            &json!({
+                "MatchGuid": "guid123",
+                "Players": [
+                    {"Name": "Me", "PrimaryId": "Steam|1|0", "TeamNum": 0, "IsLocalPlayer": true, "bHasCar": true},
+                    {"Name": "Mate", "PrimaryId": "Epic|2|0", "TeamNum": 0, "bHasCar": true},
+                    {"Name": "Opp1", "PrimaryId": "Xbox|3|0", "TeamNum": 1, "bHasCar": true},
+                    {"Name": "Opp2", "PrimaryId": "PS4|4|0", "TeamNum": 1, "bHasCar": true},
+                    {"Name": "ReplacedBot", "PrimaryId": "Unknown|0|0", "TeamNum": 1, "bHasCar": false}
+                ],
+                "Game": {
+                    "Arena": "Stadium_P",
+                    "Teams": [
+                        {"TeamNum": 0, "Score": 0},
                         {"TeamNum": 1, "Score": 0}
                     ]
                 }

@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.40] - 2026-07-07
+
+### Fixed
+- **Late-Join Mode Detection**: Uses active Stats API players when available so replacing a bot mid-match no longer makes a 2v2 session lock as 3v3.
+- **Stats API Numeric Parsing**: Rejects out-of-range numeric payload fields instead of allowing lossy casts or wrapped values for teams, scores, boosts, player stats, replay cloud scores, and match winners.
+
+### Changed
+- **Dashboard Math Hardening**: Replaced fragile signed/float dashboard calculations with checked integer helpers for average MMR, comparison edges, possession, shot share, win rate, and history record percentages.
+- **Time and Count Bounds**: Saturates large history timestamps and replay cloud counts at their storage limits instead of truncating.
+
+---
+
 ## [0.1.39] - 2026-06-30
 
 ### Added

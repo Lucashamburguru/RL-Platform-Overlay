@@ -624,11 +624,14 @@ fn team_comparison(rows: &[DashboardPlayerRow], team: u8) -> TeamComparison {
 }
 
 fn avg_mmr_label(team: TeamComparison) -> String {
-    if team.ranked_players == 0 {
-        "--".to_string()
-    } else {
-        (team.mmr_total / team.ranked_players as i32).to_string()
-    }
+    let Some(ranked_players) = i32::try_from(team.ranked_players)
+        .ok()
+        .filter(|count| *count > 0)
+    else {
+        return "--".to_string();
+    };
+
+    (team.mmr_total / ranked_players).to_string()
 }
 
 fn comparison_bar(
@@ -673,20 +676,7 @@ fn comparison_bar(
 }
 
 fn comparison_tile(ui: &mut egui::Ui, label: &str, blue: u32, orange: u32, width: f32) {
-    let edge = blue as i32 - orange as i32;
-    let (edge_text, edge_color) = if edge > 0 {
-        (
-            format!("Blue +{edge}"),
-            egui::Color32::from_rgb(110, 185, 245),
-        )
-    } else if edge < 0 {
-        (
-            format!("Orange +{}", edge.abs()),
-            egui::Color32::from_rgb(245, 160, 95),
-        )
-    } else {
-        ("Even".to_string(), egui::Color32::from_gray(145))
-    };
+    let (edge_text, edge_color) = comparison_edge_label(blue, orange);
     let frame = egui::Frame::default()
         .fill(egui::Color32::from_rgb(21, 25, 33))
         .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(38, 45, 56)))
@@ -717,6 +707,22 @@ fn comparison_tile(ui: &mut egui::Ui, label: &str, blue: u32, orange: u32, width
         });
         ui.label(egui::RichText::new(edge_text).size(11.0).color(edge_color));
     });
+}
+
+fn comparison_edge_label(blue: u32, orange: u32) -> (String, egui::Color32) {
+    if blue > orange {
+        (
+            format!("Blue +{}", blue.abs_diff(orange)),
+            egui::Color32::from_rgb(110, 185, 245),
+        )
+    } else if orange > blue {
+        (
+            format!("Orange +{}", orange.abs_diff(blue)),
+            egui::Color32::from_rgb(245, 160, 95),
+        )
+    } else {
+        ("Even".to_string(), egui::Color32::from_gray(145))
+    }
 }
 
 fn comparison_text_tile(ui: &mut egui::Ui, label: &str, blue: String, orange: String, width: f32) {
@@ -757,11 +763,7 @@ fn comparison_text_tile(ui: &mut egui::Ui, label: &str, blue: String, orange: St
 }
 
 fn possession_pct(touches: u32, total_touches: u32) -> u32 {
-    if total_touches == 0 {
-        0
-    } else {
-        ((touches as f32 / total_touches as f32) * 100.0).round() as u32
-    }
+    rounded_percent(touches, total_touches)
 }
 
 fn render_player_table(
@@ -1796,12 +1798,20 @@ fn boost_color(boost: u8) -> egui::Color32 {
 }
 
 fn win_rate(wins: u32, losses: u32) -> u32 {
-    let total = wins + losses;
+    rounded_percent_u64(u64::from(wins), u64::from(wins) + u64::from(losses))
+}
+
+fn rounded_percent(part: u32, total: u32) -> u32 {
+    rounded_percent_u64(u64::from(part), u64::from(total))
+}
+
+fn rounded_percent_u64(part: u64, total: u64) -> u32 {
     if total == 0 {
-        0
-    } else {
-        ((wins as f32 / total as f32) * 100.0).round() as u32
+        return 0;
     }
+
+    let percent = (part.saturating_mul(100).saturating_add(total / 2)) / total;
+    u32::try_from(percent).unwrap_or(u32::MAX)
 }
 
 fn clock_label(session: &crate::session::SessionState) -> String {
@@ -2153,6 +2163,66 @@ mod tests {
         assert_eq!(rank_rating_label("Unranked", Some(944)), "MMR 944");
         assert_eq!(rank_rating_label("Diamond II", Some(944)), "(944)");
         assert_eq!(rank_rating_label("Unranked", None), "-");
+    }
+
+    #[test]
+    fn avg_mmr_label_uses_checked_ranked_player_count() {
+        assert_eq!(
+            avg_mmr_label(TeamComparison {
+                mmr_total: 2400,
+                ranked_players: 2,
+                ..Default::default()
+            }),
+            "1200"
+        );
+        assert_eq!(
+            avg_mmr_label(TeamComparison {
+                mmr_total: 2400,
+                ranked_players: 0,
+                ..Default::default()
+            }),
+            "--"
+        );
+        assert_eq!(
+            avg_mmr_label(TeamComparison {
+                mmr_total: 2400,
+                ranked_players: i32::MAX as u32 + 1,
+                ..Default::default()
+            }),
+            "--"
+        );
+    }
+
+    #[test]
+    fn comparison_edge_label_handles_full_u32_range() {
+        assert_eq!(
+            comparison_edge_label(u32::MAX, 0),
+            (
+                format!("Blue +{}", u32::MAX),
+                egui::Color32::from_rgb(110, 185, 245)
+            )
+        );
+        assert_eq!(
+            comparison_edge_label(0, u32::MAX),
+            (
+                format!("Orange +{}", u32::MAX),
+                egui::Color32::from_rgb(245, 160, 95)
+            )
+        );
+        assert_eq!(
+            comparison_edge_label(7, 7),
+            ("Even".to_string(), egui::Color32::from_gray(145))
+        );
+    }
+
+    #[test]
+    fn rounded_percent_uses_integer_rounding_and_handles_large_counts() {
+        assert_eq!(rounded_percent(0, 0), 0);
+        assert_eq!(rounded_percent(1, 3), 33);
+        assert_eq!(rounded_percent(2, 3), 67);
+        assert_eq!(rounded_percent(1, 2), 50);
+        assert_eq!(rounded_percent(u32::MAX, u32::MAX), 100);
+        assert_eq!(win_rate(u32::MAX, u32::MAX), 50);
     }
 
     #[test]

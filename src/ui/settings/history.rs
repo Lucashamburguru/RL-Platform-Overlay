@@ -203,11 +203,11 @@ fn render_record(ui: &mut egui::Ui, wins: u32, losses: u32) {
 }
 
 fn record_text_and_color(wins: u32, losses: u32) -> (String, egui::Color32) {
-    let total = wins + losses;
+    let total = u64::from(wins) + u64::from(losses);
     if total == 0 {
         return ("-".to_string(), egui::Color32::from_gray(180));
     }
-    let win_rate = (wins as f32 / total as f32) * 100.0;
+    let win_rate = rounded_percent_u64(u64::from(wins), total);
     let text = format!("{win_rate:.0}% ({wins}-{losses})");
     let color = if wins > losses {
         egui::Color32::from_rgb(100, 220, 140) // Green
@@ -217,6 +217,15 @@ fn record_text_and_color(wins: u32, losses: u32) -> (String, egui::Color32) {
         egui::Color32::from_gray(180) // Gray
     };
     (text, color)
+}
+
+fn rounded_percent_u64(part: u64, total: u64) -> u32 {
+    if total == 0 {
+        return 0;
+    }
+
+    let percent = (part.saturating_mul(100).saturating_add(total / 2)) / total;
+    u32::try_from(percent).unwrap_or(u32::MAX)
 }
 
 fn formatted_platform(platform: &str) -> String {
@@ -335,6 +344,11 @@ mod tests {
     #[test]
     fn record_text_formats_wins_losses() {
         assert_eq!(record_text_and_color(3, 1).0, "75% (3-1)");
+        assert_eq!(record_text_and_color(1, 2).0, "33% (1-2)");
+        assert_eq!(
+            record_text_and_color(u32::MAX, u32::MAX).0,
+            format!("50% ({}-{})", u32::MAX, u32::MAX)
+        );
         assert_eq!(record_text_and_color(0, 0).0, "-");
     }
 

@@ -1,3 +1,4 @@
+use crate::json_utils::number_field_i32;
 use crate::state::{AppState, ReplayUploadProgress};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -881,8 +882,8 @@ fn parse_cloud_metadata(
         .unwrap_or("")
         .to_string();
 
-    let team0_score = item["blue"]["score"].as_i64().map(|v| v as i32);
-    let team1_score = item["orange"]["score"].as_i64().map(|v| v as i32);
+    let team0_score = number_field_i32(&item["blue"], &["score"]);
+    let team1_score = number_field_i32(&item["orange"], &["score"]);
 
     let mut player_names = Vec::new();
     if let Some(players) = item["blue"]["players"].as_array() {
@@ -992,7 +993,7 @@ async fn run_sync_replays(state: Arc<AppState>) -> Result<(), String> {
     state
         .replays
         .ballchasing_cloud_count
-        .store(count as u32, std::sync::atomic::Ordering::SeqCst);
+        .store(usize_to_u32_saturating(count), Ordering::SeqCst);
 
     // Merge cloud entries into metadata cache
     let current_snapshot = state.replays.metadata_cache.load();
@@ -1222,6 +1223,10 @@ pub fn mark_replays_uploaded(state: &Arc<AppState>, filenames: &[String]) -> usi
     added
 }
 
+fn usize_to_u32_saturating(value: usize) -> u32 {
+    u32::try_from(value).unwrap_or(u32::MAX)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1288,6 +1293,47 @@ mod tests {
             // Verify older ones were pruned
             assert!(!config.uploaded_replays.contains(&"r0.replay".to_string()));
         }
+    }
+
+    #[test]
+    fn parse_cloud_metadata_ignores_scores_that_do_not_fit_i32() {
+        let normal = parse_cloud_metadata(&serde_json::json!({
+            "id": "ABC123",
+            "blue": {
+                "score": 3,
+                "players": [{"name": "Blue"}]
+            },
+            "orange": {
+                "score": 2,
+                "players": [{"name": "Orange"}]
+            }
+        }))
+        .expect("cloud metadata should parse");
+
+        assert_eq!(normal.team0_score, Some(3));
+        assert_eq!(normal.team1_score, Some(2));
+        assert_eq!(normal.player_names, vec!["Blue", "Orange"]);
+
+        let oversized = parse_cloud_metadata(&serde_json::json!({
+            "id": "DEF456",
+            "blue": {
+                "score": i32::MAX as i64 + 1
+            },
+            "orange": {
+                "score": i32::MIN as i64 - 1
+            }
+        }))
+        .expect("cloud metadata should parse without score fields");
+
+        assert_eq!(oversized.team0_score, None);
+        assert_eq!(oversized.team1_score, None);
+    }
+
+    #[test]
+    fn usize_to_u32_saturating_caps_large_values() {
+        assert_eq!(usize_to_u32_saturating(42), 42);
+        assert_eq!(usize_to_u32_saturating(u32::MAX as usize), u32::MAX);
+        assert_eq!(usize_to_u32_saturating(u32::MAX as usize + 1), u32::MAX);
     }
 
     #[tokio::test]

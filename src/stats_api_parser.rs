@@ -1,4 +1,7 @@
-use crate::json_utils::{bool_field, decode_json_string_value, number_field, string_field};
+use crate::json_utils::{
+    bool_field, checked_u8, decode_json_string_value, number_field, number_field_u8,
+    number_field_u32, string_field,
+};
 use crate::session::{MatchResult, SessionMode};
 use crate::state::{LocalPlayerIdentity, PlayerInfo};
 use serde_json::Value;
@@ -127,6 +130,7 @@ pub fn parse_stats_api_data(
         .or_else(|| data.get("players"))
         .and_then(Value::as_array)
         .map(|players| players.len());
+    let active_player_count = active_player_count(&data).or(player_count);
     let match_guid = string_field(&data, &["MatchGuid", "matchGuid"]).map(str::to_string);
     let session_mode_hint = game
         .as_ref()
@@ -140,7 +144,7 @@ pub fn parse_stats_api_data(
         &data,
         &["WinnerTeamNum", "winnerTeamNum", "WinnerTeam", "winnerTeam"],
     )
-    .map(|team| team as u8);
+    .and_then(checked_u8);
     let has_winner = game
         .as_ref()
         .and_then(|game| bool_field(game, &["bHasWinner", "hasWinner"]))
@@ -160,7 +164,7 @@ pub fn parse_stats_api_data(
     let mode = ModeSignature {
         match_guid: match_guid.clone().unwrap_or_default(),
         mode_hint: session_mode_hint.clone(),
-        player_count,
+        player_count: active_player_count,
     };
 
     StatsApiEvent {
@@ -275,11 +279,11 @@ pub fn team_scores(game: &Value) -> (u32, u32) {
         .and_then(Value::as_array)
     {
         for team in teams {
-            let team_num = number_field(team, &["TeamNum", "teamNum", "Team", "team"]);
-            let score = number_field(team, &["Score", "score"]);
+            let team_num = number_field_u8(team, &["TeamNum", "teamNum", "Team", "team"]);
+            let score = number_field_u32(team, &["Score", "score"]);
             match (team_num, score) {
-                (Some(0), Some(score)) => blue_score = score as u32,
-                (Some(1), Some(score)) => orange_score = score as u32,
+                (Some(0), Some(score)) => blue_score = score,
+                (Some(1), Some(score)) => orange_score = score,
                 _ => {}
             }
         }
@@ -310,8 +314,7 @@ fn extract_game_hints(game: &Value) -> GameHints {
     if let Some(target) = game.get("target").or_else(|| game.get("Target")) {
         hints.target_name = string_field(target, &["Name", "name"]).map(str::to_string);
         hints.target_shortcut = number_field(target, &["Shortcut", "shortcut"]);
-        hints.target_team =
-            number_field(target, &["TeamNum", "teamNum", "Team", "team"]).map(|team| team as u8);
+        hints.target_team = number_field_u8(target, &["TeamNum", "teamNum", "Team", "team"]);
     }
 
     hints
@@ -340,7 +343,7 @@ fn target_player_name(data: &Value, hints: &GameHints) -> Option<String> {
 
                 if let Some(target_team) = hints.target_team {
                     let team = number_field(player, &["TeamNum", "teamNum", "Team", "team"])?;
-                    if team as u8 != target_team {
+                    if checked_u8(team) != Some(target_team) {
                         return None;
                     }
                 }
@@ -388,6 +391,29 @@ fn parse_players(
     parsed
 }
 
+fn active_player_count(data: &Value) -> Option<usize> {
+    let players = data
+        .get("Players")
+        .or_else(|| data.get("players"))
+        .and_then(Value::as_array)?;
+
+    if players
+        .iter()
+        .any(|player| bool_field(player, &["bHasCar", "hasCar", "has_car"]).is_some())
+    {
+        Some(
+            players
+                .iter()
+                .filter(|player| {
+                    bool_field(player, &["bHasCar", "hasCar", "has_car"]).unwrap_or(false)
+                })
+                .count(),
+        )
+    } else {
+        None
+    }
+}
+
 fn parse_player_info(
     player_payload: &Value,
     current_local_name: &str,
@@ -421,7 +447,7 @@ fn parse_player_info(
     }
 
     let team =
-        number_field(player_payload, &["TeamNum", "teamNum", "Team", "team"]).unwrap_or(0) as u8;
+        number_field_u8(player_payload, &["TeamNum", "teamNum", "Team", "team"]).unwrap_or(0);
 
     let boost = number_field(player_payload, &["Boost", "boost"]);
 
@@ -432,17 +458,17 @@ fn parse_player_info(
         team,
         is_bot,
         is_local,
-        boost: boost.unwrap_or(0) as u8,
+        boost: boost.and_then(checked_u8).unwrap_or(0),
         boost_known: boost.is_some(),
-        score: number_field(player_payload, &["Score", "score"]).unwrap_or(0) as u32,
-        goals: number_field(player_payload, &["Goals", "goals"]).unwrap_or(0) as u32,
-        assists: number_field(player_payload, &["Assists", "assists"]).unwrap_or(0) as u32,
-        saves: number_field(player_payload, &["Saves", "saves"]).unwrap_or(0) as u32,
-        shots: number_field(player_payload, &["Shots", "shots"]).unwrap_or(0) as u32,
-        touches: number_field(player_payload, &["Touches", "touches"]).unwrap_or(0) as u32,
-        car_touches: number_field(player_payload, &["CarTouches", "carTouches", "car_touches"])
-            .unwrap_or(0) as u32,
-        demos: number_field(player_payload, &["Demos", "demos"]).unwrap_or(0) as u32,
+        score: number_field_u32(player_payload, &["Score", "score"]).unwrap_or(0),
+        goals: number_field_u32(player_payload, &["Goals", "goals"]).unwrap_or(0),
+        assists: number_field_u32(player_payload, &["Assists", "assists"]).unwrap_or(0),
+        saves: number_field_u32(player_payload, &["Saves", "saves"]).unwrap_or(0),
+        shots: number_field_u32(player_payload, &["Shots", "shots"]).unwrap_or(0),
+        touches: number_field_u32(player_payload, &["Touches", "touches"]).unwrap_or(0),
+        car_touches: number_field_u32(player_payload, &["CarTouches", "carTouches", "car_touches"])
+            .unwrap_or(0),
+        demos: number_field_u32(player_payload, &["Demos", "demos"]).unwrap_or(0),
         mmr: previous_players
             .get(&name)
             .and_then(|prev| prev.mmr.clone()),
@@ -611,6 +637,52 @@ mod tests {
     }
 
     #[test]
+    fn numeric_fields_do_not_wrap_invalid_values() {
+        let identity = LocalPlayerIdentity::default();
+        let previous = HashMap::new();
+        let event = parse_stats_api_event(
+            &json!({
+                "Event": "UpdateState",
+                "Data": {
+                    "MatchGuid": "guid123",
+                    "WinnerTeamNum": -1,
+                    "Game": {
+                        "Teams": [
+                            {"TeamNum": 0, "Score": -1},
+                            {"TeamNum": 1, "Score": 2}
+                        ],
+                        "Target": {"Name": "Me", "TeamNum": -1}
+                    },
+                    "Players": [
+                        {
+                            "Name": "Me",
+                            "PrimaryId": "Steam|1|0",
+                            "TeamNum": -1,
+                            "Boost": 300,
+                            "Score": -5,
+                            "Goals": -1,
+                            "Touches": -10
+                        }
+                    ]
+                }
+            }),
+            context(&identity, &previous),
+        );
+
+        let player = &event.players["Me"];
+        assert_eq!(event.winner_team_num, None);
+        assert_eq!(event.score.blue_score, 0);
+        assert_eq!(event.score.orange_score, 2);
+        assert_eq!(event.target_team, None);
+        assert_eq!(player.team, 0);
+        assert_eq!(player.boost, 0);
+        assert!(player.boost_known);
+        assert_eq!(player.score, 0);
+        assert_eq!(player.goals, 0);
+        assert_eq!(player.touches, 0);
+    }
+
+    #[test]
     fn marks_replay_update_state() {
         let identity = LocalPlayerIdentity::default();
         let previous = HashMap::new();
@@ -736,6 +808,35 @@ mod tests {
         );
 
         assert_eq!(event.mode.session_mode(), SessionMode::Freeplay);
+    }
+
+    #[test]
+    fn mode_uses_active_players_when_roster_contains_inactive_replacement() {
+        let identity = LocalPlayerIdentity::default();
+        let previous = HashMap::new();
+        let event = parse_stats_api_event(
+            &json!({
+                "Event": "UpdateState",
+                "Data": {
+                    "MatchGuid": "guid123",
+                    "Game": {
+                        "Arena": "Stadium_P"
+                    },
+                    "Players": [
+                        {"Name": "Me", "PrimaryId": "Steam|1|0", "TeamNum": 0, "bHasCar": true},
+                        {"Name": "Mate", "PrimaryId": "Epic|2|0", "TeamNum": 0, "bHasCar": true},
+                        {"Name": "Opp1", "PrimaryId": "Xbox|3|0", "TeamNum": 1, "bHasCar": true},
+                        {"Name": "Opp2", "PrimaryId": "PS4|4|0", "TeamNum": 1, "bHasCar": true},
+                        {"Name": "StaleBot", "PrimaryId": "Unknown|0|0", "TeamNum": 1, "bHasCar": false}
+                    ]
+                }
+            }),
+            context(&identity, &previous),
+        );
+
+        assert_eq!(event.player_count, Some(5));
+        assert_eq!(event.mode.player_count, Some(4));
+        assert_eq!(event.mode.session_mode(), SessionMode::Twos);
     }
 
     #[test]
