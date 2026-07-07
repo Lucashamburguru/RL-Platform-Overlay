@@ -43,12 +43,16 @@ fn is_tracked_playlist(playlist_id: i32) -> bool {
 }
 
 fn tracker_api_url(player: &TrackerPlayer) -> String {
-    let (tracker_platform, use_id) = match player.platform.to_lowercase().as_str() {
-        "steam" => ("steam", true),
-        "ps4" | "ps5" | "psn" | "playstation" => ("psn", false),
-        "xbox" | "xbl" | "xboxone" | "xboxseries" => ("xbl", false),
-        "switch" | "nintendo" => ("switch", false),
-        _ => ("epic", false),
+    let (tracker_platform, use_id) = if player.platform.eq_ignore_ascii_case("steam") {
+        ("steam", true)
+    } else if player.platform.eq_ignore_ascii_case("ps4") || player.platform.eq_ignore_ascii_case("ps5") || player.platform.eq_ignore_ascii_case("psn") || player.platform.eq_ignore_ascii_case("playstation") {
+        ("psn", false)
+    } else if player.platform.eq_ignore_ascii_case("xbox") || player.platform.eq_ignore_ascii_case("xbl") || player.platform.eq_ignore_ascii_case("xboxone") || player.platform.eq_ignore_ascii_case("xboxseries") {
+        ("xbl", false)
+    } else if player.platform.eq_ignore_ascii_case("switch") || player.platform.eq_ignore_ascii_case("nintendo") {
+        ("switch", false)
+    } else {
+        ("epic", false)
     };
 
     let search_term = if use_id {
@@ -151,11 +155,10 @@ pub async fn fetch_tracker_snapshot(
     player: &TrackerPlayer,
 ) -> Result<TrackerSnapshot, MmrError> {
     let mut resolved_player = player.clone();
-    let platform_lower = player.platform.to_lowercase();
-    if (platform_lower == "xbox"
-        || platform_lower == "xbl"
-        || platform_lower == "xboxone"
-        || platform_lower == "xboxseries")
+    if (player.platform.eq_ignore_ascii_case("xbox")
+        || player.platform.eq_ignore_ascii_case("xbl")
+        || player.platform.eq_ignore_ascii_case("xboxone")
+        || player.platform.eq_ignore_ascii_case("xboxseries"))
         && player.player_id.parse::<u64>().is_ok()
     {
         match resolve_xuid_to_gamertag(client, cache, &player.player_id).await {
@@ -177,8 +180,7 @@ pub async fn fetch_tracker_snapshot(
     let mut response = send_tracker_request(client, &api_url).await?;
 
     let mut status = response.status();
-    if status.as_u16() == 404
-        && platform_lower == "steam"
+    if status.as_u16() == 404        && player.platform.eq_ignore_ascii_case("steam")
         && resolved_player.player_id != resolved_player.player_name
     {
         let mut fallback_player = resolved_player.clone();
@@ -532,8 +534,7 @@ pub fn start_mmr_fetch_task(state: Arc<AppState>) {
 }
 
 fn tracker_player_from_info(name: &str, info: &PlayerInfo) -> Option<(String, TrackerPlayer)> {
-    let platform_lower = info.platform.to_lowercase();
-    if info.is_local || info.is_bot || platform_lower == "bot" || platform_lower == "unknown" {
+    if info.is_local || info.is_bot || info.platform.eq_ignore_ascii_case("bot") || info.platform.eq_ignore_ascii_case("unknown") {
         return None;
     }
 
@@ -547,7 +548,9 @@ fn tracker_player_from_info(name: &str, info: &PlayerInfo) -> Option<(String, Tr
         .map(|id| id.to_string())
         .unwrap_or_else(|| name.to_string());
     let cache_key = if info.primary_id.trim().is_empty() {
-        format!("{}|{}", platform_lower, name.to_lowercase())
+        let platform_lower = info.platform.to_lowercase();
+        let name_lower = name.to_lowercase();
+        format!("{}|{}", platform_lower, name_lower)
     } else {
         info.primary_id.to_lowercase()
     };
