@@ -45,11 +45,21 @@ fn is_tracked_playlist(playlist_id: i32) -> bool {
 fn tracker_api_url(player: &TrackerPlayer) -> String {
     let (tracker_platform, use_id) = if player.platform.eq_ignore_ascii_case("steam") {
         ("steam", true)
-    } else if player.platform.eq_ignore_ascii_case("ps4") || player.platform.eq_ignore_ascii_case("ps5") || player.platform.eq_ignore_ascii_case("psn") || player.platform.eq_ignore_ascii_case("playstation") {
+    } else if player.platform.eq_ignore_ascii_case("ps4")
+        || player.platform.eq_ignore_ascii_case("ps5")
+        || player.platform.eq_ignore_ascii_case("psn")
+        || player.platform.eq_ignore_ascii_case("playstation")
+    {
         ("psn", false)
-    } else if player.platform.eq_ignore_ascii_case("xbox") || player.platform.eq_ignore_ascii_case("xbl") || player.platform.eq_ignore_ascii_case("xboxone") || player.platform.eq_ignore_ascii_case("xboxseries") {
+    } else if player.platform.eq_ignore_ascii_case("xbox")
+        || player.platform.eq_ignore_ascii_case("xbl")
+        || player.platform.eq_ignore_ascii_case("xboxone")
+        || player.platform.eq_ignore_ascii_case("xboxseries")
+    {
         ("xbl", false)
-    } else if player.platform.eq_ignore_ascii_case("switch") || player.platform.eq_ignore_ascii_case("nintendo") {
+    } else if player.platform.eq_ignore_ascii_case("switch")
+        || player.platform.eq_ignore_ascii_case("nintendo")
+    {
         ("switch", false)
     } else {
         ("epic", false)
@@ -180,7 +190,8 @@ pub async fn fetch_tracker_snapshot(
     let mut response = send_tracker_request(client, &api_url).await?;
 
     let mut status = response.status();
-    if status.as_u16() == 404        && player.platform.eq_ignore_ascii_case("steam")
+    if status.as_u16() == 404
+        && player.platform.eq_ignore_ascii_case("steam")
         && resolved_player.player_id != resolved_player.player_name
     {
         let mut fallback_player = resolved_player.clone();
@@ -534,7 +545,11 @@ pub fn start_mmr_fetch_task(state: Arc<AppState>) {
 }
 
 fn tracker_player_from_info(name: &str, info: &PlayerInfo) -> Option<(String, TrackerPlayer)> {
-    if info.is_local || info.is_bot || info.platform.eq_ignore_ascii_case("bot") || info.platform.eq_ignore_ascii_case("unknown") {
+    if info.is_local
+        || info.is_bot
+        || info.platform.eq_ignore_ascii_case("bot")
+        || info.platform.eq_ignore_ascii_case("unknown")
+    {
         return None;
     }
 

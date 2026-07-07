@@ -881,30 +881,63 @@ fn best_rank(mmr: Option<&TrackerSnapshot>) -> Option<(String, i32)> {
 
 pub(super) fn rank_icon(rank: &str) -> Option<egui::ImageSource<'static>> {
     let rank = rank.trim();
-    if rank.eq_ignore_ascii_case("bronze i") { Some(egui::include_image!("../../assets/ranks/bronze_1.png")) }
-    else if rank.eq_ignore_ascii_case("bronze ii") { Some(egui::include_image!("../../assets/ranks/bronze_2.png")) }
-    else if rank.eq_ignore_ascii_case("bronze iii") { Some(egui::include_image!("../../assets/ranks/bronze_3.png")) }
-    else if rank.eq_ignore_ascii_case("silver i") { Some(egui::include_image!("../../assets/ranks/silver_1.png")) }
-    else if rank.eq_ignore_ascii_case("silver ii") { Some(egui::include_image!("../../assets/ranks/silver_2.png")) }
-    else if rank.eq_ignore_ascii_case("silver iii") { Some(egui::include_image!("../../assets/ranks/silver_3.png")) }
-    else if rank.eq_ignore_ascii_case("gold i") { Some(egui::include_image!("../../assets/ranks/gold_1.png")) }
-    else if rank.eq_ignore_ascii_case("gold ii") { Some(egui::include_image!("../../assets/ranks/gold_2.png")) }
-    else if rank.eq_ignore_ascii_case("gold iii") { Some(egui::include_image!("../../assets/ranks/gold_3.png")) }
-    else if rank.eq_ignore_ascii_case("platinum i") { Some(egui::include_image!("../../assets/ranks/platinum_1.png")) }
-    else if rank.eq_ignore_ascii_case("platinum ii") { Some(egui::include_image!("../../assets/ranks/platinum_2.png")) }
-    else if rank.eq_ignore_ascii_case("platinum iii") { Some(egui::include_image!("../../assets/ranks/platinum_3.png")) }
-    else if rank.eq_ignore_ascii_case("diamond i") { Some(egui::include_image!("../../assets/ranks/diamond_1.png")) }
-    else if rank.eq_ignore_ascii_case("diamond ii") { Some(egui::include_image!("../../assets/ranks/diamond_2.png")) }
-    else if rank.eq_ignore_ascii_case("diamond iii") { Some(egui::include_image!("../../assets/ranks/diamond_3.png")) }
-    else if rank.eq_ignore_ascii_case("champion i") { Some(egui::include_image!("../../assets/ranks/champion_1.png")) }
-    else if rank.eq_ignore_ascii_case("champion ii") { Some(egui::include_image!("../../assets/ranks/champion_2.png")) }
-    else if rank.eq_ignore_ascii_case("champion iii") { Some(egui::include_image!("../../assets/ranks/champion_3.png")) }
-    else if rank.eq_ignore_ascii_case("grand champion i") { Some(egui::include_image!("../../assets/ranks/grand_champion_1.png")) }
-    else if rank.eq_ignore_ascii_case("grand champion ii") { Some(egui::include_image!("../../assets/ranks/grand_champion_2.png")) }
-    else if rank.eq_ignore_ascii_case("grand champion iii") { Some(egui::include_image!("../../assets/ranks/grand_champion_3.png")) }
-    else if rank.eq_ignore_ascii_case("supersonic legend") { Some(egui::include_image!("../../assets/ranks/supersonic_legend.png")) }
-    else if rank.eq_ignore_ascii_case("unranked") { Some(egui::include_image!("../../assets/ranks/unranked.png")) }
-    else { None }
+    if rank.eq_ignore_ascii_case("bronze i") {
+        Some(egui::include_image!("../../assets/ranks/bronze_1.png"))
+    } else if rank.eq_ignore_ascii_case("bronze ii") {
+        Some(egui::include_image!("../../assets/ranks/bronze_2.png"))
+    } else if rank.eq_ignore_ascii_case("bronze iii") {
+        Some(egui::include_image!("../../assets/ranks/bronze_3.png"))
+    } else if rank.eq_ignore_ascii_case("silver i") {
+        Some(egui::include_image!("../../assets/ranks/silver_1.png"))
+    } else if rank.eq_ignore_ascii_case("silver ii") {
+        Some(egui::include_image!("../../assets/ranks/silver_2.png"))
+    } else if rank.eq_ignore_ascii_case("silver iii") {
+        Some(egui::include_image!("../../assets/ranks/silver_3.png"))
+    } else if rank.eq_ignore_ascii_case("gold i") {
+        Some(egui::include_image!("../../assets/ranks/gold_1.png"))
+    } else if rank.eq_ignore_ascii_case("gold ii") {
+        Some(egui::include_image!("../../assets/ranks/gold_2.png"))
+    } else if rank.eq_ignore_ascii_case("gold iii") {
+        Some(egui::include_image!("../../assets/ranks/gold_3.png"))
+    } else if rank.eq_ignore_ascii_case("platinum i") {
+        Some(egui::include_image!("../../assets/ranks/platinum_1.png"))
+    } else if rank.eq_ignore_ascii_case("platinum ii") {
+        Some(egui::include_image!("../../assets/ranks/platinum_2.png"))
+    } else if rank.eq_ignore_ascii_case("platinum iii") {
+        Some(egui::include_image!("../../assets/ranks/platinum_3.png"))
+    } else if rank.eq_ignore_ascii_case("diamond i") {
+        Some(egui::include_image!("../../assets/ranks/diamond_1.png"))
+    } else if rank.eq_ignore_ascii_case("diamond ii") {
+        Some(egui::include_image!("../../assets/ranks/diamond_2.png"))
+    } else if rank.eq_ignore_ascii_case("diamond iii") {
+        Some(egui::include_image!("../../assets/ranks/diamond_3.png"))
+    } else if rank.eq_ignore_ascii_case("champion i") {
+        Some(egui::include_image!("../../assets/ranks/champion_1.png"))
+    } else if rank.eq_ignore_ascii_case("champion ii") {
+        Some(egui::include_image!("../../assets/ranks/champion_2.png"))
+    } else if rank.eq_ignore_ascii_case("champion iii") {
+        Some(egui::include_image!("../../assets/ranks/champion_3.png"))
+    } else if rank.eq_ignore_ascii_case("grand champion i") {
+        Some(egui::include_image!(
+            "../../assets/ranks/grand_champion_1.png"
+        ))
+    } else if rank.eq_ignore_ascii_case("grand champion ii") {
+        Some(egui::include_image!(
+            "../../assets/ranks/grand_champion_2.png"
+        ))
+    } else if rank.eq_ignore_ascii_case("grand champion iii") {
+        Some(egui::include_image!(
+            "../../assets/ranks/grand_champion_3.png"
+        ))
+    } else if rank.eq_ignore_ascii_case("supersonic legend") {
+        Some(egui::include_image!(
+            "../../assets/ranks/supersonic_legend.png"
+        ))
+    } else if rank.eq_ignore_ascii_case("unranked") {
+        Some(egui::include_image!("../../assets/ranks/unranked.png"))
+    } else {
+        None
+    }
 }
 
 fn should_fetch_rank(player: &PlayerInfo) -> bool {

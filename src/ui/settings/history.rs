@@ -233,8 +233,13 @@ fn formatted_platform(platform: &str) -> String {
 }
 
 fn contains_ignore_case(haystack: &str, needle: &str) -> bool {
-    if needle.is_empty() { return true; }
-    haystack.as_bytes().windows(needle.len()).any(|w| w.eq_ignore_ascii_case(needle.as_bytes()))
+    if needle.is_empty() {
+        return true;
+    }
+    haystack
+        .as_bytes()
+        .windows(needle.len())
+        .any(|w| w.eq_ignore_ascii_case(needle.as_bytes()))
 }
 
 fn render_platform_label(ui: &mut egui::Ui, platform: &str) {
@@ -262,20 +267,21 @@ fn render_platform_label(ui: &mut egui::Ui, platform: &str) {
         }
         ui.label(job);
     } else {
-        let color = if contains_ignore_case(platform, "xbox") || contains_ignore_case(platform, "xbl") {
-            egui::Color32::from_rgb(30, 200, 80)
-        } else if contains_ignore_case(platform, "ps") || contains_ignore_case(platform, "playstation") {
-            egui::Color32::from_rgb(41, 140, 255)
-        } else if contains_ignore_case(platform, "switch") || contains_ignore_case(platform, "nintendo") {
-            egui::Color32::from_rgb(255, 65, 80)
-        } else {
-            egui::Color32::from_gray(150)
-        };
-        ui.label(
-            egui::RichText::new(platform)
-                .size(12.5)
-                .color(color),
-        );
+        let color =
+            if contains_ignore_case(platform, "xbox") || contains_ignore_case(platform, "xbl") {
+                egui::Color32::from_rgb(30, 200, 80) // Xbox Green
+            } else if contains_ignore_case(platform, "playstation")
+                || contains_ignore_case(platform, "ps")
+            {
+                egui::Color32::from_rgb(41, 140, 255) // PSN Blue
+            } else if contains_ignore_case(platform, "switch")
+                || contains_ignore_case(platform, "nintendo")
+            {
+                egui::Color32::from_rgb(255, 65, 80) // Switch Red
+            } else {
+                egui::Color32::from_gray(160) // Steam / Default stays gray
+            };
+        ui.label(egui::RichText::new(platform).color(color));
     }
 }
 
