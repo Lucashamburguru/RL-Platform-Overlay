@@ -72,7 +72,10 @@ pub(super) fn draw_session_panel(
     };
     let frame = egui::Frame::default()
         .fill(egui::Color32::from_rgba_unmultiplied(16, 18, 24, opacity))
-        .stroke(egui::Stroke::new(1.0_f32, egui::Color32::from_white_alpha(24)))
+        .stroke(egui::Stroke::new(
+            1.0_f32,
+            egui::Color32::from_white_alpha(24),
+        ))
         .corner_radius(6.0 * scale)
         .inner_margin(8.0 * scale);
 

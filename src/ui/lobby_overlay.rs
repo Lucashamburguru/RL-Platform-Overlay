@@ -258,7 +258,10 @@ pub(super) fn draw_lobby_panel(
         ),
         crate::state::LobbyTheme::Modern => (
             egui::Color32::from_rgba_unmultiplied(12, 14, 18, config.transparency.max(220)),
-            egui::Stroke::new(1.2_f32, egui::Color32::from_rgba_unmultiplied(0, 176, 255, 140)),
+            egui::Stroke::new(
+                1.2_f32,
+                egui::Color32::from_rgba_unmultiplied(0, 176, 255, 140),
+            ),
         ),
         crate::state::LobbyTheme::Minimalist => (egui::Color32::TRANSPARENT, egui::Stroke::NONE),
     };

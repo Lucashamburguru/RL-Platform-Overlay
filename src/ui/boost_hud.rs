@@ -205,7 +205,10 @@ pub(super) fn draw_teammate_boost_panel(
 ) {
     let frame = egui::Frame::default()
         .fill(egui::Color32::from_black_alpha(96))
-        .stroke(egui::Stroke::new(1.0_f32, egui::Color32::from_white_alpha(18)))
+        .stroke(egui::Stroke::new(
+            1.0_f32,
+            egui::Color32::from_white_alpha(18),
+        ))
         .corner_radius(6.0 * scale)
         .inner_margin(5.0 * scale);
 
