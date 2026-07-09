@@ -1,9 +1,0 @@
-⚡ Bolt: Avoid string allocations in high-frequency rendering and sorting paths
-
-💡 What: Replaced `.to_lowercase()` and `.contains()` with zero-allocation `eq_ignore_ascii_case()` and byte-slice `.windows().any()` in `rank_icon`, `ranked_playlist_sort_priority`, and `compact_playlist_name`.
-
-🎯 Why: In an egui immediate-mode GUI, these functions are called every frame for every player in the lobby and every playlist in the MMR panel. Using `.to_lowercase()` allocates new Strings on the heap on every frame, causing unnecessary memory churn and Garbage Collection pressure (if any) or simply CPU overhead from heap allocator locks.
-
-📊 Impact: Reduces heap allocations significantly during rendering loops in the lobby overlay and MMR panel (up to 0 allocations per frame for these checks).
-
-🔬 Measurement: Run the application and observe memory profiling/heap allocation tracking in a busy lobby overlay. The change removes heap allocation from `String::to_lowercase` entirely in these hot paths.

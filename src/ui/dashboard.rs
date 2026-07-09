@@ -249,7 +249,7 @@ fn render_scoreboard_hud(ui: &mut egui::Ui, session: &crate::session::SessionSta
         // Blue Score Badge
         let blue_score_frame = egui::Frame::default()
             .fill(egui::Color32::from_rgb(18, 36, 68))
-            .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(0, 110, 220)))
+            .stroke(egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0, 110, 220)))
             .corner_radius(6)
             .inner_margin(egui::Margin::symmetric(18, 8));
         blue_score_frame.show(ui, |ui| {
@@ -312,7 +312,7 @@ fn render_top_band(
     let target_width = ui.available_width();
     let frame = egui::Frame::default()
         .fill(egui::Color32::from_rgb(18, 22, 29))
-        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(55, 64, 78)))
+        .stroke(egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(55, 64, 78)))
         .corner_radius(8)
         .inner_margin(egui::Margin::symmetric(18, 14));
 
@@ -375,7 +375,7 @@ fn render_top_band(
 fn stat_pill(ui: &mut egui::Ui, label: &str, value: impl Into<String>) {
     let frame = egui::Frame::default()
         .fill(egui::Color32::from_rgb(27, 31, 39))
-        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(55, 62, 76)))
+        .stroke(egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(55, 62, 76)))
         .corner_radius(6)
         .inner_margin(egui::Margin::symmetric(10, 7));
     frame.show(ui, |ui| {
@@ -493,7 +493,7 @@ fn render_team_comparison(
 
     let frame = egui::Frame::default()
         .fill(egui::Color32::from_rgb(17, 20, 27))
-        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(48, 57, 70)))
+        .stroke(egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(48, 57, 70)))
         .corner_radius(8)
         .inner_margin(egui::Margin::symmetric(18, 14));
     fixed_width_frame(ui, frame, target_width, |ui, inner_width| {
@@ -679,7 +679,7 @@ fn comparison_tile(ui: &mut egui::Ui, label: &str, blue: u32, orange: u32, width
     let (edge_text, edge_color) = comparison_edge_label(blue, orange);
     let frame = egui::Frame::default()
         .fill(egui::Color32::from_rgb(21, 25, 33))
-        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(38, 45, 56)))
+        .stroke(egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(38, 45, 56)))
         .corner_radius(6)
         .inner_margin(egui::Margin::symmetric(10, 8));
     fixed_width_frame(ui, frame, width, |ui, inner_width| {
@@ -728,7 +728,7 @@ fn comparison_edge_label(blue: u32, orange: u32) -> (String, egui::Color32) {
 fn comparison_text_tile(ui: &mut egui::Ui, label: &str, blue: String, orange: String, width: f32) {
     let frame = egui::Frame::default()
         .fill(egui::Color32::from_rgb(21, 25, 33))
-        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(38, 45, 56)))
+        .stroke(egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(38, 45, 56)))
         .corner_radius(6)
         .inner_margin(egui::Margin::symmetric(10, 8));
     fixed_width_frame(ui, frame, width, |ui, inner_width| {
@@ -789,7 +789,7 @@ fn render_player_table(
     };
     let frame = egui::Frame::default()
         .fill(egui::Color32::from_rgb(17, 20, 27))
-        .stroke(egui::Stroke::new(1.2, stroke_color))
+        .stroke(egui::Stroke::new(1.2_f32, stroke_color))
         .corner_radius(8)
         .inner_margin(egui::Margin::same(14));
 
@@ -1283,7 +1283,7 @@ fn render_empty_state(ui: &mut egui::Ui, state: &Arc<AppState>, config: &Config)
     ui.set_min_size(ui.available_size());
     let frame = egui::Frame::default()
         .fill(egui::Color32::from_rgb(15, 18, 24))
-        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(48, 57, 70)))
+        .stroke(egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(48, 57, 70)))
         .corner_radius(8)
         .inner_margin(egui::Margin::same(18));
     frame.show(ui, |ui| {
@@ -1585,7 +1585,7 @@ fn render_status_panel(ui: &mut egui::Ui, title: &str, add_contents: impl FnOnce
     let target_width = ui.available_width();
     let frame = egui::Frame::default()
         .fill(egui::Color32::from_rgb(17, 20, 27))
-        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(48, 57, 70)))
+        .stroke(egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(48, 57, 70)))
         .corner_radius(8)
         .inner_margin(egui::Margin::same(12));
     frame.show(ui, |ui| {

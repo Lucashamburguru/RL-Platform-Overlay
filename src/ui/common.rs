@@ -30,7 +30,7 @@ pub(super) fn settings_section(
 ) {
     let frame = egui::Frame::default()
         .fill(egui::Color32::TRANSPARENT)
-        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(52, 55, 64)))
+        .stroke(egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(52, 55, 64)))
         .corner_radius(SETTINGS_SECTION_RADIUS)
         .inner_margin(egui::Margin::same(10));
 
