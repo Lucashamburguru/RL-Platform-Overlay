@@ -114,17 +114,25 @@ pub(super) fn render_local_mmr_panel(
 }
 
 fn ranked_playlist_sort_priority(playlist_id: i32, playlist_name: &str) -> i32 {
-    let name = playlist_name.to_lowercase();
-    if playlist_id == 10 || name.contains("duel") || name.contains("1v1") {
+    if playlist_id == 10
+        || crate::ui::common::contains_ignore_case(playlist_name, "duel")
+        || crate::ui::common::contains_ignore_case(playlist_name, "1v1")
+    {
         0
-    } else if playlist_id == 11 || name.contains("doubles") || name.contains("2v2") {
+    } else if playlist_id == 11
+        || crate::ui::common::contains_ignore_case(playlist_name, "doubles")
+        || crate::ui::common::contains_ignore_case(playlist_name, "2v2")
+    {
         1
-    } else if playlist_id == 13 || name.contains("standard") || name.contains("3v3") {
+    } else if playlist_id == 13
+        || crate::ui::common::contains_ignore_case(playlist_name, "standard")
+        || crate::ui::common::contains_ignore_case(playlist_name, "3v3")
+    {
         2
     } else if playlist_id == 0
-        || name.contains("unranked")
-        || name.contains("un-ranked")
-        || name.contains("casual")
+        || crate::ui::common::contains_ignore_case(playlist_name, "unranked")
+        || crate::ui::common::contains_ignore_case(playlist_name, "un-ranked")
+        || crate::ui::common::contains_ignore_case(playlist_name, "casual")
     {
         3
     } else {
@@ -133,14 +141,22 @@ fn ranked_playlist_sort_priority(playlist_id: i32, playlist_name: &str) -> i32 {
 }
 
 fn compact_playlist_name(playlist_name: &str) -> String {
-    let name = playlist_name.to_lowercase();
-    if name.contains("duel") || name.contains("1v1") {
+    if crate::ui::common::contains_ignore_case(playlist_name, "duel")
+        || crate::ui::common::contains_ignore_case(playlist_name, "1v1")
+    {
         "1v1".to_string()
-    } else if name.contains("doubles") || name.contains("2v2") {
+    } else if crate::ui::common::contains_ignore_case(playlist_name, "doubles")
+        || crate::ui::common::contains_ignore_case(playlist_name, "2v2")
+    {
         "2v2".to_string()
-    } else if name.contains("standard") || name.contains("3v3") {
+    } else if crate::ui::common::contains_ignore_case(playlist_name, "standard")
+        || crate::ui::common::contains_ignore_case(playlist_name, "3v3")
+    {
         "3v3".to_string()
-    } else if name.contains("unranked") || name.contains("un-ranked") || name.contains("casual") {
+    } else if crate::ui::common::contains_ignore_case(playlist_name, "unranked")
+        || crate::ui::common::contains_ignore_case(playlist_name, "un-ranked")
+        || crate::ui::common::contains_ignore_case(playlist_name, "casual")
+    {
         "Casual".to_string()
     } else {
         playlist_name

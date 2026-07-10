@@ -1767,12 +1767,17 @@ fn playlist_sort_priority(playlist_id: i32, playlist_name: &str) -> i32 {
 }
 
 fn compact_playlist_name(playlist_name: &str) -> String {
-    let name = playlist_name.to_ascii_lowercase();
-    if name.contains("duel") || name.contains("1v1") {
+    if crate::ui::common::contains_ignore_case(playlist_name, "duel")
+        || crate::ui::common::contains_ignore_case(playlist_name, "1v1")
+    {
         "1v1".to_string()
-    } else if name.contains("doubles") || name.contains("2v2") {
+    } else if crate::ui::common::contains_ignore_case(playlist_name, "doubles")
+        || crate::ui::common::contains_ignore_case(playlist_name, "2v2")
+    {
         "2v2".to_string()
-    } else if name.contains("standard") || name.contains("3v3") {
+    } else if crate::ui::common::contains_ignore_case(playlist_name, "standard")
+        || crate::ui::common::contains_ignore_case(playlist_name, "3v3")
+    {
         "3v3".to_string()
     } else {
         playlist_name.trim_start_matches("Ranked ").to_string()
