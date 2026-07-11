@@ -23,7 +23,7 @@ pub(super) fn render_drag_position_handle(
     ui.painter().rect_stroke(
         rect,
         rounding,
-        egui::Stroke::new(1.0, egui::Color32::from_rgb(220, 190, 90)),
+        egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(220, 190, 90)),
         egui::StrokeKind::Inside,
     );
     ui.painter().text(
