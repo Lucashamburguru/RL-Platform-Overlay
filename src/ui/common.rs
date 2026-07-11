@@ -98,3 +98,18 @@ pub(super) fn status_text(ui: &mut egui::Ui, tone: StatusTone, text: impl Into<S
             .color(status_color(tone)),
     );
 }
+
+/// Checks if `haystack` contains `needle` ignoring ASCII case, without allocating.
+pub(super) fn contains_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    if haystack.len() < needle.len() {
+        return false;
+    }
+    let needle_bytes = needle.as_bytes();
+    haystack
+        .as_bytes()
+        .windows(needle_bytes.len())
+        .any(|w| w.eq_ignore_ascii_case(needle_bytes))
+}

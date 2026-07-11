@@ -233,8 +233,9 @@ fn formatted_platform(platform: &str) -> String {
 }
 
 fn render_platform_label(ui: &mut egui::Ui, platform: &str) {
-    let plat_lower = platform.to_lowercase();
-    if plat_lower.contains("epic") {
+    use crate::ui::common::contains_ignore_ascii_case;
+
+    if contains_ignore_ascii_case(platform, "epic") {
         let mut job = egui::text::LayoutJob::default();
         let colors = [
             egui::Color32::from_rgb(255, 90, 90),   // Red
@@ -258,11 +259,17 @@ fn render_platform_label(ui: &mut egui::Ui, platform: &str) {
         }
         ui.label(job);
     } else {
-        let color = if plat_lower.contains("xbox") || plat_lower.contains("xbl") {
+        let color = if contains_ignore_ascii_case(platform, "xbox")
+            || contains_ignore_ascii_case(platform, "xbl")
+        {
             egui::Color32::from_rgb(30, 200, 80) // Xbox Green
-        } else if plat_lower.contains("playstation") || plat_lower.contains("ps") {
+        } else if contains_ignore_ascii_case(platform, "playstation")
+            || contains_ignore_ascii_case(platform, "ps")
+        {
             egui::Color32::from_rgb(41, 140, 255) // PSN Blue
-        } else if plat_lower.contains("switch") || plat_lower.contains("nintendo") {
+        } else if contains_ignore_ascii_case(platform, "switch")
+            || contains_ignore_ascii_case(platform, "nintendo")
+        {
             egui::Color32::from_rgb(255, 65, 80) // Switch Red
         } else {
             egui::Color32::from_gray(160) // Steam / Default stays gray

@@ -773,16 +773,17 @@ fn render_player_table(
     config: &Config,
     target_width: f32,
 ) {
-    let accent = if title.contains("Blue") {
+    use super::common::contains_ignore_ascii_case;
+    let accent = if contains_ignore_ascii_case(title, "Blue") {
         egui::Color32::from_rgb(85, 170, 245)
-    } else if title.contains("Orange") {
+    } else if contains_ignore_ascii_case(title, "Orange") {
         egui::Color32::from_rgb(245, 150, 80)
     } else {
         egui::Color32::from_rgb(170, 180, 195)
     };
-    let stroke_color = if title.contains("Blue") {
+    let stroke_color = if contains_ignore_ascii_case(title, "Blue") {
         egui::Color32::from_rgb(30, 65, 105)
-    } else if title.contains("Orange") {
+    } else if contains_ignore_ascii_case(title, "Orange") {
         egui::Color32::from_rgb(105, 55, 25)
     } else {
         egui::Color32::from_rgb(48, 57, 70)
@@ -1752,14 +1753,23 @@ fn team_sort_key(team: u8) -> u8 {
 }
 
 fn playlist_sort_priority(playlist_id: i32, playlist_name: &str) -> i32 {
-    let name = playlist_name.to_ascii_lowercase();
-    if playlist_id == 10 || name.contains("duel") || name.contains("1v1") {
+    use super::common::contains_ignore_ascii_case;
+    if playlist_id == 10
+        || contains_ignore_ascii_case(playlist_name, "duel")
+        || contains_ignore_ascii_case(playlist_name, "1v1")
+    {
         0
-    } else if playlist_id == 11 || name.contains("doubles") || name.contains("2v2") {
+    } else if playlist_id == 11
+        || contains_ignore_ascii_case(playlist_name, "doubles")
+        || contains_ignore_ascii_case(playlist_name, "2v2")
+    {
         1
-    } else if playlist_id == 13 || name.contains("standard") || name.contains("3v3") {
+    } else if playlist_id == 13
+        || contains_ignore_ascii_case(playlist_name, "standard")
+        || contains_ignore_ascii_case(playlist_name, "3v3")
+    {
         2
-    } else if playlist_id == 27 || name.contains("hoops") {
+    } else if playlist_id == 27 || contains_ignore_ascii_case(playlist_name, "hoops") {
         3
     } else {
         10
@@ -1767,12 +1777,18 @@ fn playlist_sort_priority(playlist_id: i32, playlist_name: &str) -> i32 {
 }
 
 fn compact_playlist_name(playlist_name: &str) -> String {
-    let name = playlist_name.to_ascii_lowercase();
-    if name.contains("duel") || name.contains("1v1") {
+    use super::common::contains_ignore_ascii_case;
+    if contains_ignore_ascii_case(playlist_name, "duel")
+        || contains_ignore_ascii_case(playlist_name, "1v1")
+    {
         "1v1".to_string()
-    } else if name.contains("doubles") || name.contains("2v2") {
+    } else if contains_ignore_ascii_case(playlist_name, "doubles")
+        || contains_ignore_ascii_case(playlist_name, "2v2")
+    {
         "2v2".to_string()
-    } else if name.contains("standard") || name.contains("3v3") {
+    } else if contains_ignore_ascii_case(playlist_name, "standard")
+        || contains_ignore_ascii_case(playlist_name, "3v3")
+    {
         "3v3".to_string()
     } else {
         playlist_name.trim_start_matches("Ranked ").to_string()
