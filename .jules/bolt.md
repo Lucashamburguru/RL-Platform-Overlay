@@ -5,3 +5,7 @@
 ## 2026-06-17 - Avoid Unnecessary Clones for serde_json::Value
 **Learning:** During JSON processing, particularly extracting the payload of an envelope structure, dereferencing and cloning an entire JSON `Value` object recursively causes deep memory duplication which severely blocks the main thread.
 **Action:** Implemented a new enum variant extraction method `.into_owned()` that consumes the enum variants. When the string contains an encoded JSON, parsing creates an `Owned(Value)` which we can extract without cloning, only cloning `Borrowed` variants when absolutely necessary. This optimizes hot-path stats parsing when `decode_json_string_value` is called.
+
+## 2024-10-18 - Case-Insensitive Substring Match in Render Paths
+**Learning:** In immediate-mode UIs like `egui` used in this Rust application, string operations like `.to_lowercase()` create heap allocations during every single frame (e.g. 60+ times per second). For substring matches, using `.to_lowercase().contains(...)` creates unnecessary allocations.
+**Action:** Use a zero-allocation windowed byte search: `haystack.as_bytes().windows(needle.len()).any(|w| w.eq_ignore_ascii_case(needle.as_bytes()))` when the `needle` is strictly ASCII. Ensure to correctly guard against an empty `needle` to prevent panic on `.windows(0)`.

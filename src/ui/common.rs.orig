@@ -6,16 +6,6 @@ pub(super) const SETTINGS_HELPER_TEXT_SIZE: f32 = 11.5;
 pub(super) const SETTINGS_LABEL_TEXT_SIZE: f32 = 12.5;
 pub(super) const SETTINGS_SECTION_TITLE_SIZE: f32 = 14.0;
 
-pub(crate) fn contains_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
-    if needle.is_empty() {
-        return true;
-    }
-    haystack
-        .as_bytes()
-        .windows(needle.len())
-        .any(|w| w.eq_ignore_ascii_case(needle.as_bytes()))
-}
-
 pub(super) fn helper_text(text: impl Into<String>) -> egui::RichText {
     egui::RichText::new(text.into())
         .size(SETTINGS_HELPER_TEXT_SIZE)
