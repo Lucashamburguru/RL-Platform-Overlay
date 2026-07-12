@@ -254,11 +254,14 @@ pub(super) fn draw_lobby_panel(
         ),
         crate::state::LobbyTheme::Solid => (
             egui::Color32::from_rgba_unmultiplied(10, 10, 12, 255),
-            egui::Stroke::new(1.0, egui::Color32::from_gray(50)),
+            egui::Stroke::new(1.0_f32, egui::Color32::from_gray(50)),
         ),
         crate::state::LobbyTheme::Modern => (
             egui::Color32::from_rgba_unmultiplied(12, 14, 18, config.transparency.max(220)),
-            egui::Stroke::new(1.2, egui::Color32::from_rgba_unmultiplied(0, 176, 255, 140)),
+            egui::Stroke::new(
+                1.2_f32,
+                egui::Color32::from_rgba_unmultiplied(0, 176, 255, 140),
+            ),
         ),
         crate::state::LobbyTheme::Minimalist => (egui::Color32::TRANSPARENT, egui::Stroke::NONE),
     };
