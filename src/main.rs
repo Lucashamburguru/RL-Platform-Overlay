@@ -1,3 +1,5 @@
+#![allow(unknown_lints)]
+#![allow(float_literal_f32_fallback)]
 #[tokio::main]
 async fn main() -> eframe::Result<()> {
     let debug_enabled = std::env::args().any(|arg| arg == "--debug");

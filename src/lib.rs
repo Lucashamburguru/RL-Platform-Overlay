@@ -1,3 +1,5 @@
+#![allow(unknown_lints)]
+#![allow(float_literal_f32_fallback)]
 pub mod automation;
 pub mod history;
 pub mod hoops_fixer;
