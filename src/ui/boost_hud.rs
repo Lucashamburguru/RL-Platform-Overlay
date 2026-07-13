@@ -3,6 +3,10 @@ use eframe::egui;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
+use super::common::{
+    overlay_boost_color, overlay_panel_frame, overlay_player_text_color, overlay_row_fill,
+    overlay_row_stroke, overlay_subtle_color, overlay_team_color,
+};
 use super::layout::{
     active_layout_drag_position, normalized_to_pos, persist_dragged_position,
     render_drag_position_handle,
@@ -203,11 +207,7 @@ pub(super) fn draw_teammate_boost_panel(
     scale: f32,
     display: TeammateBoostDisplay,
 ) {
-    let frame = egui::Frame::default()
-        .fill(egui::Color32::from_black_alpha(96))
-        .stroke(egui::Stroke::new(1.0, egui::Color32::from_white_alpha(18)))
-        .corner_radius(6.0 * scale)
-        .inner_margin(5.0 * scale);
+    let frame = overlay_panel_frame(scale, 150).inner_margin(5.0 * scale);
 
     frame.show(ui, |ui| {
         ui.set_min_width(teammate_boost_width(scale, display) - 10.0 * scale);
@@ -234,11 +234,7 @@ fn draw_teammate_boost_row(
     let (rect, _) = ui.allocate_exact_size(row_size, egui::Sense::hover());
     let painter = ui.painter();
     let rounding = 4.0 * scale;
-    let team_color = if my_team == 0 {
-        egui::Color32::from_rgb(0, 176, 255)
-    } else {
-        egui::Color32::from_rgb(255, 132, 36)
-    };
+    let team_color = overlay_team_color(my_team);
 
     let low_boost_alpha = if player.boost <= 20 {
         let pulse = (ui.input(|i| i.time) * 5.0).sin() as f32;
@@ -247,7 +243,13 @@ fn draw_teammate_boost_row(
         0
     };
 
-    painter.rect_filled(rect, rounding, egui::Color32::from_black_alpha(92));
+    painter.rect_filled(rect, rounding, overlay_row_fill());
+    painter.rect_stroke(
+        rect,
+        rounding,
+        overlay_row_stroke(),
+        egui::StrokeKind::Inside,
+    );
     if low_boost_alpha > 0 {
         painter.rect_filled(
             rect,
@@ -300,7 +302,7 @@ fn draw_teammate_boost_bar_content(
         egui::Align2::LEFT_TOP,
         &player.name,
         egui::FontId::proportional(10.5 * scale),
-        egui::Color32::from_gray(232),
+        overlay_player_text_color(),
     );
 
     painter.text(
@@ -332,7 +334,7 @@ fn draw_teammate_boost_circle_content(
         egui::Align2::LEFT_CENTER,
         &player.name,
         egui::FontId::proportional(10.0 * scale),
-        egui::Color32::from_gray(232),
+        overlay_player_text_color(),
     );
 
     painter.circle_filled(center, radius, egui::Color32::from_black_alpha(130));
@@ -383,7 +385,7 @@ fn draw_teammate_boost_compact_content(
         egui::Align2::LEFT_CENTER,
         &player.name,
         egui::FontId::proportional(10.0 * scale),
-        egui::Color32::from_gray(232),
+        overlay_player_text_color(),
     );
     painter.text(
         egui::pos2(inner.right(), inner.center().y),
@@ -408,7 +410,7 @@ fn draw_teammate_boost_number_content(
         egui::Align2::LEFT_CENTER,
         player.name.chars().take(10).collect::<String>(),
         egui::FontId::proportional(9.0 * scale),
-        egui::Color32::from_gray(210),
+        overlay_subtle_color(),
     );
     painter.text(
         egui::pos2(inner.right(), inner.center().y),
@@ -420,12 +422,7 @@ fn draw_teammate_boost_number_content(
 }
 
 fn teammate_boost_color(boost: u8) -> egui::Color32 {
-    match boost {
-        0..=20 => egui::Color32::from_rgb(255, 56, 48),
-        21..=50 => egui::Color32::from_rgb(255, 157, 28),
-        51..=80 => egui::Color32::from_rgb(255, 224, 74),
-        _ => egui::Color32::from_rgb(102, 232, 255),
-    }
+    overlay_boost_color(boost)
 }
 
 fn teammate_boost_width(scale: f32, display: TeammateBoostDisplay) -> f32 {

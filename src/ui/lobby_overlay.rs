@@ -6,6 +6,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
+use super::common::{
+    overlay_boost_color, overlay_disconnected_color, overlay_local_text_color, overlay_muted_color,
+    overlay_panel_fill, overlay_panel_stroke, overlay_player_text_color, overlay_subtle_color,
+    overlay_success_color, overlay_team_color, overlay_title_color,
+};
 use super::layout::{
     active_layout_drag_position, normalized_to_pos, persist_dragged_position,
     render_drag_position_handle,
@@ -246,11 +251,8 @@ pub(super) fn draw_lobby_panel(
     let scale = scale_override.unwrap_or(config.ui_scale);
     let (fill, stroke) = match config.lobby_theme {
         crate::state::LobbyTheme::Glass => (
-            egui::Color32::from_rgba_unmultiplied(20, 20, 25, config.transparency),
-            egui::Stroke::new(
-                1.0,
-                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 20),
-            ),
+            overlay_panel_fill(config.transparency),
+            overlay_panel_stroke(),
         ),
         crate::state::LobbyTheme::Solid => (
             egui::Color32::from_rgba_unmultiplied(10, 10, 12, 255),
@@ -282,14 +284,14 @@ pub(super) fn draw_lobby_panel(
                 ui.label(
                     egui::RichText::new("LOBBY")
                         .size(10.0 * scale)
-                        .color(egui::Color32::from_gray(180))
+                        .color(overlay_title_color())
                         .strong(),
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let status_color = if is_connected {
-                        egui::Color32::from_rgb(0, 255, 150)
+                        overlay_success_color()
                     } else {
-                        egui::Color32::from_rgb(255, 80, 80)
+                        overlay_disconnected_color()
                     };
                     ui.label(
                         egui::RichText::new("●")
@@ -299,7 +301,7 @@ pub(super) fn draw_lobby_panel(
                     ui.label(
                         egui::RichText::new(session_mode.label())
                             .size(8.5 * scale)
-                            .color(egui::Color32::from_gray(150)),
+                            .color(overlay_muted_color()),
                     );
                 });
             });
@@ -333,7 +335,7 @@ pub(super) fn draw_lobby_panel(
                     egui::RichText::new("Waiting...")
                         .size(11.0 * scale)
                         .italics()
-                        .color(egui::Color32::from_gray(120)),
+                        .color(overlay_subtle_color()),
                 );
             } else {
                 let mut previous_team = None;
@@ -404,11 +406,11 @@ fn render_lobby_player_row(
         .as_ref()
         .or_else(|| is_local.then_some(local_mmr).flatten());
     let name_color = if is_local {
-        egui::Color32::from_rgb(230, 255, 245)
+        overlay_local_text_color()
     } else if player.is_bot {
         egui::Color32::from_gray(140)
     } else {
-        egui::Color32::WHITE
+        overlay_player_text_color()
     };
 
     if config.lobby_display_mode == crate::state::LobbyDisplayMode::Compact {
@@ -603,19 +605,19 @@ fn render_expanded_row_v2(
                                 ui.label(
                                     egui::RichText::new(format!("{} Games", pl.matches))
                                         .size(7.0 * scale)
-                                        .color(egui::Color32::from_gray(120)),
+                                        .color(overlay_subtle_color()),
                                 );
                             }
                         } else if should_fetch_rank(player) {
                             ui.label(
                                 egui::RichText::new("Fetching rank...")
-                                    .color(egui::Color32::from_gray(120))
+                                    .color(overlay_subtle_color())
                                     .size(8.5 * scale),
                             );
                         } else {
                             ui.label(
                                 egui::RichText::new("-")
-                                    .color(egui::Color32::from_gray(120))
+                                    .color(overlay_subtle_color())
                                     .size(8.5 * scale),
                             );
                         }
@@ -670,7 +672,7 @@ fn render_expanded_row_v2(
                             player.touches, player.car_touches, player.demos
                         ))
                         .size(7.0 * scale)
-                        .color(egui::Color32::from_gray(120)),
+                        .color(overlay_subtle_color()),
                     );
                 }
             },
@@ -682,7 +684,7 @@ fn render_you_badge(ui: &mut egui::Ui, scale: f32) {
     ui.label(
         egui::RichText::new("YOU")
             .size(7.0 * scale)
-            .color(egui::Color32::from_rgb(0, 255, 150))
+            .color(overlay_success_color())
             .strong(),
     );
 }
@@ -799,7 +801,7 @@ fn render_mmr_badge(ui: &mut egui::Ui, rank: &str, rating: i32, show_rank_name: 
             ui.label(
                 egui::RichText::new(mmr_badge_rating_text(rank, rating))
                     .size(8.5 * scale)
-                    .color(egui::Color32::WHITE)
+                    .color(overlay_player_text_color())
                     .strong(),
             );
         });
@@ -955,11 +957,7 @@ pub(super) fn is_local_lobby_player(
 }
 
 fn team_color(team: u8) -> egui::Color32 {
-    if team == 0 {
-        egui::Color32::from_rgb(0, 212, 255)
-    } else {
-        egui::Color32::from_rgb(255, 140, 0)
-    }
+    overlay_team_color(team)
 }
 
 fn team_label(team: u8) -> &'static str {
@@ -967,11 +965,7 @@ fn team_label(team: u8) -> &'static str {
 }
 
 fn boost_color(boost: u8) -> egui::Color32 {
-    if boost > 50 {
-        egui::Color32::from_rgb(255, 255, 100)
-    } else {
-        egui::Color32::from_rgb(255, 150, 50)
-    }
+    overlay_boost_color(boost)
 }
 
 pub(super) fn platform_icon(player: &PlayerInfo) -> egui::ImageSource<'static> {

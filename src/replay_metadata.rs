@@ -7,6 +7,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
+const MAX_REPLAY_HEADER_BYTES: usize = 16 * 1024 * 1024;
+const MAX_HEADER_PROPERTY_DEPTH: usize = 64;
+const MAX_HEADER_PROPERTIES: usize = 50_000;
+
 #[derive(Clone, Debug, Default)]
 pub struct ReplayMetadataSnapshot {
     pub folder: String,
@@ -226,9 +230,23 @@ fn read_replay_header_prefix(path: &Path) -> std::io::Result<Vec<u8>> {
             "negative replay header length",
         ));
     }
+    let header_len = header_len as usize;
+    if header_len > MAX_REPLAY_HEADER_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "replay header length exceeds parser limit",
+        ));
+    }
     let total_len = 8_usize
-        .checked_add(header_len as usize)
+        .checked_add(header_len)
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "header too large"))?;
+    let file_len = file.metadata()?.len();
+    if total_len as u64 > file_len {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "replay header length exceeds file size",
+        ));
+    }
     let mut bytes = Vec::with_capacity(total_len);
     bytes.extend_from_slice(&prefix);
     bytes.resize(total_len, 0);
@@ -244,8 +262,12 @@ fn parse_header_properties(bytes: &[u8]) -> Result<Vec<(String, HeaderProp)>, St
     if header_len < 0 {
         return Err("negative header length".to_string());
     }
+    let header_len = header_len as usize;
+    if header_len > MAX_REPLAY_HEADER_BYTES {
+        return Err("header length exceeds parser limit".to_string());
+    }
     let header_end = 8_usize
-        .checked_add(header_len as usize)
+        .checked_add(header_len)
         .ok_or_else(|| "header length overflowed".to_string())?;
     let header = bytes
         .get(8..header_end)
@@ -257,7 +279,8 @@ fn parse_header_properties(bytes: &[u8]) -> Result<Vec<(String, HeaderProp)>, St
         parser.take_i32("net version")?;
     }
     parser.parse_text("game type")?;
-    parser.parse_properties()
+    let mut property_count = 0;
+    parser.parse_properties(0, &mut property_count)
 }
 
 struct HeaderParser<'a> {
@@ -328,12 +351,25 @@ impl<'a> HeaderParser<'a> {
         }
     }
 
-    fn parse_properties(&mut self) -> Result<Vec<(String, HeaderProp)>, String> {
+    fn parse_properties(
+        &mut self,
+        depth: usize,
+        property_count: &mut usize,
+    ) -> Result<Vec<(String, HeaderProp)>, String> {
+        if depth > MAX_HEADER_PROPERTY_DEPTH {
+            return Err("property nesting is too deep".to_string());
+        }
         let mut properties = Vec::new();
         loop {
             let key = self.parse_str("property key")?;
             if key == "None" {
                 break;
+            }
+            *property_count = (*property_count)
+                .checked_add(1)
+                .ok_or_else(|| "property count overflowed".to_string())?;
+            if *property_count > MAX_HEADER_PROPERTIES {
+                return Err("header has too many properties".to_string());
             }
             let kind = self.parse_str("property kind")?;
             let _size = self.take_u32("property size")?;
@@ -358,7 +394,7 @@ impl<'a> HeaderParser<'a> {
                     }
                     let mut items = Vec::with_capacity(count as usize);
                     for _ in 0..count {
-                        items.push(self.parse_properties()?);
+                        items.push(self.parse_properties(depth + 1, property_count)?);
                     }
                     HeaderProp::Array(items)
                 }
@@ -375,7 +411,7 @@ impl<'a> HeaderParser<'a> {
                 "StrProperty" => HeaderProp::Str(self.parse_text("str property")?),
                 "StructProperty" => {
                     let name = self.parse_str("struct property name")?;
-                    let fields = self.parse_properties()?;
+                    let fields = self.parse_properties(depth + 1, property_count)?;
                     HeaderProp::Struct { name, fields }
                 }
                 _ => return Err(format!("unexpected header property kind {kind}")),
@@ -582,6 +618,14 @@ mod tests {
         replay
     }
 
+    fn replay_from_header_payload(header: Vec<u8>) -> Vec<u8> {
+        let mut replay = Vec::new();
+        push_i32(&mut replay, header.len() as i32);
+        push_u32(&mut replay, 0);
+        replay.extend_from_slice(&header);
+        replay
+    }
+
     #[test]
     fn header_prefix_parser_preserves_display_metadata() {
         let properties = parse_header_properties(&synthetic_header()).unwrap();
@@ -607,5 +651,54 @@ mod tests {
         let read = read_replay_header_prefix(&replay_path).unwrap();
 
         assert_eq!(read.len(), expected_len);
+    }
+
+    #[test]
+    fn replay_header_reader_rejects_oversized_advertised_header() {
+        let temp = tempfile::tempdir().unwrap();
+        let replay_path = temp.path().join("oversized.replay");
+        let mut bytes = Vec::new();
+        push_i32(&mut bytes, i32::MAX);
+        push_u32(&mut bytes, 0);
+        fs::write(&replay_path, bytes).unwrap();
+
+        let error = read_replay_header_prefix(&replay_path).unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn replay_header_reader_rejects_header_longer_than_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let replay_path = temp.path().join("truncated.replay");
+        let mut bytes = Vec::new();
+        push_i32(&mut bytes, 4096);
+        push_u32(&mut bytes, 0);
+        fs::write(&replay_path, bytes).unwrap();
+
+        let error = read_replay_header_prefix(&replay_path).unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn replay_header_parser_rejects_excessive_property_nesting() {
+        let mut header = Vec::new();
+        push_i32(&mut header, 868);
+        push_i32(&mut header, 22);
+        push_i32(&mut header, 10);
+        push_text(&mut header, "TAGame.Replay");
+
+        for depth in 0..=MAX_HEADER_PROPERTY_DEPTH {
+            push_prop_header(&mut header, &format!("Nested{depth}"), "StructProperty", 0);
+            push_str(&mut header, "Replay.Struct");
+        }
+        for _ in 0..=MAX_HEADER_PROPERTY_DEPTH {
+            push_str(&mut header, "None");
+        }
+
+        let error = parse_header_properties(&replay_from_header_payload(header)).unwrap_err();
+
+        assert!(error.contains("property nesting is too deep"));
     }
 }

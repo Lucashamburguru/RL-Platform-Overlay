@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+- **Updated Preview Screenshots**: Replaced the outdated README preview with new setup, overlay, and dashboard screenshots, including smaller README-friendly versions for wide screenshots.
+
+### Changed
+- **Player-Facing README Rewrite**: Reworked the README to explain what players see in-game, how setup works, and how the app stays separate from Rocket League without sounding like a generic product page.
+- **Overlay Theme Consistency**: Normalized the visual theme across the lobby overlay, session tracker, and teammate boost HUD with shared panel, text, team, and boost colors.
+- **Replay Parser Dependency**: Updated `boxcars` from `0.11.3` to `0.11.5`.
+
+### Fixed
+- **Replay Header Parsing Limits**: Rejects oversized, truncated, deeply nested, or excessive replay header metadata before parsing to avoid expensive or invalid reads.
+
+---
+
 ## [0.1.40] - 2026-07-07
 
 ### Fixed

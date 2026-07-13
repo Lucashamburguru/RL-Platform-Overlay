@@ -6,6 +6,10 @@ use crate::state::{AppState, LocalMmrState};
 use eframe::egui;
 use std::sync::Arc;
 
+use super::common::{
+    overlay_danger_color, overlay_muted_color, overlay_panel_frame, overlay_subtle_color,
+    overlay_success_color, overlay_text_color, overlay_title_color,
+};
 use super::layout::{
     active_layout_drag_position, normalized_to_pos, persist_dragged_position,
     render_drag_position_handle,
@@ -70,11 +74,7 @@ pub(super) fn draw_session_panel(
         SessionOverlayDisplay::Compact => 155.0 * scale,
         SessionOverlayDisplay::Expanded => 280.0 * scale,
     };
-    let frame = egui::Frame::default()
-        .fill(egui::Color32::from_rgba_unmultiplied(16, 18, 24, opacity))
-        .stroke(egui::Stroke::new(1.0, egui::Color32::from_white_alpha(24)))
-        .corner_radius(6.0 * scale)
-        .inner_margin(8.0 * scale);
+    let frame = overlay_panel_frame(scale, opacity);
 
     frame.show(ui, |ui| {
         ui.set_min_width(width);
@@ -99,7 +99,7 @@ fn draw_compact_session(ui: &mut egui::Ui, session: &SessionState, scale: f32) {
         egui::RichText::new("SESSION")
             .size(9.0 * scale)
             .strong()
-            .color(egui::Color32::from_gray(170)),
+            .color(overlay_title_color()),
     );
     ui.add_space(4.0 * scale);
     ui.horizontal(|ui| {
@@ -107,19 +107,19 @@ fn draw_compact_session(ui: &mut egui::Ui, session: &SessionState, scale: f32) {
             egui::RichText::new(format!("{}W", session.wins))
                 .size(17.0 * scale)
                 .strong()
-                .color(egui::Color32::from_rgb(90, 230, 150)),
+                .color(overlay_success_color()),
         );
         ui.label(
             egui::RichText::new(format!("{}L", session.losses))
                 .size(17.0 * scale)
                 .strong()
-                .color(egui::Color32::from_rgb(255, 105, 105)),
+                .color(overlay_danger_color()),
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.label(
                 egui::RichText::new(streak_label(session.streak))
                     .size(12.0 * scale)
-                    .color(egui::Color32::from_rgb(220, 220, 245)),
+                    .color(overlay_text_color()),
             );
         });
     });
@@ -142,14 +142,14 @@ fn draw_expanded_session(
             egui::RichText::new("SESSION")
                 .size(10.0 * scale)
                 .strong()
-                .color(egui::Color32::from_gray(170)),
+                .color(overlay_title_color()),
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.label(
                 egui::RichText::new(format_win_rate(session.wins, session.losses))
                     .size(12.0 * scale)
                     .strong()
-                    .color(egui::Color32::from_rgb(220, 220, 245)),
+                    .color(overlay_text_color()),
             );
         });
     });
@@ -159,13 +159,13 @@ fn draw_expanded_session(
             egui::RichText::new(format!("{}W", session.wins))
                 .size(21.0 * scale)
                 .strong()
-                .color(egui::Color32::from_rgb(90, 230, 150)),
+                .color(overlay_success_color()),
         );
         ui.label(
             egui::RichText::new(format!("{}L", session.losses))
                 .size(21.0 * scale)
                 .strong()
-                .color(egui::Color32::from_rgb(255, 105, 105)),
+                .color(overlay_danger_color()),
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.label(
@@ -231,11 +231,11 @@ fn streak_label(streak: i32) -> String {
 
 fn streak_color(streak: i32) -> egui::Color32 {
     if streak > 0 {
-        egui::Color32::from_rgb(90, 230, 150)
+        overlay_success_color()
     } else if streak < 0 {
-        egui::Color32::from_rgb(255, 105, 105)
+        overlay_danger_color()
     } else {
-        egui::Color32::from_rgb(220, 220, 245)
+        overlay_text_color()
     }
 }
 
@@ -244,7 +244,7 @@ fn section_label(ui: &mut egui::Ui, label: &str, scale: f32) {
         egui::RichText::new(label)
             .size(9.0 * scale)
             .strong()
-            .color(egui::Color32::from_gray(170)),
+            .color(overlay_title_color()),
     );
 }
 
@@ -253,13 +253,13 @@ fn stat_row(ui: &mut egui::Ui, label: &str, value: &str, scale: f32) {
         ui.label(
             egui::RichText::new(label)
                 .size(11.0 * scale)
-                .color(egui::Color32::from_gray(178)),
+                .color(overlay_muted_color()),
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.label(
                 egui::RichText::new(value)
                     .size(11.0 * scale)
-                    .color(egui::Color32::from_rgb(225, 227, 235)),
+                    .color(overlay_text_color()),
             );
         });
     });
@@ -294,11 +294,11 @@ fn mmr_delta_label(delta: i32) -> String {
 
 fn mmr_delta_color(delta: i32) -> egui::Color32 {
     if delta > 0 {
-        egui::Color32::from_rgb(90, 230, 150)
+        overlay_success_color()
     } else if delta < 0 {
-        egui::Color32::from_rgb(255, 105, 105)
+        overlay_danger_color()
     } else {
-        egui::Color32::from_rgb(225, 227, 235)
+        overlay_text_color()
     }
 }
 
@@ -349,7 +349,7 @@ fn breakdown_row(
                 .unwrap_or_else(|| "-".to_string());
             let color = delta
                 .map(mmr_delta_color)
-                .unwrap_or_else(|| egui::Color32::from_rgb(225, 227, 235));
+                .unwrap_or_else(overlay_text_color);
             ui.add_sized(
                 [44.0 * scale, 18.0 * scale],
                 egui::Label::new(value_text(text, scale).color(color)),
@@ -367,13 +367,13 @@ fn breakdown_row(
 fn muted_text(text: impl Into<String>, scale: f32) -> egui::RichText {
     egui::RichText::new(text.into())
         .size(10.0 * scale)
-        .color(egui::Color32::from_gray(150))
+        .color(overlay_subtle_color())
 }
 
 fn value_text(text: impl Into<String>, scale: f32) -> egui::RichText {
     egui::RichText::new(text.into())
         .size(11.0 * scale)
-        .color(egui::Color32::from_rgb(225, 227, 235))
+        .color(overlay_text_color())
 }
 
 fn muted_label(text: impl Into<String>, scale: f32) -> egui::Label {

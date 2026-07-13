@@ -5,6 +5,84 @@ const SETTINGS_SECTION_RADIUS: u8 = 6;
 pub(super) const SETTINGS_HELPER_TEXT_SIZE: f32 = 11.5;
 pub(super) const SETTINGS_LABEL_TEXT_SIZE: f32 = 12.5;
 pub(super) const SETTINGS_SECTION_TITLE_SIZE: f32 = 14.0;
+pub(super) const OVERLAY_RADIUS: f32 = 6.0;
+
+pub(super) fn overlay_panel_frame(scale: f32, opacity: u8) -> egui::Frame {
+    egui::Frame::default()
+        .fill(overlay_panel_fill(opacity))
+        .stroke(overlay_panel_stroke())
+        .corner_radius(OVERLAY_RADIUS * scale)
+        .inner_margin(8.0 * scale)
+}
+
+pub(super) fn overlay_panel_fill(opacity: u8) -> egui::Color32 {
+    egui::Color32::from_rgba_unmultiplied(16, 18, 24, opacity)
+}
+
+pub(super) fn overlay_panel_stroke() -> egui::Stroke {
+    egui::Stroke::new(1.0, egui::Color32::from_white_alpha(24))
+}
+
+pub(super) fn overlay_row_fill() -> egui::Color32 {
+    egui::Color32::from_black_alpha(92)
+}
+
+pub(super) fn overlay_row_stroke() -> egui::Stroke {
+    egui::Stroke::new(1.0, egui::Color32::from_white_alpha(18))
+}
+
+pub(super) fn overlay_title_color() -> egui::Color32 {
+    egui::Color32::from_gray(180)
+}
+
+pub(super) fn overlay_muted_color() -> egui::Color32 {
+    egui::Color32::from_gray(150)
+}
+
+pub(super) fn overlay_subtle_color() -> egui::Color32 {
+    egui::Color32::from_gray(120)
+}
+
+pub(super) fn overlay_text_color() -> egui::Color32 {
+    egui::Color32::from_rgb(225, 227, 235)
+}
+
+pub(super) fn overlay_player_text_color() -> egui::Color32 {
+    egui::Color32::from_gray(232)
+}
+
+pub(super) fn overlay_local_text_color() -> egui::Color32 {
+    egui::Color32::from_rgb(230, 255, 245)
+}
+
+pub(super) fn overlay_success_color() -> egui::Color32 {
+    egui::Color32::from_rgb(90, 230, 150)
+}
+
+pub(super) fn overlay_danger_color() -> egui::Color32 {
+    egui::Color32::from_rgb(255, 105, 105)
+}
+
+pub(super) fn overlay_disconnected_color() -> egui::Color32 {
+    egui::Color32::from_rgb(255, 80, 80)
+}
+
+pub(super) fn overlay_team_color(team: u8) -> egui::Color32 {
+    match team {
+        0 => egui::Color32::from_rgb(0, 212, 255),
+        1 => egui::Color32::from_rgb(255, 140, 0),
+        _ => egui::Color32::from_gray(165),
+    }
+}
+
+pub(super) fn overlay_boost_color(boost: u8) -> egui::Color32 {
+    match boost {
+        0..=20 => egui::Color32::from_rgb(255, 56, 48),
+        21..=50 => egui::Color32::from_rgb(255, 157, 28),
+        51..=80 => egui::Color32::from_rgb(255, 224, 74),
+        _ => egui::Color32::from_rgb(102, 232, 255),
+    }
+}
 
 pub(super) fn helper_text(text: impl Into<String>) -> egui::RichText {
     egui::RichText::new(text.into())
