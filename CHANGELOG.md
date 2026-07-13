@@ -10,6 +10,7 @@ All notable changes to this project will be documented in this file.
 ### Changed
 - **Player-Facing README Rewrite**: Reworked the README to explain what players see in-game, how setup works, and how the app stays separate from Rocket League without sounding like a generic product page.
 - **Overlay Theme Consistency**: Normalized the visual theme across the lobby overlay, session tracker, and teammate boost HUD with shared panel, text, team, and boost colors.
+- **UI String Matching**: Replaced several render-path lowercase substring checks with shared allocation-free ASCII case-insensitive matching.
 - **Replay Parser Dependency**: Updated `boxcars` from `0.11.3` to `0.11.5`.
 
 ### Fixed

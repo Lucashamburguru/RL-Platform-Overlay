@@ -84,6 +84,21 @@ pub(super) fn overlay_boost_color(boost: u8) -> egui::Color32 {
     }
 }
 
+pub(super) fn contains_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    if haystack.len() < needle.len() {
+        return false;
+    }
+
+    let needle = needle.as_bytes();
+    haystack
+        .as_bytes()
+        .windows(needle.len())
+        .any(|candidate| candidate.eq_ignore_ascii_case(needle))
+}
+
 pub(super) fn helper_text(text: impl Into<String>) -> egui::RichText {
     egui::RichText::new(text.into())
         .size(SETTINGS_HELPER_TEXT_SIZE)
@@ -175,4 +190,19 @@ pub(super) fn status_text(ui: &mut egui::Ui, tone: StatusTone, text: impl Into<S
             .size(SETTINGS_LABEL_TEXT_SIZE)
             .color(status_color(tone)),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn contains_ignore_ascii_case_matches_without_allocating_lowercase_strings() {
+        assert!(contains_ignore_ascii_case("Ranked Doubles 2v2", "doubles"));
+        assert!(contains_ignore_ascii_case("Grand Champion III", "CHAMPION"));
+        assert!(contains_ignore_ascii_case("Epic Games", "epic"));
+        assert!(contains_ignore_ascii_case("abc", ""));
+        assert!(!contains_ignore_ascii_case("abc", "abcd"));
+        assert!(!contains_ignore_ascii_case("Steam", "epic"));
+    }
 }
