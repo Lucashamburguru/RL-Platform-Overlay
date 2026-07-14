@@ -1,42 +1,13 @@
 # RL-Platform-Overlay
 
-Shows Rocket League lobby info, ranks/MMR, teammate boost, and session stats while you play.
+RL-Platform-Overlay shows Rocket League lobby info, ranks/MMR, teammate boost, and session stats while you play.
 
 ![Program Preview](assets/program-preview.png)
 
-## What It Does
-
-RL-Platform-Overlay is a separate desktop app that reads Rocket League's Stats API output and displays useful match information on top of the game.
-
-It can show:
-
-* Player platforms in the current lobby.
-* Ranks and MMR when tracker.gg data is available.
-* A teammate boost HUD for live boost tracking.
-* Session wins, losses, win rate, streak, and session time.
-* A dashboard view for another monitor.
-
-It also includes replay tools:
-
-* Upload finished matches to Ballchasing.com.
-* Bulk upload older replay files.
-* Repair some broken legacy Hoops replays while keeping a `.replay.bak` backup.
-* Locally swap Standard Boost to Gold Rush / Alpha Boost assets, with restore support.
+It is a separate desktop app that reads Rocket League's Stats API output and displays match information on top of the game.
 
 > [!IMPORTANT]
-> This app runs outside Rocket League. It does not inject DLLs, modify game memory, or hook the renderer.
-
----
-
-## Screenshots
-
-The overlay can run directly over Rocket League, or you can keep the dashboard open on another monitor.
-
-![Overlay Preview](assets/overlay-preview-small.png)
-
-![Dashboard Preview](assets/dashboard-preview-small.png)
-
----
+> **Anti-cheat safe**: The overlay runs outside Rocket League. It does not inject DLLs, modify game memory, or hook the renderer.
 
 ## Quick Start
 
@@ -52,7 +23,9 @@ If auto-detect does not work, edit `TAGame/Config/DefaultStatsAPI.ini` in your R
 
 ---
 
-## Main Features
+## What You Get
+
+For matches:
 
 * **Lobby overlay**: Shows player names, platforms, ranks, and MMR without needing to Alt-Tab.
 * **Teammate boost HUD**: Displays your teammate's boost with adjustable styles, size, and position.
@@ -60,10 +33,24 @@ If auto-detect does not work, edit `TAGame/Config/DefaultStatsAPI.ini` in your R
 * **Second-monitor dashboard**: Keeps lobby and session information visible on another screen.
 * **Drag layouts**: Move and resize overlay panels, then keep them click-through while playing.
 * **Hotkeys**: Toggle the overlay HUD or settings window from keyboard or controller buttons.
-* **Replay uploader**: Sends replays to Ballchasing.com after matches, with controls for older replay uploads.
-* **Hoops replay fixer**: Patches older broken Hoops replay files in place and saves a backup first.
+
+For replays and local tools:
+
+* **Replay uploader**: Sends finished matches to Ballchasing.com and supports older replay uploads.
+* **Hoops replay fixer**: Patches some broken legacy Hoops replay files and saves a backup first.
 * **Gold Rush swapper**: Applies the Gold Rush / Alpha Boost look locally and can restore the original assets.
-* **Windows and Linux support**: Built as a native Rust app with egui/eframe.
+
+The app only changes local Rocket League files when you use the Gold Rush swapper or Hoops replay fixer.
+
+---
+
+## Screenshots
+
+The overlay can run directly over Rocket League, or you can keep the dashboard open on another monitor.
+
+![Overlay Preview](assets/overlay-preview-small.png)
+
+![Dashboard Preview](assets/dashboard-preview-small.png)
 
 ---
 

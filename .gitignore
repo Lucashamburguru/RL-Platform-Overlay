@@ -13,6 +13,9 @@ assets/switch_raw.jpg
 assets/bot_raw.png
 process_icons.py
 .codex
+.clinerules
+.geminirules
+.jules/
 
 # Editor directories and files
 .idea/
@@ -32,3 +35,8 @@ test_mmr.rs
 # Review documents and archives
 /docs/reviews/
 /docs/archive/
+/docs/plans/
+
+# Local screenshot masters
+/assets/dashboard-preview.png
+/assets/overlay-preview.png
