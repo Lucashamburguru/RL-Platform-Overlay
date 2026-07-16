@@ -16,6 +16,7 @@ pub mod session;
 mod setup;
 pub mod state;
 mod ui;
+#[cfg(not(feature = "microsoft-store"))]
 pub mod update;
 
 use eframe::egui;
@@ -48,6 +49,7 @@ pub async fn run(debug_enabled: bool) -> eframe::Result<()> {
 
     mmr::start_mmr_fetch_task(state.clone());
     input::start_input_tasks(state.clone());
+    #[cfg(not(feature = "microsoft-store"))]
     update::start_version_check(state.clone());
     replays::trigger_replay_upload(state.clone(), true);
 

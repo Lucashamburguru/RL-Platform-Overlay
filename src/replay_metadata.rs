@@ -44,6 +44,33 @@ impl ReplayMetadataEntry {
     }
 }
 
+#[derive(Debug, Default)]
+pub struct MetadataScanControl {
+    running: bool,
+    pending_folder: Option<String>,
+}
+
+impl MetadataScanControl {
+    fn request(&mut self, folder: String) -> Option<String> {
+        if self.running {
+            self.pending_folder = Some(folder);
+            None
+        } else {
+            self.running = true;
+            Some(folder)
+        }
+    }
+
+    fn finish_scan(&mut self) -> Option<String> {
+        if let Some(folder) = self.pending_folder.take() {
+            Some(folder)
+        } else {
+            self.running = false;
+            None
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct FileIdentity {
     size: u64,
@@ -63,49 +90,99 @@ pub fn start_metadata_scan(state: Arc<AppState>, folder: String) {
     if folder.trim().is_empty() {
         return;
     }
-    if state
-        .replays
-        .metadata_scan_running
-        .swap(true, Ordering::SeqCst)
-    {
+    let first_folder = {
+        let mut control = state
+            .replays
+            .metadata_scan_control
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let first_folder = control.request(folder);
+        if first_folder.is_some() {
+            state
+                .replays
+                .metadata_scan_running
+                .store(true, Ordering::SeqCst);
+        }
+        first_folder
+    };
+    let Some(mut folder) = first_folder else {
         return;
-    }
+    };
     if let Ok(mut status) = state.replays.metadata_status.lock() {
         *status = "Scanning replay metadata...".to_string();
     }
 
     tokio::spawn(async move {
-        let state_for_scan = state.clone();
-        let result =
-            tokio::task::spawn_blocking(move || scan_folder(&state_for_scan, &folder)).await;
+        loop {
+            let state_for_scan = state.clone();
+            let scan_folder_path = folder.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                scan_folder(&state_for_scan, &scan_folder_path)
+            })
+            .await;
 
-        match result {
-            Ok(snapshot) => {
-                let status = if snapshot.failed == 0 {
-                    format!("Metadata ready: {} local replays parsed", snapshot.parsed)
-                } else {
-                    format!(
-                        "Metadata ready: {} parsed, {} failed",
-                        snapshot.parsed, snapshot.failed
-                    )
-                };
-                state.replays.metadata_cache.store(Arc::new(snapshot));
-                if let Ok(mut lock) = state.replays.metadata_status.lock() {
-                    *lock = status;
+            match result {
+                Ok(snapshot) => {
+                    let status = if snapshot.failed == 0 {
+                        format!("Metadata ready: {} local replays parsed", snapshot.parsed)
+                    } else {
+                        format!(
+                            "Metadata ready: {} parsed, {} failed",
+                            snapshot.parsed, snapshot.failed
+                        )
+                    };
+                    state.replays.metadata_cache.store(Arc::new(snapshot));
+                    if let Ok(mut lock) = state.replays.metadata_status.lock() {
+                        *lock = status;
+                    }
+                }
+                Err(error) => {
+                    if let Ok(mut lock) = state.replays.metadata_status.lock() {
+                        *lock = format!("Metadata scan failed: {error}");
+                    }
                 }
             }
-            Err(error) => {
-                if let Ok(mut lock) = state.replays.metadata_status.lock() {
-                    *lock = format!("Metadata scan failed: {error}");
+
+            let next_folder = {
+                let mut control = state
+                    .replays
+                    .metadata_scan_control
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                let next_folder = control.finish_scan();
+                if next_folder.is_none() {
+                    state
+                        .replays
+                        .metadata_scan_running
+                        .store(false, Ordering::SeqCst);
                 }
+                next_folder
+            };
+            let Some(next_folder) = next_folder else {
+                break;
+            };
+            folder = next_folder;
+            if let Ok(mut status) = state.replays.metadata_status.lock() {
+                *status = "Refreshing replay metadata...".to_string();
             }
         }
-
-        state
-            .replays
-            .metadata_scan_running
-            .store(false, Ordering::SeqCst);
     });
+}
+
+pub fn merged_metadata_snapshot(state: &AppState) -> ReplayMetadataSnapshot {
+    let local = state.replays.metadata_cache.load();
+    let cloud = state.replays.cloud_metadata_cache.load();
+    let mut merged = (**local).clone();
+
+    for (filename, cloud_entry) in cloud.iter() {
+        let mut entry = cloud_entry.clone();
+        if let Some(local_entry) = local.entries.get(filename) {
+            entry.file_size = local_entry.file_size;
+            entry.modified_unix_secs = local_entry.modified_unix_secs;
+        }
+        merged.entries.insert(filename.clone(), entry);
+    }
+    merged
 }
 
 fn scan_folder(state: &AppState, folder: &str) -> ReplayMetadataSnapshot {
@@ -155,13 +232,6 @@ fn scan_folder(state: &AppState, folder: &str) -> ReplayMetadataSnapshot {
             snapshot.failed += 1;
         }
         snapshot.entries.insert(filename, parsed);
-    }
-
-    // Keep cloud metadata entries from previous scan
-    for (filename, entry) in &previous.entries {
-        if !snapshot.entries.contains_key(filename) && entry.file_size == 0 {
-            snapshot.entries.insert(filename.clone(), entry.clone());
-        }
     }
 
     snapshot
@@ -252,6 +322,37 @@ fn read_replay_header_prefix(path: &Path) -> std::io::Result<Vec<u8>> {
     bytes.resize(total_len, 0);
     file.read_exact(&mut bytes[8..])?;
     Ok(bytes)
+}
+
+pub(crate) fn validate_replay_file(path: &Path) -> Result<(), String> {
+    let bytes = read_replay_header_prefix(path)
+        .map_err(|error| format!("Could not read replay header: {error}"))?;
+    parse_header_properties(&bytes).map(|_| ())
+}
+
+pub(crate) fn validate_replay_bytes(bytes: &[u8]) -> Result<(), String> {
+    if bytes.len() < 8 {
+        return Err("Replay is shorter than its header prefix.".to_string());
+    }
+    let header_len = i32::from_le_bytes(
+        bytes[0..4]
+            .try_into()
+            .map_err(|_| "Replay header prefix is invalid.".to_string())?,
+    );
+    if header_len < 0 {
+        return Err("Replay header length is negative.".to_string());
+    }
+    let header_len = header_len as usize;
+    if header_len > MAX_REPLAY_HEADER_BYTES {
+        return Err("Replay header length exceeds parser limit.".to_string());
+    }
+    let header_end = 8_usize
+        .checked_add(header_len)
+        .ok_or_else(|| "Replay header length overflowed.".to_string())?;
+    let header = bytes
+        .get(..header_end)
+        .ok_or_else(|| "Replay header length exceeds downloaded file size.".to_string())?;
+    parse_header_properties(header).map(|_| ())
 }
 
 fn parse_header_properties(bytes: &[u8]) -> Result<Vec<(String, HeaderProp)>, String> {
@@ -700,5 +801,63 @@ mod tests {
         let error = parse_header_properties(&replay_from_header_payload(header)).unwrap_err();
 
         assert!(error.contains("property nesting is too deep"));
+    }
+
+    #[test]
+    fn scan_control_coalesces_to_latest_pending_folder() {
+        let mut control = MetadataScanControl::default();
+
+        assert_eq!(
+            control.request("first".to_string()),
+            Some("first".to_string())
+        );
+        assert_eq!(control.request("second".to_string()), None);
+        assert_eq!(control.request("latest".to_string()), None);
+        assert_eq!(control.finish_scan(), Some("latest".to_string()));
+        assert_eq!(control.finish_scan(), None);
+        assert!(!control.running);
+    }
+
+    #[test]
+    fn merged_snapshot_preserves_local_identity_and_cloud_details() {
+        let state = AppState::new();
+        state
+            .replays
+            .metadata_cache
+            .store(Arc::new(ReplayMetadataSnapshot {
+                folder: "replays".to_string(),
+                entries: HashMap::from([(
+                    "match.replay".to_string(),
+                    ReplayMetadataEntry {
+                        filename: "match.replay".to_string(),
+                        display_name: "Local".to_string(),
+                        file_size: 42,
+                        modified_unix_secs: Some(7),
+                        ..Default::default()
+                    },
+                )]),
+                total_files: 1,
+                parsed: 1,
+                ..Default::default()
+            }));
+        state
+            .replays
+            .cloud_metadata_cache
+            .store(Arc::new(HashMap::from([(
+                "match.replay".to_string(),
+                ReplayMetadataEntry {
+                    filename: "match.replay".to_string(),
+                    display_name: "Cloud title".to_string(),
+                    replay_id: "cloud-id".to_string(),
+                    ..Default::default()
+                },
+            )])));
+
+        let merged = merged_metadata_snapshot(&state);
+        let entry = &merged.entries["match.replay"];
+        assert_eq!(entry.display_name, "Cloud title");
+        assert_eq!(entry.replay_id, "cloud-id");
+        assert_eq!(entry.file_size, 42);
+        assert_eq!(entry.modified_unix_secs, Some(7));
     }
 }

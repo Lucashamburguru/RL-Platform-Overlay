@@ -1,7 +1,11 @@
 [package]
 name = "rl-platform-overlay"
-version = "0.1.40"
+version = "0.1.41"
 edition = "2024"
+
+[features]
+default = []
+microsoft-store = []
 
 [dependencies]
 eframe = "0.31.0"
@@ -22,6 +26,7 @@ raw-window-handle = "0.6"
 wreq = { version = "5.3", features = ["multipart"] }
 wreq-util = "2.2"
 urlencoding = "2.1.3"
+url = "2.5"
 sysinfo = "0.36.1"
 log = "0.4"
 env_logger = "0.11"

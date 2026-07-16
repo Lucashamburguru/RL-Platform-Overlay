@@ -171,7 +171,9 @@ pub(crate) fn render_overlay_settings_tab(
                 }
             });
 
+            #[cfg(not(feature = "microsoft-store"))]
             right.add_space(8.0);
+            #[cfg(not(feature = "microsoft-store"))]
             setting_row(right, "Auto Chat", |ui| {
                 if ui
                     .checkbox(&mut config_edit.auto_gg, "Auto 'GG' at Match End")
@@ -181,7 +183,9 @@ pub(crate) fn render_overlay_settings_tab(
                 }
             });
 
+            #[cfg(not(feature = "microsoft-store"))]
             right.add_space(8.0);
+            #[cfg(not(feature = "microsoft-store"))]
             setting_row(right, "GG Keys", |ui| {
                 if ui
                     .text_edit_singleline(&mut config_edit.auto_gg_sequence)
@@ -192,7 +196,9 @@ pub(crate) fn render_overlay_settings_tab(
                 }
             });
 
+            #[cfg(not(feature = "microsoft-store"))]
             right.add_space(8.0);
+            #[cfg(not(feature = "microsoft-store"))]
             setting_row(right, "Auto Play", |ui| {
                 if ui
                     .checkbox(

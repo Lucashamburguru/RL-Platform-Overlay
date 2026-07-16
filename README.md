@@ -17,7 +17,7 @@ It is a separate desktop app that reads Rocket League's Stats API output and dis
 4. Click **Auto-detect** to find your Rocket League folder.
 5. Click **Enable Stats API**.
 6. Restart Rocket League if it was already running.
-7. Set your hotkeys, click **Launch Overlay**, and play.
+7. Set your hotkeys, Drag your overlays where you want them, click **Launch Overlay**, and play.
 
 If auto-detect does not work, edit `TAGame/Config/DefaultStatsAPI.ini` in your Rocket League folder and set `PacketSendRate` to a value above `0`, such as `30.0`.
 
@@ -28,7 +28,7 @@ If auto-detect does not work, edit `TAGame/Config/DefaultStatsAPI.ini` in your R
 For matches:
 
 * **Lobby overlay**: Shows player names, platforms, ranks, and MMR without needing to Alt-Tab.
-* **Teammate boost HUD**: Displays your teammate's boost with adjustable styles, size, and position.
+* **Teammate boost HUD**: Optionally displays your teammate's boost with adjustable styles, size, and position.
 * **Session tracker**: Tracks your current session record, win rate, streak, and play time.
 * **Second-monitor dashboard**: Keeps lobby and session information visible on another screen.
 * **Drag layouts**: Move and resize overlay panels, then keep them click-through while playing.
@@ -36,9 +36,9 @@ For matches:
 
 For replays and local tools:
 
-* **Replay uploader**: Sends finished matches to Ballchasing.com and supports older replay uploads.
+* **Ball chasing replay integration**: Download/Upload saves to ballchasing.com
 * **Hoops replay fixer**: Patches some broken legacy Hoops replay files and saves a backup first.
-* **Gold Rush swapper**: Applies the Gold Rush / Alpha Boost look locally and can restore the original assets.
+* **Gold Rush swapper**: Applies the Gold Rush / Alpha Boost look locally.
 
 The app only changes local Rocket League files when you use the Gold Rush swapper or Hoops replay fixer.
 

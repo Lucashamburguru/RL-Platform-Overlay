@@ -43,6 +43,12 @@ pub(super) fn render_settings_tabs(
     ui.add_space(8.0);
 }
 
+#[cfg(feature = "microsoft-store")]
+pub(super) fn render_update_notice(ui: &mut egui::Ui, state: &Arc<AppState>) {
+    let _ = (ui, state);
+}
+
+#[cfg(not(feature = "microsoft-store"))]
 pub(super) fn render_update_notice(ui: &mut egui::Ui, state: &Arc<AppState>) {
     let version_check = state.system.version_check.load();
     if !version_check.update_available {

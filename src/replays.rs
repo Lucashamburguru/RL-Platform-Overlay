@@ -2,10 +2,13 @@ use crate::json_utils::number_field_i32;
 use crate::state::{AppState, ReplayUploadProgress};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
+use tokio::io::AsyncWriteExt;
+use url::Url;
 
 const BULK_UPLOAD_DELAY_SECS: u64 = 30;
+const BALLCHASING_API_BASE: &str = "https://ballchasing.com/api/";
 
 #[derive(Clone)]
 struct ReplayFile {
@@ -142,7 +145,7 @@ async fn run_replay_upload(state: Arc<AppState>, scan_all_as_uploaded: bool) -> 
                         continue;
                     };
                     if let Ok(status_code) = upload_file_to_ballchasing(
-                        &state.system.http_client,
+                        &state.system.ballchasing_client,
                         &api_key,
                         &visibility,
                         &replay.filename,
@@ -209,7 +212,7 @@ async fn run_replay_upload(state: Arc<AppState>, scan_all_as_uploaded: bool) -> 
         };
 
         match upload_file_to_ballchasing(
-            &state.system.http_client,
+            &state.system.ballchasing_client,
             &api_key,
             &visibility,
             &replay.filename,
@@ -600,7 +603,7 @@ async fn upload_bulk_replay(
     };
 
     match upload_file_to_ballchasing(
-        &state.system.http_client,
+        &state.system.ballchasing_client,
         api_key,
         visibility,
         &replay.filename,
@@ -926,6 +929,28 @@ fn parse_cloud_metadata(
     })
 }
 
+fn validated_ballchasing_api_url(raw: &str) -> Result<Url, String> {
+    let base = Url::parse(BALLCHASING_API_BASE)
+        .map_err(|error| format!("Ballchasing API base URL is invalid: {error}"))?;
+    let url = base
+        .join(raw)
+        .map_err(|error| format!("Invalid Ballchasing pagination URL: {error}"))?;
+    let valid_path = url.path() == "/api" || url.path().starts_with("/api/");
+    if url.scheme() != "https"
+        || url.host_str() != Some("ballchasing.com")
+        || url.port_or_known_default() != Some(443)
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.fragment().is_some()
+        || !valid_path
+    {
+        return Err(format!(
+            "Rejected untrusted Ballchasing pagination URL: {url}"
+        ));
+    }
+    Ok(url)
+}
+
 async fn run_sync_replays(state: Arc<AppState>) -> Result<(), String> {
     let config = state.system.config.load();
     let api_key = config.ballchasing_api_key.trim().to_string();
@@ -936,10 +961,11 @@ async fn run_sync_replays(state: Arc<AppState>) -> Result<(), String> {
 
     set_status(&state, "Syncing from ballchasing.com...");
 
-    let client = &state.system.http_client;
+    let client = &state.system.ballchasing_client;
 
-    let mut next_url =
-        Some("https://ballchasing.com/api/replays?uploader=me&count=200".to_string());
+    let mut next_url = Some(validated_ballchasing_api_url(
+        "replays?uploader=me&count=200",
+    )?);
     let mut fetched_ids = Vec::new();
     let mut cloud_entries = Vec::new();
     let mut pages_fetched = 0;
@@ -951,7 +977,7 @@ async fn run_sync_replays(state: Arc<AppState>) -> Result<(), String> {
         }
 
         let response = client
-            .get(&url)
+            .get(url.as_str())
             .header("Authorization", &api_key)
             .send()
             .await
@@ -981,7 +1007,10 @@ async fn run_sync_replays(state: Arc<AppState>) -> Result<(), String> {
             }
         }
 
-        next_url = json["next"].as_str().map(|s| s.to_string());
+        next_url = json["next"]
+            .as_str()
+            .map(validated_ballchasing_api_url)
+            .transpose()?;
         pages_fetched += 1;
 
         if next_url.is_some() {
@@ -995,21 +1024,14 @@ async fn run_sync_replays(state: Arc<AppState>) -> Result<(), String> {
         .ballchasing_cloud_count
         .store(usize_to_u32_saturating(count), Ordering::SeqCst);
 
-    // Merge cloud entries into metadata cache
-    let current_snapshot = state.replays.metadata_cache.load();
-    let mut new_snapshot = (**current_snapshot).clone();
-    for mut entry in cloud_entries {
-        if let Some(existing) = new_snapshot.entries.get(&entry.filename)
-            && existing.file_size > 0
-        {
-            // Preserve local file size and modified timestamp so that
-            // subsequent local scans don't think the file has changed.
-            entry.file_size = existing.file_size;
-            entry.modified_unix_secs = existing.modified_unix_secs;
-        }
-        new_snapshot.entries.insert(entry.filename.clone(), entry);
-    }
-    state.replays.metadata_cache.store(Arc::new(new_snapshot));
+    let cloud_entries = cloud_entries
+        .into_iter()
+        .map(|entry| (entry.filename.clone(), entry))
+        .collect();
+    state
+        .replays
+        .cloud_metadata_cache
+        .store(Arc::new(cloud_entries));
 
     // Update config cache with these formatted filenames
     let filenames: Vec<String> = fetched_ids
@@ -1029,11 +1051,10 @@ async fn run_sync_replays(state: Arc<AppState>) -> Result<(), String> {
 }
 
 pub fn start_download_replay_task(state: Arc<AppState>, replay_id: String) {
-    if state.replays.download_active.load(Ordering::SeqCst) {
+    if state.replays.download_active.swap(true, Ordering::SeqCst) {
         set_status(&state, "Download already in progress");
         return;
     }
-    state.replays.download_active.store(true, Ordering::SeqCst);
 
     // Kept inline: must clear download_active regardless of success or failure.
     tokio::spawn(async move {
@@ -1105,13 +1126,17 @@ async fn run_download_replay(state: Arc<AppState>, replay_id: String) -> Result<
     // 1. Check if the file already exists locally
     let target_filename = format!("{}.replay", id_formatted);
     let target_path = replays_dir.join(&target_filename);
+    let mut invalid_existing_path = None;
 
     if tokio::fs::metadata(&target_path).await.is_ok() {
-        set_status(
-            &state,
-            &format!("Success: Replay {id_formatted} already exists locally"),
-        );
-        return Ok(());
+        if crate::replay_metadata::validate_replay_file(&target_path).is_ok() {
+            set_status(
+                &state,
+                &format!("Success: Replay {id_formatted} already exists locally"),
+            );
+            return Ok(());
+        }
+        invalid_existing_path = Some(target_path.clone());
     }
 
     // Also scan directory case-insensitively just to be nice
@@ -1121,11 +1146,15 @@ async fn run_download_replay(state: Arc<AppState>, replay_id: String) -> Result<
                 if entry.file_name().to_str().map(|s| s.to_lowercase())
                     == Some(target_filename.to_lowercase())
                 {
-                    set_status(
-                        &state,
-                        &format!("Success: Replay {id_formatted} already exists locally"),
-                    );
-                    return Ok(());
+                    let path = entry.path();
+                    if crate::replay_metadata::validate_replay_file(&path).is_ok() {
+                        set_status(
+                            &state,
+                            &format!("Success: Replay {id_formatted} already exists locally"),
+                        );
+                        return Ok(());
+                    }
+                    invalid_existing_path.get_or_insert(path);
                 }
             }
         }
@@ -1140,7 +1169,7 @@ async fn run_download_replay(state: Arc<AppState>, replay_id: String) -> Result<
 
     set_status(&state, &format!("Downloading replay {}...", id_formatted));
 
-    let client = &state.system.http_client;
+    let client = &state.system.ballchasing_client;
     let url = format!("https://ballchasing.com/api/replays/{}/file", id_formatted);
 
     let response = client
@@ -1180,8 +1209,28 @@ async fn run_download_replay(state: Arc<AppState>, replay_id: String) -> Result<
         set_status(&state, "Error: Downloaded file is empty");
         return Ok(());
     }
+    crate::replay_metadata::validate_replay_bytes(&bytes).map_err(|error| {
+        let message = format!("Downloaded replay failed validation: {error}");
+        set_status(&state, &format!("Error: {message}"));
+        message
+    })?;
 
-    if let Err(e) = tokio::fs::write(&target_path, &bytes).await {
+    if let Some(invalid_path) = invalid_existing_path {
+        let quarantined = quarantine_invalid_replay(&invalid_path)
+            .await
+            .map_err(|error| {
+                let message = format!("Could not quarantine invalid replay: {error}");
+                set_status(&state, &format!("Error: {message}"));
+                message
+            })?;
+        log::warn!(
+            "Moved invalid replay {} to {} before downloading replacement.",
+            invalid_path.display(),
+            quarantined.display()
+        );
+    }
+
+    if let Err(e) = write_downloaded_replay(&replays_dir, &target_filename, &bytes).await {
         let err_msg = format!("Failed to write file to disk: {e}");
         set_status(&state, &format!("Error: {}", err_msg));
         return Err(err_msg);
@@ -1195,32 +1244,97 @@ async fn run_download_replay(state: Arc<AppState>, replay_id: String) -> Result<
     Ok(())
 }
 
-pub fn mark_replays_uploaded(state: &Arc<AppState>, filenames: &[String]) -> usize {
-    let config_current = state.system.config.load();
-    let mut config_edit = (**config_current).clone();
-    let mut added = 0;
-    for filename in filenames {
-        if let Some(pos) = config_edit
-            .uploaded_replays
-            .iter()
-            .position(|x| x.eq_ignore_ascii_case(filename))
-        {
-            config_edit.uploaded_replays.remove(pos);
-            config_edit.uploaded_replays.push(filename.clone());
+async fn quarantine_invalid_replay(path: &Path) -> Result<PathBuf, String> {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("invalid.replay");
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let timestamp = crate::stats_api::now_ms();
+    for attempt in 0..100_u8 {
+        let suffix = if attempt == 0 {
+            format!("{file_name}.invalid-{timestamp}")
         } else {
-            config_edit.uploaded_replays.push(filename.clone());
-            added += 1;
+            format!("{file_name}.invalid-{timestamp}-{attempt}")
+        };
+        let quarantine_path = parent.join(suffix);
+        if tokio::fs::metadata(&quarantine_path).await.is_ok() {
+            continue;
         }
+        tokio::fs::rename(path, &quarantine_path)
+            .await
+            .map_err(|error| error.to_string())?;
+        return Ok(quarantine_path);
     }
-    const MAX_UPLOADED_CACHE: usize = 10_000;
-    if config_edit.uploaded_replays.len() > MAX_UPLOADED_CACHE {
-        let overflow = config_edit.uploaded_replays.len() - MAX_UPLOADED_CACHE;
-        config_edit.uploaded_replays.drain(0..overflow);
+    Err("Could not allocate a unique quarantine filename.".to_string())
+}
+
+async fn write_downloaded_replay(
+    replays_dir: &Path,
+    target_filename: &str,
+    bytes: &[u8],
+) -> Result<PathBuf, String> {
+    static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    let target_path = replays_dir.join(target_filename);
+    let temp_path = replays_dir.join(format!(
+        ".{target_filename}.download-{}-{}",
+        std::process::id(),
+        TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    let result = async {
+        let mut file = tokio::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temp_path)
+            .await
+            .map_err(|error| error.to_string())?;
+        file.write_all(bytes)
+            .await
+            .map_err(|error| error.to_string())?;
+        file.flush().await.map_err(|error| error.to_string())?;
+        file.sync_all().await.map_err(|error| error.to_string())?;
+        drop(file);
+        tokio::fs::rename(&temp_path, &target_path)
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok(target_path.clone())
     }
-    if !filenames.is_empty() {
-        state.save_config(config_edit);
+    .await;
+
+    if result.is_err() {
+        let _ = tokio::fs::remove_file(&temp_path).await;
     }
-    added
+    result
+}
+
+pub fn mark_replays_uploaded(state: &Arc<AppState>, filenames: &[String]) -> usize {
+    if filenames.is_empty() {
+        return 0;
+    }
+
+    state.update_config(|config| {
+        let mut added = 0;
+        for filename in filenames {
+            if let Some(pos) = config
+                .uploaded_replays
+                .iter()
+                .position(|x| x.eq_ignore_ascii_case(filename))
+            {
+                config.uploaded_replays.remove(pos);
+                config.uploaded_replays.push(filename.clone());
+            } else {
+                config.uploaded_replays.push(filename.clone());
+                added += 1;
+            }
+        }
+        const MAX_UPLOADED_CACHE: usize = 10_000;
+        if config.uploaded_replays.len() > MAX_UPLOADED_CACHE {
+            let overflow = config.uploaded_replays.len() - MAX_UPLOADED_CACHE;
+            config.uploaded_replays.drain(0..overflow);
+        }
+        added
+    })
 }
 
 fn usize_to_u32_saturating(value: usize) -> u32 {
@@ -1241,6 +1355,30 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         root
+    }
+
+    fn valid_replay_bytes() -> Vec<u8> {
+        fn push_i32(bytes: &mut Vec<u8>, value: i32) {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        fn push_str(bytes: &mut Vec<u8>, value: &str) {
+            push_i32(bytes, value.len() as i32 + 1);
+            bytes.extend_from_slice(value.as_bytes());
+            bytes.push(0);
+        }
+
+        let mut header = Vec::new();
+        push_i32(&mut header, 868);
+        push_i32(&mut header, 22);
+        push_i32(&mut header, 10);
+        push_str(&mut header, "TAGame.Replay");
+        push_str(&mut header, "None");
+
+        let mut replay = Vec::new();
+        push_i32(&mut replay, header.len() as i32);
+        replay.extend_from_slice(&0_u32.to_le_bytes());
+        replay.extend_from_slice(&header);
+        replay
     }
 
     #[test]
@@ -1393,5 +1531,61 @@ mod tests {
             format_uuid_with_dashes("38D82A9C4F817B27C17409AC772861F"),
             None
         );
+    }
+
+    #[test]
+    fn pagination_url_validation_stays_on_ballchasing_api() {
+        assert_eq!(
+            validated_ballchasing_api_url("replays?after=cursor")
+                .unwrap()
+                .as_str(),
+            "https://ballchasing.com/api/replays?after=cursor"
+        );
+        assert!(
+            validated_ballchasing_api_url("https://ballchasing.com/api/replays?after=cursor")
+                .is_ok()
+        );
+
+        for untrusted in [
+            "http://ballchasing.com/api/replays",
+            "https://evil.example/api/replays",
+            "https://api.ballchasing.com/api/replays",
+            "https://user:password@ballchasing.com/api/replays",
+            "https://ballchasing.com:444/api/replays",
+            "//evil.example/api/replays",
+            "https://ballchasing.com/upload",
+            "https://ballchasing.com/api/replays#fragment",
+        ] {
+            assert!(
+                validated_ballchasing_api_url(untrusted).is_err(),
+                "accepted {untrusted}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn invalid_existing_download_is_quarantined_before_atomic_replace() {
+        let root = temp_dir("atomic-download");
+        let target_name = "match.replay";
+        let target = root.join(target_name);
+        fs::write(&target, b"truncated").unwrap();
+        assert!(crate::replay_metadata::validate_replay_file(&target).is_err());
+
+        let quarantined = quarantine_invalid_replay(&target).await.unwrap();
+        let valid = valid_replay_bytes();
+        assert!(crate::replay_metadata::validate_replay_bytes(&valid).is_ok());
+        write_downloaded_replay(&root, target_name, &valid)
+            .await
+            .unwrap();
+
+        assert_eq!(fs::read(&quarantined).unwrap(), b"truncated");
+        assert!(crate::replay_metadata::validate_replay_file(&target).is_ok());
+        assert!(
+            fs::read_dir(&root)
+                .unwrap()
+                .flatten()
+                .all(|entry| !entry.file_name().to_string_lossy().contains(".download-"))
+        );
+        let _ = fs::remove_dir_all(root);
     }
 }

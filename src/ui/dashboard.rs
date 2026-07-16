@@ -90,9 +90,7 @@ pub(crate) fn render_dashboard_viewport(
         viewport,
         move |ctx, _class| {
             if ctx.input(|input| input.viewport().close_requested()) {
-                let mut config_edit = (**state.system.config.load()).clone();
-                config_edit.dashboard_enabled = false;
-                state.save_config(config_edit);
+                state.update_config(|config| config.dashboard_enabled = false);
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
                 return;
             }

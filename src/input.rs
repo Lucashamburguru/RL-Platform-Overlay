@@ -95,9 +95,8 @@ pub fn toggle_launch_hotkey(state: &Arc<AppState>, source: &str) {
     if new {
         let config = state.system.config.load();
         if config.dashboard_open_with_overlay && !config.dashboard_enabled {
-            let mut config_edit = (**config).clone();
-            config_edit.dashboard_enabled = true;
-            state.save_config(config_edit);
+            drop(config);
+            state.update_config(|config| config.dashboard_enabled = true);
         }
         state
             .flags
@@ -109,6 +108,56 @@ pub fn toggle_launch_hotkey(state: &Arc<AppState>, source: &str) {
         format!("launch_toggle source={source} current={current} new={new}"),
     );
     log::info!("Overlay launched toggled to: {new}");
+}
+
+pub fn handle_hud_hotkey_event(state: &Arc<AppState>, pressed: bool, source: &str) {
+    if pressed {
+        if state
+            .hotkeys
+            .hud_keyboard_down
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            append_hotkey_debug_log(
+                hotkey_debug_logging_enabled(state),
+                format!("hud_keypress_ignored_duplicate source={source}"),
+            );
+            return;
+        }
+
+        if state.system.config.load().hotkey_toggle {
+            let previous = state.flags.is_visible.fetch_xor(true, Ordering::SeqCst);
+            append_hotkey_debug_log(
+                hotkey_debug_logging_enabled(state),
+                format!(
+                    "hud_toggle source={source} current={previous} new={}",
+                    !previous
+                ),
+            );
+        } else {
+            state.flags.is_visible.store(true, Ordering::SeqCst);
+            append_hotkey_debug_log(
+                hotkey_debug_logging_enabled(state),
+                format!("hud_hold_visible source={source} visible=true"),
+            );
+        }
+    } else {
+        if state
+            .hotkeys
+            .hud_keyboard_down
+            .compare_exchange(true, false, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return;
+        }
+        if !state.system.config.load().hotkey_toggle {
+            state.flags.is_visible.store(false, Ordering::SeqCst);
+            append_hotkey_debug_log(
+                hotkey_debug_logging_enabled(state),
+                format!("hud_hold_visible source={source} visible=false"),
+            );
+        }
+    }
 }
 
 pub fn start_input_tasks(state: Arc<AppState>) {
@@ -201,9 +250,7 @@ fn start_keyboard_listener(state_kb: Arc<AppState>) {
             EventType::KeyPress(key) => {
                 let key_debug = format!("{:?}", key);
                 if state_kb.hotkeys.is_recording_kb.load(Ordering::SeqCst) {
-                    let mut new_config = (**state_kb.system.config.load()).clone();
-                    new_config.hotkey_kb = key_debug.clone();
-                    state_kb.save_config(new_config);
+                    state_kb.update_config(|config| config.hotkey_kb = key_debug.clone());
                     state_kb
                         .hotkeys
                         .is_recording_kb
@@ -218,9 +265,7 @@ fn start_keyboard_listener(state_kb: Arc<AppState>) {
                     .is_recording_settings
                     .load(Ordering::SeqCst)
                 {
-                    let mut new_config = (**state_kb.system.config.load()).clone();
-                    new_config.hotkey_settings = key_debug.clone();
-                    state_kb.save_config(new_config);
+                    state_kb.update_config(|config| config.hotkey_settings = key_debug.clone());
                     state_kb
                         .hotkeys
                         .is_recording_settings
@@ -231,9 +276,7 @@ fn start_keyboard_listener(state_kb: Arc<AppState>) {
                         format!("record_settings_hotkey key={key_debug}"),
                     );
                 } else if state_kb.hotkeys.is_recording_launch.load(Ordering::SeqCst) {
-                    let mut new_config = (**state_kb.system.config.load()).clone();
-                    new_config.hotkey_launch = key_debug.clone();
-                    state_kb.save_config(new_config);
+                    state_kb.update_config(|config| config.hotkey_launch = key_debug.clone());
                     state_kb
                         .hotkeys
                         .is_recording_launch
@@ -259,20 +302,7 @@ fn start_keyboard_listener(state_kb: Arc<AppState>) {
                     );
 
                     if first_press && is_match {
-                        if config.hotkey_toggle {
-                            let current = state_kb.flags.is_visible.load(Ordering::SeqCst);
-                            state_kb.flags.is_visible.store(!current, Ordering::SeqCst);
-                            append_hotkey_debug_log(
-                                hotkey_debug_logging_enabled(&state_kb),
-                                format!("hud_toggle current={current} new={}", !current),
-                            );
-                        } else {
-                            state_kb.flags.is_visible.store(true, Ordering::SeqCst);
-                            append_hotkey_debug_log(
-                                hotkey_debug_logging_enabled(&state_kb),
-                                "hud_hold_visible true",
-                            );
-                        }
+                        handle_hud_hotkey_event(&state_kb, true, "rdev");
                     }
 
                     // Handle Settings Toggle Hotkey
@@ -298,12 +328,8 @@ fn start_keyboard_listener(state_kb: Arc<AppState>) {
                     ),
                 );
 
-                if !config.hotkey_toggle && is_match {
-                    state_kb.flags.is_visible.store(false, Ordering::SeqCst);
-                    append_hotkey_debug_log(
-                        hotkey_debug_logging_enabled(&state_kb),
-                        "hud_hold_visible false",
-                    );
+                if was_pressed && is_match {
+                    handle_hud_hotkey_event(&state_kb, false, "rdev");
                 }
             }
             _ => {}
@@ -321,9 +347,7 @@ fn record_controller_hotkey(state: &Arc<AppState>, id: gilrs::GamepadId, button_
         button_str,
         id
     );
-    let mut new_config = (**state.system.config.load()).clone();
-    new_config.hotkey_ctrl = button_str.to_string();
-    state.save_config(new_config);
+    state.update_config(|config| config.hotkey_ctrl = button_str.to_string());
     state
         .hotkeys
         .is_recording_ctrl
@@ -331,7 +355,7 @@ fn record_controller_hotkey(state: &Arc<AppState>, id: gilrs::GamepadId, button_
     log::info!("Controller hotkey updated: {}", button_str);
 }
 
-fn keyboard_hotkey_matches(key_str: &str, configured_hotkey: &str) -> bool {
+pub(crate) fn keyboard_hotkey_matches(key_str: &str, configured_hotkey: &str) -> bool {
     if key_str == configured_hotkey {
         true
     } else if key_str.starts_with("Kp") && configured_hotkey.starts_with("Num") {
@@ -367,5 +391,43 @@ fn handle_controller_hotkey(
         }
     } else if pressed_controller_hotkeys.remove(&key) && !config.hotkey_toggle {
         state.flags.is_visible.store(false, Ordering::SeqCst);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn duplicate_keyboard_sources_toggle_hud_once() {
+        let state = AppState::new();
+        let mut config = (**state.system.config.load()).clone();
+        config.hotkey_toggle = true;
+        state.system.config.store(Arc::new(config));
+
+        handle_hud_hotkey_event(&state, true, "rdev");
+        handle_hud_hotkey_event(&state, true, "egui");
+        assert!(state.flags.is_visible.load(Ordering::SeqCst));
+
+        handle_hud_hotkey_event(&state, false, "rdev");
+        handle_hud_hotkey_event(&state, false, "egui");
+        handle_hud_hotkey_event(&state, true, "egui");
+        assert!(!state.flags.is_visible.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn hold_mode_stays_visible_until_first_release() {
+        let state = AppState::new();
+        let mut config = (**state.system.config.load()).clone();
+        config.hotkey_toggle = false;
+        state.system.config.store(Arc::new(config));
+
+        handle_hud_hotkey_event(&state, true, "rdev");
+        handle_hud_hotkey_event(&state, true, "egui");
+        assert!(state.flags.is_visible.load(Ordering::SeqCst));
+
+        handle_hud_hotkey_event(&state, false, "egui");
+        handle_hud_hotkey_event(&state, false, "rdev");
+        assert!(!state.flags.is_visible.load(Ordering::SeqCst));
     }
 }

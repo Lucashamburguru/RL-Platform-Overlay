@@ -199,7 +199,9 @@ fn handle_event(state: &Arc<AppState>, json: &Value) {
                 .local_team
                 .store(crate::state::NO_TEAM, Ordering::SeqCst);
 
+            #[cfg(not(feature = "microsoft-store"))]
             let state_clone = state.clone();
+            #[cfg(not(feature = "microsoft-store"))]
             tokio::spawn(async move {
                 if state_clone
                     .system
@@ -2429,7 +2431,7 @@ mod tests {
         let _ = crate::history::clear_history(&state);
         let mut config = state.system.config.load().as_ref().clone();
         config.history_enabled = true;
-        state.save_config(config);
+        state.replace_config(config);
 
         handle_update_state_payload(
             &state,

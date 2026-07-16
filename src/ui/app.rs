@@ -20,7 +20,9 @@ use super::settings::{
 pub enum ConfirmAction {
     ResetConfig,
     ClearUploadCache,
+    #[cfg(not(feature = "microsoft-store"))]
     AlphaBoostApply,
+    #[cfg(not(feature = "microsoft-store"))]
     AlphaBoostRestore,
     DeleteBackups,
     ClearHistory,
@@ -154,9 +156,8 @@ impl eframe::App for MainApp {
         // Auto-disable drag positioning when settings are closed or overlay is stopped to ensure click-through is restored
         let mut config = self.state.system.config.load();
         if (!show_settings || !is_launched) && config.layout_mode {
-            let mut config_edit = (**config).clone();
-            config_edit.layout_mode = false;
-            self.state.save_config(config_edit);
+            self.state
+                .update_config(|config| config.layout_mode = false);
             config = self.state.system.config.load();
             if self.launched_by_layout_mode {
                 self.state.flags.is_launched.store(false, Ordering::SeqCst);
@@ -333,7 +334,6 @@ impl eframe::App for MainApp {
                     let settings_hotkey = config.hotkey_settings.clone();
                     let launch_hotkey = config.hotkey_launch.clone();
                     let hud_hotkey = config.hotkey_kb.clone();
-                    let hotkey_toggle = config.hotkey_toggle;
                     if !is_recording_any {
                         ctx.input(|i| {
                             for event in &i.events {
@@ -354,19 +354,12 @@ impl eframe::App for MainApp {
                                         crate::input::toggle_launch_hotkey(&self.state, "egui");
                                     }
 
-                                    if *pressed && name == hud_hotkey {
-                                        if hotkey_toggle {
-                                            if *pressed {
-                                                let curr =
-                                                    self.state.flags.is_visible.load(Ordering::SeqCst);
-                                                self.state
-                                                    .flags
-                                                    .is_visible
-                                                    .store(!curr, Ordering::SeqCst);
-                                            }
-                                        } else {
-                                            self.state.flags.is_visible.store(*pressed, Ordering::SeqCst);
-                                        }
+                                    if crate::input::keyboard_hotkey_matches(&name, &hud_hotkey) {
+                                        crate::input::handle_hud_hotkey_event(
+                                            &self.state,
+                                            *pressed,
+                                            "egui",
+                                        );
                                     }
                                 }
                             }
@@ -529,9 +522,8 @@ impl eframe::App for MainApp {
                             {
                                 self.state.flags.is_launched.store(true, Ordering::SeqCst);
                                 if config.dashboard_open_with_overlay && !config.dashboard_enabled {
-                                    let mut config_edit = (**config).clone();
-                                    config_edit.dashboard_enabled = true;
-                                    self.state.save_config(config_edit);
+                                    self.state
+                                        .update_config(|config| config.dashboard_enabled = true);
                                 }
                                 self.state
                                     .flags
@@ -589,6 +581,12 @@ impl eframe::App for MainApp {
                 layout_mode: config.layout_mode,
             },
         );
+    }
+
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        if let Err(error) = self.state.flush_config() {
+            log::error!("Could not flush configuration during shutdown: {error}");
+        }
     }
 }
 
@@ -742,8 +740,10 @@ impl MainApp {
     ) {
         ui.add_space(5.0);
 
-        let config = self.state.system.config.load();
-        let mut config_edit = (**config).clone();
+        self.refresh_rocket_league_process_detection();
+        let mut config_session = self.state.begin_config_edit();
+        let config = Arc::new(config_session.snapshot().clone());
+        let config_edit = config_session.config_mut();
         let mut changed = false;
         if !self.state.debug_enabled && self.settings_tab == SettingsTab::Debug {
             self.settings_tab = SettingsTab::Setup;
@@ -751,7 +751,6 @@ impl MainApp {
 
         render_update_notice(ui, &self.state);
         render_settings_tabs(ui, &mut self.settings_tab, self.state.debug_enabled);
-        self.refresh_rocket_league_process_detection();
         if self.settings_tab == SettingsTab::History && config_edit.history_enabled {
             crate::history::request_all_player_history_refresh(&self.state, false);
         }
@@ -763,7 +762,7 @@ impl MainApp {
                     ui,
                     ctx,
                     &self.state,
-                    &mut config_edit,
+                    config_edit,
                     &mut changed,
                     self.is_rl_running,
                     &self.rl_process_detection_detail,
@@ -773,7 +772,7 @@ impl MainApp {
                     ctx,
                     &self.state,
                     &config,
-                    &mut config_edit,
+                    config_edit,
                     &mut changed,
                     is_launched,
                 ),
@@ -781,16 +780,16 @@ impl MainApp {
                     ui,
                     ctx,
                     &self.state,
-                    &mut config_edit,
+                    config_edit,
                     &mut changed,
                 ),
                 SettingsTab::Session => {
-                    render_session_settings_tab(ui, &self.state, &mut config_edit, &mut changed)
+                    render_session_settings_tab(ui, &self.state, config_edit, &mut changed)
                 }
                 SettingsTab::Boost => render_boost_settings_tab(
                     ui,
                     &self.state,
-                    &mut config_edit,
+                    config_edit,
                     &mut changed,
                     self.is_rl_running,
                     &mut self.confirm_modal,
@@ -798,14 +797,14 @@ impl MainApp {
                 SettingsTab::Replays => render_replays_settings_tab(
                     ui,
                     &self.state,
-                    &mut config_edit,
+                    config_edit,
                     &mut changed,
                     &mut self.confirm_modal,
                 ),
                 SettingsTab::History => render_history_settings_tab(
                     ui,
                     &self.state,
-                    &mut config_edit,
+                    config_edit,
                     &mut changed,
                     &mut self.confirm_modal,
                     &mut self.history_search_query,
@@ -827,7 +826,7 @@ impl MainApp {
             ctx,
             &self.state,
             is_launched,
-            &mut config_edit,
+            config_edit,
             &mut changed,
             &mut self.confirm_modal,
         );
@@ -851,7 +850,7 @@ impl MainApp {
             }
             let history_enabled = config_edit.history_enabled;
             let history_indicators_enabled = config_edit.lobby_history_indicators_enabled;
-            self.state.save_config(config_edit);
+            config_session.commit();
             if history_enabled {
                 crate::history::request_all_player_history_refresh(&self.state, true);
                 crate::history::refresh_totals(&self.state);
@@ -889,6 +888,7 @@ impl MainApp {
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     let confirm_enabled = match action {
+                        #[cfg(not(feature = "microsoft-store"))]
                         ConfirmAction::AlphaBoostApply => self.tos_accepted,
                         _ => true,
                     };
@@ -930,6 +930,7 @@ impl MainApp {
                     "This will cause the auto-uploader to re-check and potentially re-upload local replays.",
                 );
             }
+            #[cfg(not(feature = "microsoft-store"))]
             ConfirmAction::AlphaBoostApply => {
                 ui.heading("⚠️ Terms of Service Acknowledgment");
                 ui.label("Applying Alpha Boost modifications edits local game files.");
@@ -940,6 +941,7 @@ impl MainApp {
                     "I read, understand, and accept the risks associated with this action.",
                 );
             }
+            #[cfg(not(feature = "microsoft-store"))]
             ConfirmAction::AlphaBoostRestore => {
                 ui.label("Are you sure you want to restore original Rocket League boost files?");
                 ui.label("This will revert any local file modifications made by Alpha Boost.");
@@ -964,21 +966,21 @@ impl MainApp {
         match action {
             ConfirmAction::ResetConfig => {
                 let default_config = crate::state::Config::default();
-                self.state.save_config(default_config);
+                self.state.replace_config(default_config);
             }
             ConfirmAction::ClearUploadCache => {
-                let config = self.state.system.config.load();
-                let mut config_edit = (**config).clone();
-                config_edit.uploaded_replays.clear();
-                self.state.save_config(config_edit);
+                self.state
+                    .update_config(|config| config.uploaded_replays.clear());
                 if let Ok(mut status) = self.state.replays.ballchasing_status.lock() {
                     *status = "Upload cache cleared.".to_string();
                 }
             }
+            #[cfg(not(feature = "microsoft-store"))]
             ConfirmAction::AlphaBoostApply => {
                 let rl_path = self.state.system.config.load().rocket_league_path.clone();
                 crate::assets::start_apply_alpha_boost(self.state.clone(), rl_path);
             }
+            #[cfg(not(feature = "microsoft-store"))]
             ConfirmAction::AlphaBoostRestore => {
                 let rl_path = self.state.system.config.load().rocket_league_path.clone();
                 crate::assets::start_restore_standard_boost(self.state.clone(), rl_path);

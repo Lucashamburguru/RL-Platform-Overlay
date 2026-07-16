@@ -1,3 +1,5 @@
+#![cfg_attr(feature = "microsoft-store", allow(dead_code))]
+
 use crate::state::{AppState, config_dir};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -503,9 +505,7 @@ pub fn start_apply_alpha_boost(
         set_boost_status(&state_clone, "Initializing Alpha Boost swap...");
         match apply_alpha_boost(&rocket_league_path).await {
             Ok(()) => {
-                let mut config = (**state_clone.system.config.load()).clone();
-                config.alpha_boost_enabled = true;
-                state_clone.save_config(config);
+                state_clone.update_config(|config| config.alpha_boost_enabled = true);
                 set_boost_status(&state_clone, "Success: Alpha Boost applied!");
                 request_boost_swap_inspection(&state_clone, rocket_league_path.clone(), true);
             }
@@ -557,9 +557,7 @@ pub fn start_restore_standard_boost(
         set_boost_status(&state_clone, "Restoring Standard Boost...");
         match restore_standard_boost(&rocket_league_path) {
             Ok(()) => {
-                let mut config = (**state_clone.system.config.load()).clone();
-                config.alpha_boost_enabled = false;
-                state_clone.save_config(config);
+                state_clone.update_config(|config| config.alpha_boost_enabled = false);
                 set_boost_status(&state_clone, "Success: Standard Boost restored!");
                 request_boost_swap_inspection(&state_clone, rocket_league_path.clone(), true);
             }

@@ -2,9 +2,9 @@ use crate::state::{AppState, Config, TeammateBoostDisplay};
 use crate::ui::boost_hud::{
     draw_teammate_boost_panel, preview_teammates, teammate_boost_display_label,
 };
-use crate::ui::common::{
-    StatusTone, debug_status_row, helper_text, setting_row, settings_section, status_text,
-};
+#[cfg(not(feature = "microsoft-store"))]
+use crate::ui::common::{StatusTone, debug_status_row, status_text};
+use crate::ui::common::{helper_text, setting_row, settings_section};
 use eframe::egui;
 use std::sync::Arc;
 
@@ -16,6 +16,9 @@ pub(crate) fn render_boost_settings_tab(
     is_rl_running: bool,
     confirm_modal: &mut Option<crate::ui::app::ConfirmAction>,
 ) {
+    #[cfg(feature = "microsoft-store")]
+    let _ = (is_rl_running, confirm_modal);
+
     settings_section(ui, "Teammate Boost HUD", |ui| {
         if ui
             .checkbox(
@@ -101,7 +104,9 @@ pub(crate) fn render_boost_settings_tab(
         ));
     });
 
+    #[cfg(not(feature = "microsoft-store"))]
     ui.add_space(12.0);
+    #[cfg(not(feature = "microsoft-store"))]
     settings_section(ui, "Alpha Boost (Gold Rush) Swap", |ui| {
         // 1. Rocket League Folder Path (Read-only)
         setting_row(ui, "Rocket League Folder", |ui| {

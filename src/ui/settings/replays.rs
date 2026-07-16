@@ -80,7 +80,7 @@ pub(crate) fn render_replays_settings_tab(
 
                 ui.data_mut(|d| d.insert_temp(verify_status_id, "Checking...".to_string()));
 
-                let client = state.system.http_client.clone();
+                let client = state.system.ballchasing_client.clone();
                 tokio::spawn(async move {
                     let result = crate::replays::verify_token(&client, &api_key).await;
                     let msg = match result {
@@ -445,9 +445,8 @@ pub(crate) fn render_replays_settings_tab(
 }
 
 fn maybe_start_metadata_scan(state: &Arc<AppState>, folder: &str) {
-    let snapshot = state.replays.metadata_cache.load();
-    let scan_running = state.replays.metadata_scan_running.load(Ordering::SeqCst);
-    if snapshot.folder != folder && !scan_running {
+    let snapshot = crate::replay_metadata::merged_metadata_snapshot(state);
+    if snapshot.folder != folder {
         crate::replay_metadata::start_metadata_scan(state.clone(), folder.to_string());
     }
 }
@@ -468,7 +467,7 @@ fn render_replay_cache(
     );
     ui.add_space(4.0);
 
-    let snapshot = state.replays.metadata_cache.load();
+    let snapshot = crate::replay_metadata::merged_metadata_snapshot(state);
     let scan_running = state.replays.metadata_scan_running.load(Ordering::SeqCst);
     let metadata_status = state
         .replays

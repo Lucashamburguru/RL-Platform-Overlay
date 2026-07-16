@@ -6,7 +6,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::env;
 use std::fs;
-use std::path::PathBuf;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64};
 
@@ -303,15 +304,48 @@ impl Config {
         self.save_to_path(&path)
     }
 
-    pub fn save_to_path(&self, path: &PathBuf) -> Result<(), String> {
+    pub fn save_to_path(&self, path: &Path) -> Result<(), String> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)
                 .map_err(|error| format!("Could not create config directory: {error}"))?;
         }
         let content = toml::to_string_pretty(self)
             .map_err(|error| format!("Could not serialize config: {error}"))?;
-        fs::write(path, content).map_err(|error| format!("Could not save config: {error}"))
+        atomic_write_config(path, content.as_bytes())
     }
+}
+
+fn atomic_write_config(path: &Path, content: &[u8]) -> Result<(), String> {
+    static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("config.toml");
+    let temp_path = parent.join(format!(
+        ".{file_name}.tmp-{}-{}",
+        std::process::id(),
+        TEMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+
+    let result = (|| {
+        let mut file = fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temp_path)
+            .map_err(|error| format!("Could not create temporary config: {error}"))?;
+        file.write_all(content)
+            .map_err(|error| format!("Could not write temporary config: {error}"))?;
+        file.sync_all()
+            .map_err(|error| format!("Could not flush temporary config: {error}"))?;
+        fs::rename(&temp_path, path).map_err(|error| format!("Could not replace config: {error}"))
+    })();
+
+    if result.is_err() {
+        let _ = fs::remove_file(&temp_path);
+    }
+    result
 }
 
 fn load_config_file(path: &PathBuf) -> Result<Config, String> {
@@ -355,6 +389,28 @@ pub fn config_dir() -> Option<PathBuf> {
         env::var_os("HOME")
             .map(PathBuf::from)
             .map(|path| path.join(".config").join("rl-platform-overlay"))
+    }
+}
+
+fn release_url() -> String {
+    #[cfg(not(feature = "microsoft-store"))]
+    {
+        crate::update::LATEST_RELEASE_URL.to_string()
+    }
+    #[cfg(feature = "microsoft-store")]
+    {
+        String::new()
+    }
+}
+
+fn release_signing_public_key() -> String {
+    #[cfg(not(feature = "microsoft-store"))]
+    {
+        crate::update::RELEASE_SIGNING_PUBLIC_KEY_B64.to_string()
+    }
+    #[cfg(feature = "microsoft-store")]
+    {
+        String::new()
     }
 }
 
@@ -461,7 +517,7 @@ mod tests {
         let state = AppState::new();
         let mut config = state.system.config.load().as_ref().clone();
         config.lock_local_player = true;
-        state.save_config(config);
+        state.replace_config(config);
 
         state
             .game
@@ -566,6 +622,36 @@ mod tests {
         );
         assert!(decoded.estimate_teammate_bumps);
     }
+
+    #[test]
+    fn concurrent_config_updates_merge_and_persist() {
+        let state = AppState::new();
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        let first_state = state.clone();
+        let first_barrier = barrier.clone();
+        let first = std::thread::spawn(move || {
+            first_barrier.wait();
+            first_state.update_config(|config| config.hotkey_kb = "F8".to_string());
+        });
+        let second_state = state.clone();
+        let second_barrier = barrier.clone();
+        let second = std::thread::spawn(move || {
+            second_barrier.wait();
+            second_state.update_config(|config| config.dashboard_enabled = true);
+        });
+
+        barrier.wait();
+        first.join().unwrap();
+        second.join().unwrap();
+        state.flush_config().unwrap();
+
+        let memory = state.system.config.load();
+        assert_eq!(memory.hotkey_kb, "F8");
+        assert!(memory.dashboard_enabled);
+        let persisted = load_config_file(&state.paths.config_path).unwrap();
+        assert_eq!(persisted.hotkey_kb, "F8");
+        assert!(persisted.dashboard_enabled);
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -581,6 +667,88 @@ impl ConfigStatus {
             last_error: String::new(),
         }
     }
+}
+
+enum ConfigWriterMessage {
+    Persist { revision: u64, config: Box<Config> },
+    Flush(std::sync::mpsc::SyncSender<Result<(), String>>),
+}
+
+struct ConfigWriter {
+    sender: std::sync::mpsc::Sender<ConfigWriterMessage>,
+}
+
+impl ConfigWriter {
+    fn start(path: PathBuf, status: Arc<ArcSwap<ConfigStatus>>) -> Self {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || config_writer_loop(receiver, path, status));
+        Self { sender }
+    }
+
+    fn persist(&self, revision: u64, config: Config) -> Result<(), String> {
+        self.sender
+            .send(ConfigWriterMessage::Persist {
+                revision,
+                config: Box::new(config),
+            })
+            .map_err(|_| "Config writer is unavailable.".to_string())
+    }
+
+    fn flush(&self) -> Result<(), String> {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(0);
+        self.sender
+            .send(ConfigWriterMessage::Flush(sender))
+            .map_err(|_| "Config writer is unavailable.".to_string())?;
+        receiver
+            .recv()
+            .map_err(|_| "Config writer stopped before flushing.".to_string())?
+    }
+}
+
+fn config_writer_loop(
+    receiver: std::sync::mpsc::Receiver<ConfigWriterMessage>,
+    path: PathBuf,
+    status: Arc<ArcSwap<ConfigStatus>>,
+) {
+    let mut last_result = Ok(());
+    while let Ok(first) = receiver.recv() {
+        let mut batch = vec![first];
+        batch.extend(receiver.try_iter());
+        let mut pending: Option<(u64, Box<Config>)> = None;
+
+        for message in batch {
+            match message {
+                ConfigWriterMessage::Persist { revision, config } => {
+                    pending = Some((revision, config));
+                }
+                ConfigWriterMessage::Flush(ack) => {
+                    if let Some((revision, config)) = pending.take() {
+                        last_result = persist_config_revision(&path, &status, revision, &config);
+                    }
+                    let _ = ack.send(last_result.clone());
+                }
+            }
+        }
+
+        if let Some((revision, config)) = pending {
+            last_result = persist_config_revision(&path, &status, revision, &config);
+        }
+    }
+}
+
+fn persist_config_revision(
+    path: &Path,
+    status: &ArcSwap<ConfigStatus>,
+    revision: u64,
+    config: &Config,
+) -> Result<(), String> {
+    let mut next_status = ConfigStatus::new(path.to_path_buf());
+    let result = config
+        .save_to_path(path)
+        .map_err(|error| format!("Revision {revision}: {error}"));
+    next_status.last_error = result.as_ref().err().cloned().unwrap_or_default();
+    status.store(Arc::new(next_status));
+    result
 }
 
 #[derive(Clone, Debug, Default)]
@@ -766,6 +934,8 @@ pub struct ReplaysState {
     pub upload_stop_requested: AtomicBool,
     pub download_active: AtomicBool,
     pub metadata_cache: ArcSwap<crate::replay_metadata::ReplayMetadataSnapshot>,
+    pub cloud_metadata_cache: ArcSwap<HashMap<String, crate::replay_metadata::ReplayMetadataEntry>>,
+    pub metadata_scan_control: std::sync::Mutex<crate::replay_metadata::MetadataScanControl>,
     pub metadata_scan_running: AtomicBool,
     pub metadata_status: Arc<std::sync::Mutex<String>>,
     pub upload_running: AtomicBool,
@@ -819,6 +989,7 @@ pub struct HotkeyRecordingState {
     pub is_recording_launch: AtomicBool,
     pub last_settings_hotkey_unix_ms: AtomicU64,
     pub last_launch_hotkey_unix_ms: AtomicU64,
+    pub hud_keyboard_down: AtomicBool,
 }
 
 pub struct GameLobbyState {
@@ -837,7 +1008,7 @@ pub struct GameLobbyState {
 
 pub struct SystemState {
     pub config: ArcSwap<Config>,
-    pub config_status: ArcSwap<ConfigStatus>,
+    pub config_status: Arc<ArcSwap<ConfigStatus>>,
     pub version_check: ArcSwap<VersionCheck>,
     pub auto_update_status: ArcSwap<AutoUpdateStatus>,
     pub network_diagnostics: ArcSwap<NetworkDiagnostics>,
@@ -845,6 +1016,7 @@ pub struct SystemState {
     pub stats_api_setup_refresh_running: AtomicBool,
     pub stats_api_setup_result: ArcSwap<StatsApiSetupResult>,
     pub http_client: Arc<wreq::Client>,
+    pub ballchasing_client: Arc<wreq::Client>,
     pub release_url: ArcSwap<String>,
     pub release_public_key: ArcSwap<String>,
     pub is_simulating_input: AtomicBool,
@@ -867,7 +1039,9 @@ pub struct AppState {
     pub mmr: MmrState,
     pub history: HistoryState,
 
-    pub config_write_mutex: std::sync::Mutex<()>,
+    config_update_mutex: std::sync::Mutex<()>,
+    config_revision: AtomicU64,
+    config_writer: ConfigWriter,
 }
 
 impl AppState {
@@ -879,6 +1053,8 @@ impl AppState {
     pub fn new_with_debug(debug_enabled: bool) -> Arc<Self> {
         let paths = AppPaths::resolve();
         let (config, config_status) = Config::load_from_path(paths.config_path.clone());
+        let config_status = Arc::new(ArcSwap::from_pointee(config_status));
+        let config_writer = ConfigWriter::start(paths.config_path.clone(), config_status.clone());
         let cached_local_player_identity = config.cached_local_player_identity.clone();
         let debug_logging_enabled = config.debug_logging_enabled;
 
@@ -889,6 +1065,14 @@ impl AppState {
                 .redirect(wreq::redirect::Policy::limited(10))
                 .build()
                 .expect("Failed to build shared HTTP client"),
+        );
+        let ballchasing_client = Arc::new(
+            wreq::Client::builder()
+                .timeout(std::time::Duration::from_secs(15))
+                .emulation(wreq_util::Emulation::Chrome128)
+                .redirect(wreq::redirect::Policy::none())
+                .build()
+                .expect("Failed to build Ballchasing HTTP client"),
         );
 
         let resource_tracker = Arc::new(crate::diagnostics::ResourceTracker::new());
@@ -930,6 +1114,7 @@ impl AppState {
                 is_recording_launch: AtomicBool::new(false),
                 last_settings_hotkey_unix_ms: AtomicU64::new(0),
                 last_launch_hotkey_unix_ms: AtomicU64::new(0),
+                hud_keyboard_down: AtomicBool::new(false),
             },
             game: GameLobbyState {
                 local_player_name: ArcSwap::from_pointee("".to_string()),
@@ -946,7 +1131,7 @@ impl AppState {
             },
             system: SystemState {
                 config: ArcSwap::from_pointee(config),
-                config_status: ArcSwap::from_pointee(config_status),
+                config_status,
                 version_check: ArcSwap::from_pointee(VersionCheck::default()),
                 auto_update_status: ArcSwap::from_pointee(AutoUpdateStatus::default()),
                 network_diagnostics: ArcSwap::from_pointee(NetworkDiagnostics::default()),
@@ -957,10 +1142,9 @@ impl AppState {
                 stats_api_setup_refresh_running: AtomicBool::new(false),
                 stats_api_setup_result: ArcSwap::from_pointee(StatsApiSetupResult::default()),
                 http_client,
-                release_url: ArcSwap::from_pointee(crate::update::LATEST_RELEASE_URL.to_string()),
-                release_public_key: ArcSwap::from_pointee(
-                    crate::update::RELEASE_SIGNING_PUBLIC_KEY_B64.to_string(),
-                ),
+                ballchasing_client,
+                release_url: ArcSwap::from_pointee(release_url()),
+                release_public_key: ArcSwap::from_pointee(release_signing_public_key()),
                 is_simulating_input: AtomicBool::new(false),
             },
             diagnostics: DiagnosticsState {
@@ -980,6 +1164,10 @@ impl AppState {
                 download_active: AtomicBool::new(false),
                 metadata_cache: ArcSwap::from_pointee(
                     crate::replay_metadata::ReplayMetadataSnapshot::default(),
+                ),
+                cloud_metadata_cache: ArcSwap::from_pointee(HashMap::new()),
+                metadata_scan_control: std::sync::Mutex::new(
+                    crate::replay_metadata::MetadataScanControl::default(),
                 ),
                 metadata_scan_running: AtomicBool::new(false),
                 metadata_status: Arc::new(std::sync::Mutex::new("Not scanned".to_string())),
@@ -1017,33 +1205,63 @@ impl AppState {
                 revision: AtomicU64::new(0),
                 conn: std::sync::Mutex::new(conn),
             },
-            config_write_mutex: std::sync::Mutex::new(()),
+            config_update_mutex: std::sync::Mutex::new(()),
+            config_revision: AtomicU64::new(0),
+            config_writer,
         })
     }
 
-    fn save_config_impl(self: &Arc<Self>, config: Config) {
-        self.system.config.store(Arc::new(config.clone()));
-        let self_clone = self.clone();
-        let run = move || {
-            let _guard = self_clone
-                .config_write_mutex
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            let mut status = ConfigStatus::new(self_clone.paths.config_path.clone());
-            if let Err(error) = config.save_to_path(&self_clone.paths.config_path) {
-                status.last_error = error;
-            }
-            self_clone.system.config_status.store(Arc::new(status));
-        };
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            handle.spawn_blocking(run);
-        } else {
-            run();
+    pub fn update_config<R>(&self, update: impl FnOnce(&mut Config) -> R) -> R {
+        let _guard = self
+            .config_update_mutex
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let mut config = (**self.system.config.load()).clone();
+        let result = update(&mut config);
+        self.publish_config(config);
+        result
+    }
+
+    pub fn replace_config(&self, config: Config) {
+        let _guard = self
+            .config_update_mutex
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        self.publish_config(config);
+    }
+
+    pub(crate) fn begin_config_edit(&self) -> ConfigEditSession<'_> {
+        let guard = self
+            .config_update_mutex
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let config = (**self.system.config.load()).clone();
+        ConfigEditSession {
+            state: self,
+            _guard: guard,
+            config,
         }
     }
 
-    pub fn save_config(self: &Arc<Self>, config: Config) {
-        self.save_config_impl(config);
+    pub fn flush_config(&self) -> Result<(), String> {
+        self.config_writer.flush()
+    }
+
+    fn publish_config(&self, config: Config) {
+        self.debug_logging_enabled.store(
+            config.debug_logging_enabled,
+            std::sync::atomic::Ordering::SeqCst,
+        );
+        self.system.config.store(Arc::new(config.clone()));
+        let revision = self
+            .config_revision
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            + 1;
+        if let Err(error) = self.config_writer.persist(revision, config) {
+            let mut status = ConfigStatus::new(self.paths.config_path.clone());
+            status.last_error = error;
+            self.system.config_status.store(Arc::new(status));
+        }
     }
 
     pub fn update_local_player_identity(self: &Arc<Self>, identity: LocalPlayerIdentity) -> bool {
@@ -1069,15 +1287,35 @@ impl AppState {
             .local_player_identity
             .store(Arc::new(identity.clone()));
 
-        let mut config = (**self.system.config.load()).clone();
-        if !config.cached_local_player_identity.is_known()
-            || !config.cached_local_player_identity.same_account(&identity)
-            || config.cached_local_player_identity.name != identity.name
-        {
-            config.cached_local_player_identity = identity;
-            self.save_config_impl(config);
-        }
+        self.update_config(|config| {
+            if !config.cached_local_player_identity.is_known()
+                || !config.cached_local_player_identity.same_account(&identity)
+                || config.cached_local_player_identity.name != identity.name
+            {
+                config.cached_local_player_identity = identity;
+            }
+        });
 
         first_known_identity
+    }
+}
+
+pub(crate) struct ConfigEditSession<'a> {
+    state: &'a AppState,
+    _guard: std::sync::MutexGuard<'a, ()>,
+    config: Config,
+}
+
+impl ConfigEditSession<'_> {
+    pub fn snapshot(&self) -> &Config {
+        &self.config
+    }
+
+    pub fn config_mut(&mut self) -> &mut Config {
+        &mut self.config
+    }
+
+    pub fn commit(self) {
+        self.state.publish_config(self.config);
     }
 }

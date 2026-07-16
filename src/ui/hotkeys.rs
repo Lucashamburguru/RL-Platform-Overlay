@@ -18,10 +18,10 @@ pub(super) fn render_hotkey_settings_section(
         ));
         ui.add_space(6.0);
 
-        render_keyboard_hotkey_row(ui, ctx, state, config_edit);
+        render_keyboard_hotkey_row(ui, ctx, state, config_edit, changed);
         render_controller_hotkey_row(ui, state, config_edit);
-        render_settings_hotkey_row(ui, ctx, state, config_edit);
-        render_launch_hotkey_row(ui, ctx, state, config_edit);
+        render_settings_hotkey_row(ui, ctx, state, config_edit, changed);
+        render_launch_hotkey_row(ui, ctx, state, config_edit, changed);
 
         ui.add_space(4.0);
         setting_row(ui, "Visibility Mode", |ui| {
@@ -40,6 +40,7 @@ fn render_keyboard_hotkey_row(
     ctx: &egui::Context,
     state: &Arc<AppState>,
     config_edit: &mut crate::state::Config,
+    changed: &mut bool,
 ) {
     setting_row(ui, "Lobby Overlay Key", |ui| {
         if state.hotkeys.is_recording_kb.load(Ordering::SeqCst) {
@@ -49,7 +50,7 @@ fn render_keyboard_hotkey_row(
             }
             if let Some(name) = capture_egui_key(ctx) {
                 config_edit.hotkey_kb = name;
-                state.save_config(config_edit.clone());
+                *changed = true;
                 state.hotkeys.is_recording_kb.store(false, Ordering::SeqCst);
             }
         } else {
@@ -113,6 +114,7 @@ fn render_settings_hotkey_row(
     ctx: &egui::Context,
     state: &Arc<AppState>,
     config_edit: &mut crate::state::Config,
+    changed: &mut bool,
 ) {
     setting_row(ui, "Settings Panel Key", |ui| {
         if state.hotkeys.is_recording_settings.load(Ordering::SeqCst) {
@@ -125,7 +127,7 @@ fn render_settings_hotkey_row(
             }
             if let Some(name) = capture_egui_key(ctx) {
                 config_edit.hotkey_settings = name;
-                state.save_config(config_edit.clone());
+                *changed = true;
                 state
                     .hotkeys
                     .is_recording_settings
@@ -160,6 +162,7 @@ fn render_launch_hotkey_row(
     ctx: &egui::Context,
     state: &Arc<AppState>,
     config_edit: &mut crate::state::Config,
+    changed: &mut bool,
 ) {
     setting_row(ui, "Launch / Stop Key", |ui| {
         if state.hotkeys.is_recording_launch.load(Ordering::SeqCst) {
@@ -172,7 +175,7 @@ fn render_launch_hotkey_row(
             }
             if let Some(name) = capture_egui_key(ctx) {
                 config_edit.hotkey_launch = name;
-                state.save_config(config_edit.clone());
+                *changed = true;
                 state
                     .hotkeys
                     .is_recording_launch

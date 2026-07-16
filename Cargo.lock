@@ -4021,7 +4021,7 @@ checksum = "47b34b781b31e5d73e9fbc8689c70551fd1ade9a19e3e28cfec8580a79290cc4"
 
 [[package]]
 name = "rl-platform-overlay"
-version = "0.1.40"
+version = "0.1.41"
 dependencies = [
  "arc-swap",
  "base64",
@@ -4048,6 +4048,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "toml",
+ "url",
  "urlencoding",
  "winapi",
  "wreq",
