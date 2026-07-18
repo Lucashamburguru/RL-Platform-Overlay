@@ -256,11 +256,14 @@ pub(super) fn draw_lobby_panel(
         ),
         crate::state::LobbyTheme::Solid => (
             egui::Color32::from_rgba_unmultiplied(10, 10, 12, 255),
-            egui::Stroke::new(1.0, egui::Color32::from_gray(50)),
+            egui::Stroke::new(1.0_f32, egui::Color32::from_gray(50)),
         ),
         crate::state::LobbyTheme::Modern => (
             egui::Color32::from_rgba_unmultiplied(12, 14, 18, config.transparency.max(220)),
-            egui::Stroke::new(1.2, egui::Color32::from_rgba_unmultiplied(0, 176, 255, 140)),
+            egui::Stroke::new(
+                1.2_f32,
+                egui::Color32::from_rgba_unmultiplied(0, 176, 255, 140),
+            ),
         ),
         crate::state::LobbyTheme::Minimalist => (egui::Color32::TRANSPARENT, egui::Stroke::NONE),
     };
@@ -776,7 +779,7 @@ fn render_mmr_badge(ui: &mut egui::Ui, rank: &str, rating: i32, show_rank_name: 
     let frame = egui::Frame::default()
         .fill(egui::Color32::from_rgba_unmultiplied(8, 10, 14, 180))
         .stroke(egui::Stroke::new(
-            0.7 * scale,
+            0.7_f32 * scale,
             egui::Color32::from_rgba_unmultiplied(180, 200, 255, 80),
         ))
         .corner_radius(4.0 * scale)

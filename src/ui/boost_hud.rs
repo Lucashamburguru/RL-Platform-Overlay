@@ -341,7 +341,7 @@ fn draw_teammate_boost_circle_content(
     painter.circle_stroke(
         center,
         radius,
-        egui::Stroke::new(2.0 * scale, egui::Color32::from_white_alpha(34)),
+        egui::Stroke::new(2.0_f32 * scale, egui::Color32::from_white_alpha(34)),
     );
 
     let start_angle = -std::f32::consts::PI * 0.5;
@@ -358,7 +358,7 @@ fn draw_teammate_boost_circle_content(
             points,
             closed: false,
             fill: egui::Color32::TRANSPARENT,
-            stroke: egui::Stroke::new(3.0 * scale, boost_color).into(),
+            stroke: egui::Stroke::new(3.0_f32 * scale, boost_color).into(),
         }));
     }
 
