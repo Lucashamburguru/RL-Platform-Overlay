@@ -979,7 +979,7 @@ fn render_player_row(ui: &mut egui::Ui, row: &DashboardPlayerRow, config: &Confi
     egui::Frame::default()
         .fill(fill)
         .stroke(egui::Stroke::new(
-            if row.is_local { 1.2 } else { 0.8 },
+            if row.is_local { 1.2_f32 } else { 0.8_f32 },
             if row.is_local {
                 egui::Color32::from_rgb(80, 155, 105)
             } else {
