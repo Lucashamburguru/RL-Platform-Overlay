@@ -59,7 +59,7 @@ pub(super) fn render_update_notice(ui: &mut egui::Ui, state: &Arc<AppState>) {
     let frame = egui::Frame::default()
         .fill(egui::Color32::from_rgb(55, 46, 18))
         .stroke(egui::Stroke::new(
-            1.0,
+            1.0_f32,
             egui::Color32::from_rgb(255, 188, 72),
         ))
         .corner_radius(5.0)
@@ -97,7 +97,7 @@ pub(super) fn render_update_notice(ui: &mut egui::Ui, state: &Arc<AppState>) {
             });
         } else if !auto_update_status.error.is_empty() {
             ui.colored_label(
-                egui::Color32::from_rgb(230, 120, 80),
+                egui::Color32::from_rgb(230, 100, 80),
                 auto_update_status.error.as_str(),
             );
         } else if cfg!(target_os = "windows")
@@ -106,7 +106,7 @@ pub(super) fn render_update_notice(ui: &mut egui::Ui, state: &Arc<AppState>) {
                 || version_check.windows_signature_url.is_empty())
         {
             ui.colored_label(
-                egui::Color32::from_rgb(230, 120, 80),
+                egui::Color32::from_rgb(230, 100, 80),
                 "Automatic update is unavailable for this release. Use the release link.",
             );
         }
