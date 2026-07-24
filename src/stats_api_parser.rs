@@ -130,7 +130,7 @@ pub fn parse_stats_api_data(
         .or_else(|| data.get("players"))
         .and_then(Value::as_array)
         .map(|players| players.len());
-    let active_player_count = active_player_count(&data).or(player_count);
+    let mode_player_count = mode_player_count(&data).or(player_count);
     let match_guid = string_field(&data, &["MatchGuid", "matchGuid"]).map(str::to_string);
     let session_mode_hint = game
         .as_ref()
@@ -164,7 +164,7 @@ pub fn parse_stats_api_data(
     let mode = ModeSignature {
         match_guid: match_guid.clone().unwrap_or_default(),
         mode_hint: session_mode_hint.clone(),
-        player_count: active_player_count,
+        player_count: mode_player_count,
     };
 
     StatsApiEvent {
@@ -391,27 +391,62 @@ fn parse_players(
     parsed
 }
 
-fn active_player_count(data: &Value) -> Option<usize> {
+fn mode_player_count(data: &Value) -> Option<usize> {
     let players = data
         .get("Players")
         .or_else(|| data.get("players"))
         .and_then(Value::as_array)?;
 
-    if players
+    let has_active_flags = players
         .iter()
-        .any(|player| bool_field(player, &["bHasCar", "hasCar", "has_car"]).is_some())
-    {
-        Some(
-            players
-                .iter()
-                .filter(|player| {
-                    bool_field(player, &["bHasCar", "hasCar", "has_car"]).unwrap_or(false)
-                })
-                .count(),
-        )
-    } else {
-        None
+        .any(|player| bool_field(player, &["bHasCar", "hasCar", "has_car"]).is_some());
+    let mut active_total = 0;
+    let mut active_teams = [0_usize; 2];
+    let mut roster_teams = [0_usize; 2];
+
+    for player in players {
+        let team = number_field_u8(player, &["TeamNum", "teamNum", "Team", "team"])
+            .filter(|team| *team <= 1)
+            .map(usize::from);
+        if let Some(team) = team {
+            roster_teams[team] += 1;
+        }
+
+        let active = !has_active_flags
+            || bool_field(player, &["bHasCar", "hasCar", "has_car"]).unwrap_or(false);
+        if active {
+            active_total += 1;
+            if let Some(team) = team {
+                active_teams[team] += 1;
+            }
+        }
     }
+
+    if !has_active_flags {
+        active_total = players.len();
+    }
+
+    // A frame containing two players on one team is already enough to prove
+    // that the match is at least 2v2, even if the opposing roster is late.
+    let largest_active_team = active_teams.iter().copied().max().unwrap_or(0);
+    let active_team_capacity = if largest_active_team >= 2 {
+        largest_active_team * 2
+    } else {
+        0
+    };
+    // When a replaced bot remains in the payload, the smaller populated team
+    // still reflects the actual playlist size (for example 2 vs 3 in 2v2).
+    let roster_team_capacity = match roster_teams {
+        [blue, orange] if blue > 0 && orange > 0 => blue.min(orange) * 2,
+        [blue, 0] if blue >= 2 => blue * 2,
+        [0, orange] if orange >= 2 => orange * 2,
+        _ => 0,
+    };
+    let inferred = active_total
+        .max(active_team_capacity)
+        .max(roster_team_capacity);
+
+    if inferred > 0 { Some(inferred) } else { None }
 }
 
 fn parse_player_info(
@@ -476,31 +511,34 @@ fn parse_player_info(
 }
 
 pub fn session_mode_hint_from_game(game: &Value) -> Option<&str> {
-    string_field(
-        game,
-        &[
-            "Arena",
-            "arena",
-            "Map",
-            "map",
-            "MapName",
-            "mapName",
-            "GameMode",
-            "gameMode",
-            "GameInfo",
-            "gameInfo",
-            "Playlist",
-            "playlist",
-            "PlaylistName",
-            "playlistName",
-            "Mutator",
-            "mutator",
-            "MutatorName",
-            "mutatorName",
-            "Rules",
-            "rules",
-        ],
-    )
+    const MODE_FIELDS: &[&str] = &[
+        "Arena",
+        "arena",
+        "Map",
+        "map",
+        "MapName",
+        "mapName",
+        "GameMode",
+        "gameMode",
+        "GameInfo",
+        "gameInfo",
+        "Playlist",
+        "playlist",
+        "PlaylistName",
+        "playlistName",
+        "Mutator",
+        "mutator",
+        "MutatorName",
+        "mutatorName",
+        "Rules",
+        "rules",
+    ];
+
+    MODE_FIELDS
+        .iter()
+        .filter_map(|field| string_field(game, &[*field]))
+        .find(|hint| SessionMode::from_hint(hint).is_some())
+        .or_else(|| string_field(game, MODE_FIELDS))
 }
 
 pub fn parse_platform(id: &str) -> (String, bool) {
@@ -835,6 +873,59 @@ mod tests {
         );
 
         assert_eq!(event.player_count, Some(5));
+        assert_eq!(event.mode.player_count, Some(4));
+        assert_eq!(event.mode.session_mode(), SessionMode::Twos);
+    }
+
+    #[test]
+    fn mode_uses_playlist_hint_over_generic_arena_and_partial_roster() {
+        let identity = LocalPlayerIdentity::default();
+        let previous = HashMap::new();
+        let event = parse_stats_api_event(
+            &json!({
+                "Event": "UpdateState",
+                "Data": {
+                    "MatchGuid": "guid123",
+                    "Game": {
+                        "Arena": "Stadium_P",
+                        "PlaylistName": "Ranked Doubles 2v2"
+                    },
+                    "Players": [
+                        {"Name": "Me", "PrimaryId": "Steam|1|0", "TeamNum": 0},
+                        {"Name": "Opp1", "PrimaryId": "Xbox|3|0", "TeamNum": 1}
+                    ]
+                }
+            }),
+            context(&identity, &previous),
+        );
+
+        assert_eq!(
+            event.session_mode_hint.as_deref(),
+            Some("Ranked Doubles 2v2")
+        );
+        assert_eq!(event.mode.session_mode(), SessionMode::Twos);
+    }
+
+    #[test]
+    fn mode_uses_team_capacity_when_opposing_roster_is_late() {
+        let identity = LocalPlayerIdentity::default();
+        let previous = HashMap::new();
+        let event = parse_stats_api_event(
+            &json!({
+                "Event": "UpdateState",
+                "Data": {
+                    "MatchGuid": "guid123",
+                    "Game": {"Arena": "Stadium_P"},
+                    "Players": [
+                        {"Name": "Me", "PrimaryId": "Steam|1|0", "TeamNum": 0},
+                        {"Name": "Mate", "PrimaryId": "Epic|2|0", "TeamNum": 0}
+                    ]
+                }
+            }),
+            context(&identity, &previous),
+        );
+
+        assert_eq!(event.player_count, Some(2));
         assert_eq!(event.mode.player_count, Some(4));
         assert_eq!(event.mode.session_mode(), SessionMode::Twos);
     }

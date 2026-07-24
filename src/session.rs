@@ -51,7 +51,7 @@ pub enum SessionMode {
 impl SessionMode {
     pub fn infer(arena: Option<&str>, player_count: Option<usize>) -> Self {
         arena
-            .and_then(Self::from_arena)
+            .and_then(Self::from_hint)
             .or_else(|| player_count.map(Self::from_player_count))
             .unwrap_or(Self::Unknown)
     }
@@ -65,8 +65,8 @@ impl SessionMode {
         }
     }
 
-    fn from_arena(arena: &str) -> Option<Self> {
-        let normalized = arena
+    pub(crate) fn from_hint(hint: &str) -> Option<Self> {
+        let normalized = hint
             .trim()
             .to_ascii_lowercase()
             .replace(['-', ' ', '.'], "_");
@@ -99,6 +99,18 @@ impl SessionMode {
             || normalized.contains("carbon")
         {
             return Some(Self::Knockout);
+        }
+
+        if normalized.contains("1v1") || normalized.contains("duel") {
+            return Some(Self::Ones);
+        }
+
+        if normalized.contains("2v2") || normalized.contains("doubles") {
+            return Some(Self::Twos);
+        }
+
+        if normalized.contains("3v3") || normalized.contains("standard") {
+            return Some(Self::Threes);
         }
 
         None
@@ -1156,6 +1168,22 @@ mod tests {
         assert_eq!(
             SessionMode::infer(Some("Stadium_P"), None),
             SessionMode::Unknown
+        );
+    }
+
+    #[test]
+    fn infers_standard_modes_from_playlist_hints() {
+        assert_eq!(
+            SessionMode::infer(Some("Ranked Duel 1v1"), Some(4)),
+            SessionMode::Ones
+        );
+        assert_eq!(
+            SessionMode::infer(Some("Ranked Doubles 2v2"), Some(2)),
+            SessionMode::Twos
+        );
+        assert_eq!(
+            SessionMode::infer(Some("Ranked Standard 3v3"), Some(2)),
+            SessionMode::Threes
         );
     }
 
