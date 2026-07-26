@@ -233,7 +233,7 @@ fn render_scoreboard_hud(ui: &mut egui::Ui, session: &crate::session::SessionSta
 
         // Blue Team Badge
         let blue_tag_frame = egui::Frame::default()
-            .fill(egui::Color32::from_rgb(0, 110, 220))
+            .fill(egui::Color32::from_rgb(0, 100, 220))
             .corner_radius(6)
             .inner_margin(egui::Margin::symmetric(16, 9));
         blue_tag_frame.show(ui, |ui| {
@@ -248,7 +248,10 @@ fn render_scoreboard_hud(ui: &mut egui::Ui, session: &crate::session::SessionSta
         // Blue Score Badge
         let blue_score_frame = egui::Frame::default()
             .fill(egui::Color32::from_rgb(18, 36, 68))
-            .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(0, 110, 220)))
+            .stroke(egui::Stroke::new(
+                1.0_f32,
+                egui::Color32::from_rgb(0, 100, 220),
+            ))
             .corner_radius(6)
             .inner_margin(egui::Margin::symmetric(18, 8));
         blue_score_frame.show(ui, |ui| {
@@ -272,7 +275,7 @@ fn render_scoreboard_hud(ui: &mut egui::Ui, session: &crate::session::SessionSta
         let orange_score_frame = egui::Frame::default()
             .fill(egui::Color32::from_rgb(68, 36, 18))
             .stroke(egui::Stroke::new(
-                1.0,
+                1.0_f32,
                 egui::Color32::from_rgb(220, 100, 10),
             ))
             .corner_radius(6)
@@ -311,7 +314,10 @@ fn render_top_band(
     let target_width = ui.available_width();
     let frame = egui::Frame::default()
         .fill(egui::Color32::from_rgb(18, 22, 29))
-        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(55, 64, 78)))
+        .stroke(egui::Stroke::new(
+            1.0_f32,
+            egui::Color32::from_rgb(55, 64, 78),
+        ))
         .corner_radius(8)
         .inner_margin(egui::Margin::symmetric(18, 14));
 
@@ -323,7 +329,7 @@ fn render_top_band(
             let connection = if is_connected {
                 ("CONNECTED", egui::Color32::from_rgb(105, 220, 135))
             } else {
-                ("WAITING", egui::Color32::from_rgb(225, 190, 90))
+                ("WAITING", egui::Color32::from_rgb(225, 100, 90))
             };
             ui.vertical(|ui| {
                 ui.label(
@@ -374,7 +380,10 @@ fn render_top_band(
 fn stat_pill(ui: &mut egui::Ui, label: &str, value: impl Into<String>) {
     let frame = egui::Frame::default()
         .fill(egui::Color32::from_rgb(27, 31, 39))
-        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(55, 62, 76)))
+        .stroke(egui::Stroke::new(
+            1.0_f32,
+            egui::Color32::from_rgb(55, 62, 76),
+        ))
         .corner_radius(6)
         .inner_margin(egui::Margin::symmetric(10, 7));
     frame.show(ui, |ui| {
@@ -492,7 +501,10 @@ fn render_team_comparison(
 
     let frame = egui::Frame::default()
         .fill(egui::Color32::from_rgb(17, 20, 27))
-        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(48, 57, 70)))
+        .stroke(egui::Stroke::new(
+            1.0_f32,
+            egui::Color32::from_rgb(48, 57, 70),
+        ))
         .corner_radius(8)
         .inner_margin(egui::Margin::symmetric(18, 14));
     fixed_width_frame(ui, frame, target_width, |ui, inner_width| {
@@ -654,21 +666,21 @@ fn comparison_bar(
     let blue_rect = egui::Rect::from_min_size(rect.min, egui::vec2(blue_width, rect.height()));
     let orange_rect =
         egui::Rect::from_min_max(egui::pos2(rect.min.x + blue_width, rect.min.y), rect.max);
-    painter.rect_filled(blue_rect, 6.0, egui::Color32::from_rgb(75, 150, 230));
-    painter.rect_filled(orange_rect, 6.0, egui::Color32::from_rgb(230, 130, 65));
+    painter.rect_filled(blue_rect, 6.0, egui::Color32::from_rgb(75, 100, 230));
+    painter.rect_filled(orange_rect, 6.0, egui::Color32::from_rgb(230, 100, 65));
     ui.horizontal(|ui| {
         ui.label(
             egui::RichText::new(blue_label)
                 .strong()
                 .size(16.0)
-                .color(egui::Color32::from_rgb(110, 185, 245)),
+                .color(egui::Color32::from_rgb(100, 185, 245)),
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.label(
                 egui::RichText::new(orange_label)
                     .strong()
                     .size(16.0)
-                    .color(egui::Color32::from_rgb(245, 160, 95)),
+                    .color(egui::Color32::from_rgb(245, 100, 95)),
             );
         });
     });
@@ -678,7 +690,10 @@ fn comparison_tile(ui: &mut egui::Ui, label: &str, blue: u32, orange: u32, width
     let (edge_text, edge_color) = comparison_edge_label(blue, orange);
     let frame = egui::Frame::default()
         .fill(egui::Color32::from_rgb(21, 25, 33))
-        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(38, 45, 56)))
+        .stroke(egui::Stroke::new(
+            1.0_f32,
+            egui::Color32::from_rgb(38, 45, 56),
+        ))
         .corner_radius(6)
         .inner_margin(egui::Margin::symmetric(10, 8));
     fixed_width_frame(ui, frame, width, |ui, inner_width| {
@@ -695,13 +710,13 @@ fn comparison_tile(ui: &mut egui::Ui, label: &str, blue: u32, orange: u32, width
                 egui::RichText::new(blue.to_string())
                     .size(18.0)
                     .strong()
-                    .color(egui::Color32::from_rgb(110, 185, 245)),
+                    .color(egui::Color32::from_rgb(100, 185, 245)),
             );
             ui.label(
                 egui::RichText::new(orange.to_string())
                     .size(18.0)
                     .strong()
-                    .color(egui::Color32::from_rgb(245, 160, 95)),
+                    .color(egui::Color32::from_rgb(245, 100, 95)),
             );
         });
         ui.label(egui::RichText::new(edge_text).size(11.0).color(edge_color));
@@ -712,12 +727,12 @@ fn comparison_edge_label(blue: u32, orange: u32) -> (String, egui::Color32) {
     if blue > orange {
         (
             format!("Blue +{}", blue.abs_diff(orange)),
-            egui::Color32::from_rgb(110, 185, 245),
+            egui::Color32::from_rgb(100, 185, 245),
         )
     } else if orange > blue {
         (
             format!("Orange +{}", orange.abs_diff(blue)),
-            egui::Color32::from_rgb(245, 160, 95),
+            egui::Color32::from_rgb(245, 100, 95),
         )
     } else {
         ("Even".to_string(), egui::Color32::from_gray(145))
@@ -727,7 +742,10 @@ fn comparison_edge_label(blue: u32, orange: u32) -> (String, egui::Color32) {
 fn comparison_text_tile(ui: &mut egui::Ui, label: &str, blue: String, orange: String, width: f32) {
     let frame = egui::Frame::default()
         .fill(egui::Color32::from_rgb(21, 25, 33))
-        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(38, 45, 56)))
+        .stroke(egui::Stroke::new(
+            1.0_f32,
+            egui::Color32::from_rgb(38, 45, 56),
+        ))
         .corner_radius(6)
         .inner_margin(egui::Margin::symmetric(10, 8));
     fixed_width_frame(ui, frame, width, |ui, inner_width| {
@@ -744,13 +762,13 @@ fn comparison_text_tile(ui: &mut egui::Ui, label: &str, blue: String, orange: St
                 egui::RichText::new(blue)
                     .size(18.0)
                     .strong()
-                    .color(egui::Color32::from_rgb(110, 185, 245)),
+                    .color(egui::Color32::from_rgb(100, 185, 245)),
             );
             ui.label(
                 egui::RichText::new(orange)
                     .size(18.0)
                     .strong()
-                    .color(egui::Color32::from_rgb(245, 160, 95)),
+                    .color(egui::Color32::from_rgb(245, 100, 95)),
             );
         });
         ui.label(
@@ -773,11 +791,11 @@ fn render_player_table(
     target_width: f32,
 ) {
     let accent = if contains_ignore_ascii_case(title, "Blue") {
-        egui::Color32::from_rgb(85, 170, 245)
+        egui::Color32::from_rgb(85, 100, 245)
     } else if contains_ignore_ascii_case(title, "Orange") {
-        egui::Color32::from_rgb(245, 150, 80)
+        egui::Color32::from_rgb(245, 100, 80)
     } else {
-        egui::Color32::from_rgb(170, 180, 195)
+        egui::Color32::from_rgb(100, 100, 195)
     };
     let stroke_color = if contains_ignore_ascii_case(title, "Blue") {
         egui::Color32::from_rgb(30, 65, 105)
@@ -788,7 +806,7 @@ fn render_player_table(
     };
     let frame = egui::Frame::default()
         .fill(egui::Color32::from_rgb(17, 20, 27))
-        .stroke(egui::Stroke::new(1.2, stroke_color))
+        .stroke(egui::Stroke::new(1.2_f32, stroke_color))
         .corner_radius(8)
         .inner_margin(egui::Margin::same(14));
 
@@ -961,7 +979,7 @@ fn render_player_row(ui: &mut egui::Ui, row: &DashboardPlayerRow, config: &Confi
     egui::Frame::default()
         .fill(fill)
         .stroke(egui::Stroke::new(
-            if row.is_local { 1.2 } else { 0.8 },
+            if row.is_local { 1.2_f32 } else { 0.8_f32 },
             if row.is_local {
                 egui::Color32::from_rgb(80, 155, 105)
             } else {
@@ -1032,7 +1050,7 @@ fn render_player_row(ui: &mut egui::Ui, row: &DashboardPlayerRow, config: &Confi
 }
 
 fn vertical_divider(ui: &mut egui::Ui, height: f32) {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(1.0, height), egui::Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(100.0_f32, height), egui::Sense::hover());
     ui.painter()
         .rect_filled(rect, 0.5, egui::Color32::from_rgb(42, 49, 60));
 }
@@ -1048,7 +1066,7 @@ fn render_player_name(ui: &mut egui::Ui, row: &DashboardPlayerRow, max_width: f3
                     egui::RichText::new(&row.name)
                         .strong()
                         .color(if row.is_local {
-                            egui::Color32::from_rgb(120, 220, 155)
+                            egui::Color32::from_rgb(100, 220, 155)
                         } else {
                             egui::Color32::from_rgb(230, 232, 238)
                         })
@@ -1059,8 +1077,8 @@ fn render_player_name(ui: &mut egui::Ui, row: &DashboardPlayerRow, max_width: f3
                     let badge_frame = egui::Frame::default()
                         .fill(egui::Color32::from_rgb(20, 75, 45))
                         .stroke(egui::Stroke::new(
-                            1.0,
-                            egui::Color32::from_rgb(120, 220, 155),
+                            1.0_f32,
+                            egui::Color32::from_rgb(100, 220, 155),
                         ))
                         .corner_radius(4)
                         .inner_margin(egui::Margin::symmetric(6, 2));
@@ -1069,7 +1087,7 @@ fn render_player_name(ui: &mut egui::Ui, row: &DashboardPlayerRow, max_width: f3
                             egui::RichText::new("YOU")
                                 .strong()
                                 .size(10.5)
-                                .color(egui::Color32::from_rgb(120, 220, 155)),
+                                .color(egui::Color32::from_rgb(100, 220, 155)),
                         );
                     });
                 } else if row.is_bot {
@@ -1282,7 +1300,10 @@ fn render_empty_state(ui: &mut egui::Ui, state: &Arc<AppState>, config: &Config)
     ui.set_min_size(ui.available_size());
     let frame = egui::Frame::default()
         .fill(egui::Color32::from_rgb(15, 18, 24))
-        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(48, 57, 70)))
+        .stroke(egui::Stroke::new(
+            1.0_f32,
+            egui::Color32::from_rgb(48, 57, 70),
+        ))
         .corner_radius(8)
         .inner_margin(egui::Margin::same(18));
     frame.show(ui, |ui| {
@@ -1356,7 +1377,7 @@ fn render_side_rail(ui: &mut egui::Ui, context: SideRailContext<'_>) {
         } else {
             ui.label(
                 egui::RichText::new("Waiting for identity")
-                    .color(egui::Color32::from_rgb(225, 190, 90)),
+                    .color(egui::Color32::from_rgb(225, 100, 90)),
             );
         }
         if context.local_mmr.fetching {
@@ -1367,7 +1388,7 @@ fn render_side_rail(ui: &mut egui::Ui, context: SideRailContext<'_>) {
         }
         if !context.local_mmr.error.is_empty() {
             ui.colored_label(
-                egui::Color32::from_rgb(230, 120, 90),
+                egui::Color32::from_rgb(230, 100, 90),
                 &context.local_mmr.error,
             );
         }
@@ -1434,7 +1455,7 @@ fn render_event_feed(
             ui,
             "Replay",
             "Reviewing replay data",
-            egui::Color32::from_rgb(225, 190, 90),
+            egui::Color32::from_rgb(225, 100, 90),
         );
     } else if rows.is_empty() {
         feed_row(
@@ -1574,8 +1595,8 @@ fn team_label(team: u8) -> &'static str {
 
 fn team_color(team: u8) -> egui::Color32 {
     match team {
-        0 => egui::Color32::from_rgb(85, 170, 245),
-        1 => egui::Color32::from_rgb(245, 150, 80),
+        0 => egui::Color32::from_rgb(85, 100, 245),
+        1 => egui::Color32::from_rgb(245, 100, 80),
         _ => egui::Color32::from_gray(165),
     }
 }
@@ -1584,7 +1605,10 @@ fn render_status_panel(ui: &mut egui::Ui, title: &str, add_contents: impl FnOnce
     let target_width = ui.available_width();
     let frame = egui::Frame::default()
         .fill(egui::Color32::from_rgb(17, 20, 27))
-        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(48, 57, 70)))
+        .stroke(egui::Stroke::new(
+            1.0_f32,
+            egui::Color32::from_rgb(48, 57, 70),
+        ))
         .corner_radius(8)
         .inner_margin(egui::Margin::same(12));
     frame.show(ui, |ui| {
@@ -1637,7 +1661,7 @@ fn render_local_mmr_list(ui: &mut egui::Ui, snapshot: &TrackerSnapshot) {
                 // Column 3: Tier Name & MMR
                 ui.label(
                     egui::RichText::new(format!("{} ({})", playlist.tier_name, playlist.rating))
-                        .color(egui::Color32::from_rgb(160, 165, 175)),
+                        .color(egui::Color32::from_rgb(100, 165, 175)),
                 );
                 ui.end_row();
             }
@@ -1803,7 +1827,7 @@ fn boost_color(boost: u8) -> egui::Color32 {
     if boost >= 70 {
         egui::Color32::from_rgb(105, 220, 135)
     } else if boost >= 35 {
-        egui::Color32::from_rgb(225, 190, 90)
+        egui::Color32::from_rgb(225, 100, 90)
     } else {
         egui::Color32::from_rgb(230, 105, 90)
     }
@@ -1949,7 +1973,7 @@ mod tests {
             11,
             TrackerPlaylistSnapshot {
                 name: "Ranked Doubles 2v2".to_string(),
-                rating: 1100,
+                rating: 11,
                 matches: 20,
                 tier_name: "Diamond III".to_string(),
             },
@@ -2211,14 +2235,14 @@ mod tests {
             comparison_edge_label(u32::MAX, 0),
             (
                 format!("Blue +{}", u32::MAX),
-                egui::Color32::from_rgb(110, 185, 245)
+                egui::Color32::from_rgb(100, 185, 245)
             )
         );
         assert_eq!(
             comparison_edge_label(0, u32::MAX),
             (
                 format!("Orange +{}", u32::MAX),
-                egui::Color32::from_rgb(245, 160, 95)
+                egui::Color32::from_rgb(245, 100, 95)
             )
         );
         assert_eq!(
