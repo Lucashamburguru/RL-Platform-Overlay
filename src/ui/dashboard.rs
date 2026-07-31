@@ -248,7 +248,10 @@ fn render_scoreboard_hud(ui: &mut egui::Ui, session: &crate::session::SessionSta
         // Blue Score Badge
         let blue_score_frame = egui::Frame::default()
             .fill(egui::Color32::from_rgb(18, 36, 68))
-            .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(0, 110, 220)))
+            .stroke(egui::Stroke::new(
+                1.0_f32,
+                egui::Color32::from_rgb(0, 110, 220),
+            ))
             .corner_radius(6)
             .inner_margin(egui::Margin::symmetric(18, 8));
         blue_score_frame.show(ui, |ui| {
@@ -272,7 +275,7 @@ fn render_scoreboard_hud(ui: &mut egui::Ui, session: &crate::session::SessionSta
         let orange_score_frame = egui::Frame::default()
             .fill(egui::Color32::from_rgb(68, 36, 18))
             .stroke(egui::Stroke::new(
-                1.0,
+                1.0_f32,
                 egui::Color32::from_rgb(220, 100, 10),
             ))
             .corner_radius(6)
@@ -311,7 +314,10 @@ fn render_top_band(
     let target_width = ui.available_width();
     let frame = egui::Frame::default()
         .fill(egui::Color32::from_rgb(18, 22, 29))
-        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(55, 64, 78)))
+        .stroke(egui::Stroke::new(
+            1.0_f32,
+            egui::Color32::from_rgb(55, 64, 78),
+        ))
         .corner_radius(8)
         .inner_margin(egui::Margin::symmetric(18, 14));
 
@@ -374,7 +380,10 @@ fn render_top_band(
 fn stat_pill(ui: &mut egui::Ui, label: &str, value: impl Into<String>) {
     let frame = egui::Frame::default()
         .fill(egui::Color32::from_rgb(27, 31, 39))
-        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(55, 62, 76)))
+        .stroke(egui::Stroke::new(
+            1.0_f32,
+            egui::Color32::from_rgb(55, 62, 76),
+        ))
         .corner_radius(6)
         .inner_margin(egui::Margin::symmetric(10, 7));
     frame.show(ui, |ui| {
@@ -492,7 +501,10 @@ fn render_team_comparison(
 
     let frame = egui::Frame::default()
         .fill(egui::Color32::from_rgb(17, 20, 27))
-        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(48, 57, 70)))
+        .stroke(egui::Stroke::new(
+            1.0_f32,
+            egui::Color32::from_rgb(48, 57, 70),
+        ))
         .corner_radius(8)
         .inner_margin(egui::Margin::symmetric(18, 14));
     fixed_width_frame(ui, frame, target_width, |ui, inner_width| {
@@ -506,7 +518,7 @@ fn render_team_comparison(
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(
                     egui::RichText::new("Estimated possession uses touch share")
-                        .size(11.0)
+                        .size(11.0_f32)
                         .color(egui::Color32::from_gray(145)),
                 );
             });
@@ -650,7 +662,7 @@ fn comparison_bar(
     let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 24.0), egui::Sense::hover());
     let painter = ui.painter();
     painter.rect_filled(rect, 6.0, egui::Color32::from_rgb(28, 32, 40));
-    let blue_width = rect.width() * (blue_pct as f32 / 100.0).clamp(0.0, 1.0);
+    let blue_width = rect.width() * (blue_pct as f32 / 100.0).clamp(0.0, 1.0_f32);
     let blue_rect = egui::Rect::from_min_size(rect.min, egui::vec2(blue_width, rect.height()));
     let orange_rect =
         egui::Rect::from_min_max(egui::pos2(rect.min.x + blue_width, rect.min.y), rect.max);
@@ -678,14 +690,17 @@ fn comparison_tile(ui: &mut egui::Ui, label: &str, blue: u32, orange: u32, width
     let (edge_text, edge_color) = comparison_edge_label(blue, orange);
     let frame = egui::Frame::default()
         .fill(egui::Color32::from_rgb(21, 25, 33))
-        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(38, 45, 56)))
+        .stroke(egui::Stroke::new(
+            1.0_f32,
+            egui::Color32::from_rgb(38, 45, 56),
+        ))
         .corner_radius(6)
         .inner_margin(egui::Margin::symmetric(10, 8));
     fixed_width_frame(ui, frame, width, |ui, inner_width| {
         ui.set_width(inner_width);
         ui.label(
             egui::RichText::new(label)
-                .size(11.0)
+                .size(11.0_f32)
                 .strong()
                 .color(egui::Color32::from_gray(155)),
         );
@@ -704,7 +719,11 @@ fn comparison_tile(ui: &mut egui::Ui, label: &str, blue: u32, orange: u32, width
                     .color(egui::Color32::from_rgb(245, 160, 95)),
             );
         });
-        ui.label(egui::RichText::new(edge_text).size(11.0).color(edge_color));
+        ui.label(
+            egui::RichText::new(edge_text)
+                .size(11.0_f32)
+                .color(edge_color),
+        );
     });
 }
 
@@ -727,14 +746,17 @@ fn comparison_edge_label(blue: u32, orange: u32) -> (String, egui::Color32) {
 fn comparison_text_tile(ui: &mut egui::Ui, label: &str, blue: String, orange: String, width: f32) {
     let frame = egui::Frame::default()
         .fill(egui::Color32::from_rgb(21, 25, 33))
-        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(38, 45, 56)))
+        .stroke(egui::Stroke::new(
+            1.0_f32,
+            egui::Color32::from_rgb(38, 45, 56),
+        ))
         .corner_radius(6)
         .inner_margin(egui::Margin::symmetric(10, 8));
     fixed_width_frame(ui, frame, width, |ui, inner_width| {
         ui.set_width(inner_width);
         ui.label(
             egui::RichText::new(label)
-                .size(11.0)
+                .size(11.0_f32)
                 .strong()
                 .color(egui::Color32::from_gray(155)),
         );
@@ -755,7 +777,7 @@ fn comparison_text_tile(ui: &mut egui::Ui, label: &str, blue: String, orange: St
         });
         ui.label(
             egui::RichText::new("—")
-                .size(11.0)
+                .size(11.0_f32)
                 .color(egui::Color32::from_gray(50)),
         );
     });
@@ -788,7 +810,7 @@ fn render_player_table(
     };
     let frame = egui::Frame::default()
         .fill(egui::Color32::from_rgb(17, 20, 27))
-        .stroke(egui::Stroke::new(1.2, stroke_color))
+        .stroke(egui::Stroke::new(1.2_f32, stroke_color))
         .corner_radius(8)
         .inner_margin(egui::Margin::same(14));
 
@@ -961,7 +983,7 @@ fn render_player_row(ui: &mut egui::Ui, row: &DashboardPlayerRow, config: &Confi
     egui::Frame::default()
         .fill(fill)
         .stroke(egui::Stroke::new(
-            if row.is_local { 1.2 } else { 0.8 },
+            if row.is_local { 1.2_f32 } else { 0.8_f32 },
             if row.is_local {
                 egui::Color32::from_rgb(80, 155, 105)
             } else {
@@ -992,7 +1014,7 @@ fn render_player_row(ui: &mut egui::Ui, row: &DashboardPlayerRow, config: &Confi
                 } else if config.dashboard_show_boost || config.dashboard_show_ranks {
                     2.0
                 } else {
-                    1.0
+                    1.0_f32
                 };
                 let stat_width =
                     (row_width - name_width - rank_width - boost_width - divider_width - 42.0)
@@ -1032,7 +1054,7 @@ fn render_player_row(ui: &mut egui::Ui, row: &DashboardPlayerRow, config: &Confi
 }
 
 fn vertical_divider(ui: &mut egui::Ui, height: f32) {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(1.0, height), egui::Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(1.0_f32, height), egui::Sense::hover());
     ui.painter()
         .rect_filled(rect, 0.5, egui::Color32::from_rgb(42, 49, 60));
 }
@@ -1059,7 +1081,7 @@ fn render_player_name(ui: &mut egui::Ui, row: &DashboardPlayerRow, max_width: f3
                     let badge_frame = egui::Frame::default()
                         .fill(egui::Color32::from_rgb(20, 75, 45))
                         .stroke(egui::Stroke::new(
-                            1.0,
+                            1.0_f32,
                             egui::Color32::from_rgb(120, 220, 155),
                         ))
                         .corner_radius(4)
@@ -1241,7 +1263,7 @@ fn render_rank(ui: &mut egui::Ui, row: &DashboardPlayerRow) {
             if let Some(matches) = row.matches_played {
                 ui.label(
                     egui::RichText::new(format!("{matches} matches"))
-                        .size(11.0)
+                        .size(11.0_f32)
                         .color(egui::Color32::from_gray(140)),
                 );
             }
@@ -1282,7 +1304,10 @@ fn render_empty_state(ui: &mut egui::Ui, state: &Arc<AppState>, config: &Config)
     ui.set_min_size(ui.available_size());
     let frame = egui::Frame::default()
         .fill(egui::Color32::from_rgb(15, 18, 24))
-        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(48, 57, 70)))
+        .stroke(egui::Stroke::new(
+            1.0_f32,
+            egui::Color32::from_rgb(48, 57, 70),
+        ))
         .corner_radius(8)
         .inner_margin(egui::Margin::same(18));
     frame.show(ui, |ui| {
@@ -1550,7 +1575,7 @@ fn feed_row(ui: &mut egui::Ui, label: &str, detail: impl Into<String>, color: eg
         ui.vertical(|ui| {
             ui.label(
                 egui::RichText::new(label)
-                    .size(11.0)
+                    .size(11.0_f32)
                     .strong()
                     .color(egui::Color32::from_gray(160)),
             );
@@ -1584,7 +1609,10 @@ fn render_status_panel(ui: &mut egui::Ui, title: &str, add_contents: impl FnOnce
     let target_width = ui.available_width();
     let frame = egui::Frame::default()
         .fill(egui::Color32::from_rgb(17, 20, 27))
-        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(48, 57, 70)))
+        .stroke(egui::Stroke::new(
+            1.0_f32,
+            egui::Color32::from_rgb(48, 57, 70),
+        ))
         .corner_radius(8)
         .inner_margin(egui::Margin::same(12));
     frame.show(ui, |ui| {
