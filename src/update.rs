@@ -369,7 +369,6 @@ fn parse_version(version: &str) -> Option<Version> {
 #[cfg(any(target_os = "windows", test))]
 fn parse_checksum(content: &str, asset_name: &str) -> Option<String> {
     let content = content.trim_start_matches('\u{feff}');
-    let asset_lower = asset_name.to_lowercase();
 
     // First, try to find a line containing the asset name and a 64-char hex hash
     if let Some(hash) = content.lines().find_map(|line| {
@@ -377,8 +376,12 @@ fn parse_checksum(content: &str, asset_name: &str) -> Option<String> {
         if trimmed.is_empty() {
             return None;
         }
-        let line_lower = trimmed.to_lowercase();
-        if !line_lower.contains(&asset_lower) {
+        if asset_name.is_empty()
+            || !trimmed
+                .as_bytes()
+                .windows(asset_name.len())
+                .any(|w| w.eq_ignore_ascii_case(asset_name.as_bytes()))
+        {
             return None;
         }
         trimmed
@@ -404,11 +407,16 @@ fn parse_checksum(content: &str, asset_name: &str) -> Option<String> {
 #[cfg(any(target_os = "windows", test))]
 fn parse_signature(content: &str, asset_name: &str) -> Option<Vec<u8>> {
     let content = content.trim_start_matches('\u{feff}');
-    let asset_lower = asset_name.to_lowercase();
 
     if let Some(signature) = content.lines().find_map(|line| {
         let trimmed = line.trim();
-        if trimmed.is_empty() || !trimmed.to_lowercase().contains(&asset_lower) {
+        if trimmed.is_empty()
+            || asset_name.is_empty()
+            || !trimmed
+                .as_bytes()
+                .windows(asset_name.len())
+                .any(|w| w.eq_ignore_ascii_case(asset_name.as_bytes()))
+        {
             return None;
         }
         trimmed.split_whitespace().find_map(decode_signature_token)
