@@ -275,7 +275,7 @@ fn render_scoreboard_hud(ui: &mut egui::Ui, session: &crate::session::SessionSta
         let orange_score_frame = egui::Frame::default()
             .fill(egui::Color32::from_rgb(68, 36, 18))
             .stroke(egui::Stroke::new(
-                1.0,
+                1.0_f32,
                 egui::Color32::from_rgb(220, 100, 10),
             ))
             .corner_radius(6)
