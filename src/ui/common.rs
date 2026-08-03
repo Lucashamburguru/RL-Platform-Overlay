@@ -20,7 +20,7 @@ pub(super) fn overlay_panel_fill(opacity: u8) -> egui::Color32 {
 }
 
 pub(super) fn overlay_panel_stroke() -> egui::Stroke {
-    egui::Stroke::new(1.0, egui::Color32::from_white_alpha(24))
+    egui::Stroke::new(1.0_f32, egui::Color32::from_white_alpha(24))
 }
 
 pub(super) fn overlay_row_fill() -> egui::Color32 {
@@ -28,7 +28,7 @@ pub(super) fn overlay_row_fill() -> egui::Color32 {
 }
 
 pub(super) fn overlay_row_stroke() -> egui::Stroke {
-    egui::Stroke::new(1.0, egui::Color32::from_white_alpha(18))
+    egui::Stroke::new(1.0_f32, egui::Color32::from_white_alpha(18))
 }
 
 pub(super) fn overlay_title_color() -> egui::Color32 {
@@ -123,7 +123,7 @@ pub(super) fn settings_section(
 ) {
     let frame = egui::Frame::default()
         .fill(egui::Color32::TRANSPARENT)
-        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(52, 55, 64)))
+        .stroke(egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(52, 55, 64)))
         .corner_radius(SETTINGS_SECTION_RADIUS)
         .inner_margin(egui::Margin::same(10));
 
