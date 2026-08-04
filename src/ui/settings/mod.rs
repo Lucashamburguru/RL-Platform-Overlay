@@ -59,7 +59,7 @@ pub(super) fn render_update_notice(ui: &mut egui::Ui, state: &Arc<AppState>) {
     let frame = egui::Frame::default()
         .fill(egui::Color32::from_rgb(55, 46, 18))
         .stroke(egui::Stroke::new(
-            1.0,
+            1.0_f32,
             egui::Color32::from_rgb(255, 188, 72),
         ))
         .corner_radius(5.0)
