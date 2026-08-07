@@ -163,21 +163,33 @@ impl Default for RocketLeagueProcessWatcher {
 }
 
 pub(crate) fn is_rocket_league_name(name: &OsStr) -> bool {
-    let normalized = name.to_string_lossy().to_lowercase();
-    normalized == "rocketleague.exe"
-        || normalized == "rocketleague.ex"
-        || normalized == "rocketleague"
-        || normalized == "rocketleague-linux-shipping"
+    let name_str = name.to_string_lossy();
+    name_str.eq_ignore_ascii_case("rocketleague.exe")
+        || name_str.eq_ignore_ascii_case("rocketleague.ex")
+        || name_str.eq_ignore_ascii_case("rocketleague")
+        || name_str.eq_ignore_ascii_case("rocketleague-linux-shipping")
+}
+
+fn contains_path_match_ignore_case(arg_str: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    arg_str.as_bytes().windows(needle.len()).any(|w| {
+        w.iter().zip(needle.as_bytes().iter()).all(|(a, b)| {
+            let a_char = if *a == b'\\' { b'/' } else { *a };
+            a_char.eq_ignore_ascii_case(b)
+        })
+    })
 }
 
 fn rocket_league_argument_match(argument: &OsStr) -> Option<String> {
-    let normalized = argument.to_string_lossy().to_lowercase().replace('\\', "/");
-    if normalized.contains("rocketleague.exe")
-        || normalized.contains("rocketleague_eac.exe")
-        || normalized.contains("rocketleague-linux-shipping")
-        || normalized.contains("rocketleague/binaries")
+    let arg_str = argument.to_string_lossy();
+    if contains_path_match_ignore_case(&arg_str, "rocketleague.exe")
+        || contains_path_match_ignore_case(&arg_str, "rocketleague_eac.exe")
+        || contains_path_match_ignore_case(&arg_str, "rocketleague-linux-shipping")
+        || contains_path_match_ignore_case(&arg_str, "rocketleague/binaries")
     {
-        Some(format!("command: {}", argument.to_string_lossy()))
+        Some(format!("command: {}", arg_str))
     } else {
         None
     }
