@@ -275,7 +275,7 @@ fn render_scoreboard_hud(ui: &mut egui::Ui, session: &crate::session::SessionSta
         let orange_score_frame = egui::Frame::default()
             .fill(egui::Color32::from_rgb(68, 36, 18))
             .stroke(egui::Stroke::new(
-                1.0,
+                1.0_f32,
                 egui::Color32::from_rgb(220, 100, 10),
             ))
             .corner_radius(6)
@@ -979,7 +979,7 @@ fn render_player_row(ui: &mut egui::Ui, row: &DashboardPlayerRow, config: &Confi
     egui::Frame::default()
         .fill(fill)
         .stroke(egui::Stroke::new(
-            if row.is_local { 1.2 } else { 0.8 },
+            if row.is_local { 1.2_f32 } else { 0.8_f32 },
             if row.is_local {
                 egui::Color32::from_rgb(80, 155, 105)
             } else {
@@ -1050,7 +1050,7 @@ fn render_player_row(ui: &mut egui::Ui, row: &DashboardPlayerRow, config: &Confi
 }
 
 fn vertical_divider(ui: &mut egui::Ui, height: f32) {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(1.0, height), egui::Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(1.0_f32, height), egui::Sense::hover());
     ui.painter()
         .rect_filled(rect, 0.5, egui::Color32::from_rgb(42, 49, 60));
 }
@@ -1077,7 +1077,7 @@ fn render_player_name(ui: &mut egui::Ui, row: &DashboardPlayerRow, max_width: f3
                     let badge_frame = egui::Frame::default()
                         .fill(egui::Color32::from_rgb(20, 75, 45))
                         .stroke(egui::Stroke::new(
-                            1.0,
+                            1.0_f32,
                             egui::Color32::from_rgb(120, 220, 155),
                         ))
                         .corner_radius(4)
