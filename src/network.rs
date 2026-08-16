@@ -675,7 +675,8 @@ fn update_session_from_event(
 ) {
     let local_team = state.game.local_team.load(Ordering::SeqCst);
     let local_team_hint = (local_team != crate::state::NO_TEAM).then_some(local_team);
-    let session_mode = parsed_event.mode.session_mode();
+    let mode_inference = parsed_event.mode.inference();
+    let session_mode = mode_inference.mode;
     let current_session = state.game.session.load();
     let score_changed = current_session.blue_score != parsed_event.score.blue_score
         || current_session.orange_score != parsed_event.score.orange_score;
@@ -690,6 +691,10 @@ fn update_session_from_event(
             || current_session.active_mode == SessionMode::Unknown)
             && session_mode != SessionMode::Unknown
             && current_session.active_mode != session_mode)
+        || (session_mode == current_session.active_mode
+            && mode_inference
+                .source
+                .is_more_authoritative_than(current_session.active_mode_source))
         || (local_team_hint.is_some() && current_session.local_team != local_team_hint);
     let round_start_relevant =
         !current_session.round_started && players_have_round_stats(parsed_event);
@@ -703,7 +708,12 @@ fn update_session_from_event(
     {
         let mut session = (**current_session).clone();
         let matches_before = session.matches_played;
-        session.handle_update_state(&parsed_event.data, local_team_hint, session_mode);
+        session.handle_update_state_with_mode_source(
+            &parsed_event.data,
+            local_team_hint,
+            session_mode,
+            mode_inference.source,
+        );
         state
             .flags
             .is_watching_replay
@@ -1780,9 +1790,11 @@ mod tests {
             }),
         );
 
+        let session = state.game.session.load();
+        assert_eq!(session.active_mode, crate::session::SessionMode::Twos);
         assert_eq!(
-            state.game.session.load().active_mode,
-            crate::session::SessionMode::Twos
+            session.active_mode_source,
+            crate::session::SessionModeSource::PlayerCount
         );
     }
 
@@ -1880,9 +1892,11 @@ mod tests {
             }),
         );
 
+        let session = state.game.session.load();
+        assert_eq!(session.active_mode, crate::session::SessionMode::Twos);
         assert_eq!(
-            state.game.session.load().active_mode,
-            crate::session::SessionMode::Twos
+            session.active_mode_source,
+            crate::session::SessionModeSource::PreviousLocked
         );
     }
 
@@ -1910,9 +1924,11 @@ mod tests {
             }),
         );
 
+        let session = state.game.session.load();
+        assert_eq!(session.active_mode, crate::session::SessionMode::Twos);
         assert_eq!(
-            state.game.session.load().active_mode,
-            crate::session::SessionMode::Twos
+            session.active_mode_source,
+            crate::session::SessionModeSource::ActivePlayerCount
         );
     }
 
@@ -2135,6 +2151,10 @@ mod tests {
 
         let session = state.game.session.load();
         assert_eq!(session.active_mode, crate::session::SessionMode::Hoops);
+        assert_eq!(
+            session.active_mode_source,
+            crate::session::SessionModeSource::MapIdentifier
+        );
         assert_eq!(
             session.mode_records[&crate::session::SessionMode::Hoops].wins,
             1

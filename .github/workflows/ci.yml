@@ -9,8 +9,8 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  rust:
-    name: Rust checks
+  linux:
+    name: Linux checks
     runs-on: ubuntu-latest
 
     steps:
@@ -54,3 +54,100 @@ jobs:
 
     - name: Test
       run: cargo test --all-targets
+
+  windows:
+    name: Windows and MSIX checks
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: x86_64-pc-windows-msvc
+        components: clippy
+
+    - name: Configure native build tools
+      shell: pwsh
+      run: |
+        $llvmBin = Join-Path $env:ProgramFiles "LLVM\bin"
+        $libclang = Join-Path $llvmBin "libclang.dll"
+        if (-not (Test-Path -LiteralPath $libclang)) {
+          throw "The Windows runner is missing libclang.dll at $libclang."
+        }
+
+        $nasm = Get-Command nasm.exe -ErrorAction SilentlyContinue
+        if (-not $nasm) {
+          choco install nasm --yes --no-progress
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not install NASM."
+          }
+          $nasmBin = Join-Path $env:ProgramFiles "NASM"
+          $nasmPath = Join-Path $nasmBin "nasm.exe"
+          if (-not (Test-Path -LiteralPath $nasmPath)) {
+            throw "NASM was installed but nasm.exe was not found at $nasmPath."
+          }
+          $nasmBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+        }
+
+        "LIBCLANG_PATH=$llvmBin" |
+          Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+    - name: Clippy Windows targets
+      run: cargo clippy --locked --all-targets --features microsoft-store -- -D warnings
+
+    - name: Test on Windows
+      run: cargo test --locked --all-targets
+
+    - name: Build Microsoft Store executable
+      run: cargo build --locked --release --target x86_64-pc-windows-msvc --features microsoft-store
+
+    - name: Create temporary MSIX validation assets
+      shell: pwsh
+      run: |
+        Add-Type -AssemblyName System.Drawing
+        $assetRoot = Join-Path $PWD "packaging\msix\Assets"
+        New-Item -ItemType Directory -Path $assetRoot -Force | Out-Null
+        $assets = @{
+          "StoreLogo.png" = @(50, 50)
+          "Square44x44Logo.png" = @(44, 44)
+          "Square150x150Logo.png" = @(150, 150)
+          "Wide310x150Logo.png" = @(310, 150)
+          "Square310x310Logo.png" = @(310, 310)
+        }
+
+        foreach ($asset in $assets.GetEnumerator()) {
+          $bitmap = [System.Drawing.Bitmap]::new($asset.Value[0], $asset.Value[1])
+          try {
+            $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+            try {
+              $graphics.Clear([System.Drawing.Color]::FromArgb(16, 18, 24))
+            }
+            finally {
+              $graphics.Dispose()
+            }
+            $path = Join-Path $assetRoot $asset.Key
+            $bitmap.Save($path, [System.Drawing.Imaging.ImageFormat]::Png)
+          }
+          finally {
+            $bitmap.Dispose()
+          }
+        }
+
+    - name: Build validation MSIX
+      shell: pwsh
+      run: |
+        ./packaging/msix/build-msix.ps1 `
+          -PackageName "RLPlatformOverlay.CI" `
+          -Publisher "CN=RL Platform Overlay CI" `
+          -PublisherDisplayName "RL Platform Overlay CI" `
+          -DisplayName "RL Platform Overlay CI" `
+          -SkipBuild
+
+        $packages = @(Get-ChildItem -LiteralPath "target\msix" -Filter "*.msix" -File)
+        if ($packages.Count -ne 1) {
+          throw "Expected one validation MSIX, found $($packages.Count)."
+        }
+        Write-Host "Validated $($packages[0].FullName)"

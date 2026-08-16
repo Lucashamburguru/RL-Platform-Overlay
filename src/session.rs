@@ -48,6 +48,51 @@ pub enum SessionMode {
     Unknown,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SessionModeSource {
+    PlaylistMetadata,
+    MapIdentifier,
+    TeamCapacity,
+    ActivePlayerCount,
+    PlayerCount,
+    PreviousLocked,
+    FreeplayShape,
+    #[default]
+    Unknown,
+}
+
+impl SessionModeSource {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::PlaylistMetadata => "playlist_metadata",
+            Self::MapIdentifier => "map_identifier",
+            Self::TeamCapacity => "team_capacity",
+            Self::ActivePlayerCount => "active_player_count",
+            Self::PlayerCount => "player_count",
+            Self::PreviousLocked => "previous_locked",
+            Self::FreeplayShape => "freeplay_shape",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    pub(crate) fn is_more_authoritative_than(self, other: Self) -> bool {
+        self.authority() > other.authority()
+    }
+
+    fn authority(self) -> u8 {
+        match self {
+            Self::PlaylistMetadata => 6,
+            Self::MapIdentifier => 5,
+            Self::TeamCapacity => 4,
+            Self::ActivePlayerCount => 3,
+            Self::PlayerCount => 2,
+            Self::PreviousLocked => 1,
+            Self::FreeplayShape => 7,
+            Self::Unknown => 0,
+        }
+    }
+}
+
 impl SessionMode {
     pub fn infer(arena: Option<&str>, player_count: Option<usize>) -> Self {
         arena
@@ -154,6 +199,7 @@ pub struct SessionState {
     pub last_result: MatchResult,
     pub active_match_id: String,
     pub active_mode: SessionMode,
+    pub active_mode_source: SessionModeSource,
     pub mode_records: BTreeMap<SessionMode, SessionModeRecord>,
     pub local_team: Option<u8>,
     pub blue_score: u32,
@@ -242,6 +288,21 @@ impl SessionState {
         local_team_hint: Option<u8>,
         mode_hint: SessionMode,
     ) {
+        self.handle_update_state_with_mode_source(
+            data,
+            local_team_hint,
+            mode_hint,
+            SessionModeSource::Unknown,
+        );
+    }
+
+    pub fn handle_update_state_with_mode_source(
+        &mut self,
+        data: &Value,
+        local_team_hint: Option<u8>,
+        mode_hint: SessionMode,
+        mode_source: SessionModeSource,
+    ) {
         let real_data = decode_json_string_value(data);
         let has_winner = real_data
             .get("Game")
@@ -260,6 +321,7 @@ impl SessionState {
 
             self.active_match_id = match_guid.to_string();
             self.active_mode = SessionMode::Unknown;
+            self.active_mode_source = SessionModeSource::Unknown;
             self.result_recorded_for_match = false;
             self.last_result = MatchResult::Unknown;
 
@@ -278,6 +340,17 @@ impl SessionState {
                 || should_replace_active_mode(self.active_mode, effective_mode_hint))
         {
             self.active_mode = effective_mode_hint;
+            self.active_mode_source = if effective_mode_hint == mode_hint {
+                mode_source
+            } else {
+                SessionModeSource::PreviousLocked
+            };
+        } else if mode_hint != SessionMode::Unknown && mode_hint != self.active_mode {
+            self.active_mode_source = SessionModeSource::PreviousLocked;
+        } else if mode_hint == self.active_mode
+            && mode_source.is_more_authoritative_than(self.active_mode_source)
+        {
+            self.active_mode_source = mode_source;
         }
 
         if let Some(team) = local_team_hint {
@@ -430,6 +503,7 @@ impl SessionState {
     pub fn handle_reset_event(&mut self) {
         self.active_match_id.clear();
         self.active_mode = SessionMode::Unknown;
+        self.active_mode_source = SessionModeSource::Unknown;
         self.local_team = None;
         self.blue_score = 0;
         self.orange_score = 0;
@@ -1198,6 +1272,7 @@ mod tests {
         let mut session = SessionState {
             active_match_id: "abc".to_string(),
             active_mode: SessionMode::Threes,
+            active_mode_source: SessionModeSource::PlayerCount,
             round_started: true,
             ..Default::default()
         };
@@ -1207,8 +1282,47 @@ mod tests {
                 "bHasWinner": false,
             }
         });
-        session.handle_update_state(&data, None, SessionMode::Twos);
+        session.handle_update_state_with_mode_source(
+            &data,
+            None,
+            SessionMode::Twos,
+            SessionModeSource::ActivePlayerCount,
+        );
         assert_eq!(session.active_mode, SessionMode::Threes);
+        assert_eq!(
+            session.active_mode_source,
+            SessionModeSource::PreviousLocked
+        );
+    }
+
+    #[test]
+    fn upgrades_mode_source_when_metadata_confirms_current_mode() {
+        let mut session = SessionState {
+            active_match_id: "abc".to_string(),
+            active_mode: SessionMode::Twos,
+            active_mode_source: SessionModeSource::TeamCapacity,
+            round_started: true,
+            ..Default::default()
+        };
+        let data = json!({
+            "MatchGuid": "abc",
+            "Game": {
+                "bHasWinner": false,
+            }
+        });
+
+        session.handle_update_state_with_mode_source(
+            &data,
+            None,
+            SessionMode::Twos,
+            SessionModeSource::PlaylistMetadata,
+        );
+
+        assert_eq!(session.active_mode, SessionMode::Twos);
+        assert_eq!(
+            session.active_mode_source,
+            SessionModeSource::PlaylistMetadata
+        );
     }
 
     #[test]

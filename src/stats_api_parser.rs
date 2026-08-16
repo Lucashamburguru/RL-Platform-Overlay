@@ -2,7 +2,7 @@ use crate::json_utils::{
     bool_field, checked_u8, decode_json_string_value, number_field, number_field_u8,
     number_field_u32, string_field,
 };
-use crate::session::{MatchResult, SessionMode};
+use crate::session::{MatchResult, SessionMode, SessionModeSource};
 use crate::state::{LocalPlayerIdentity, PlayerInfo};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -74,7 +74,15 @@ pub struct ResultSignature {
 pub struct ModeSignature {
     pub match_guid: String,
     pub mode_hint: Option<String>,
+    pub mode_hint_source: SessionModeSource,
     pub player_count: Option<usize>,
+    pub player_count_source: SessionModeSource,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ModeInference {
+    pub mode: SessionMode,
+    pub source: SessionModeSource,
 }
 
 pub fn parse_stats_api_event(raw: &Value, context: StatsApiParseContext<'_>) -> StatsApiEvent {
@@ -130,12 +138,17 @@ pub fn parse_stats_api_data(
         .or_else(|| data.get("players"))
         .and_then(Value::as_array)
         .map(|players| players.len());
-    let mode_player_count = mode_player_count(&data).or(player_count);
+    let player_count_inference = mode_player_count(&data)
+        .or_else(|| player_count.map(|count| (count, SessionModeSource::PlayerCount)));
+    let (mode_player_count, player_count_source) = player_count_inference
+        .map(|(count, source)| (Some(count), source))
+        .unwrap_or((None, SessionModeSource::Unknown));
     let match_guid = string_field(&data, &["MatchGuid", "matchGuid"]).map(str::to_string);
-    let session_mode_hint = game
+    let (session_mode_hint, mode_hint_source) = game
         .as_ref()
-        .and_then(session_mode_hint_from_game)
-        .map(str::to_string);
+        .and_then(session_mode_hint_with_source)
+        .map(|(hint, source)| (Some(hint.to_string()), source))
+        .unwrap_or((None, SessionModeSource::Unknown));
     let winner_hint = game
         .as_ref()
         .and_then(|game| string_field(game, &["Winner", "winner"]))
@@ -164,7 +177,9 @@ pub fn parse_stats_api_data(
     let mode = ModeSignature {
         match_guid: match_guid.clone().unwrap_or_default(),
         mode_hint: session_mode_hint.clone(),
+        mode_hint_source,
         player_count: mode_player_count,
+        player_count_source,
     };
 
     StatsApiEvent {
@@ -213,11 +228,28 @@ impl ScoreSignature {
 
 impl ModeSignature {
     pub fn session_mode(&self) -> SessionMode {
+        self.inference().mode
+    }
+
+    pub fn inference(&self) -> ModeInference {
         if self.match_guid.is_empty() && self.player_count == Some(1) {
-            return SessionMode::Freeplay;
+            return ModeInference {
+                mode: SessionMode::Freeplay,
+                source: SessionModeSource::FreeplayShape,
+            };
         }
 
-        SessionMode::infer(self.mode_hint.as_deref(), self.player_count)
+        if let Some(mode) = self.mode_hint.as_deref().and_then(SessionMode::from_hint) {
+            return ModeInference {
+                mode,
+                source: self.mode_hint_source,
+            };
+        }
+
+        ModeInference {
+            mode: SessionMode::infer(None, self.player_count),
+            source: self.player_count_source,
+        }
     }
 }
 
@@ -391,7 +423,7 @@ fn parse_players(
     parsed
 }
 
-fn mode_player_count(data: &Value) -> Option<usize> {
+fn mode_player_count(data: &Value) -> Option<(usize, SessionModeSource)> {
     let players = data
         .get("Players")
         .or_else(|| data.get("players"))
@@ -446,7 +478,18 @@ fn mode_player_count(data: &Value) -> Option<usize> {
         .max(active_team_capacity)
         .max(roster_team_capacity);
 
-    if inferred > 0 { Some(inferred) } else { None }
+    if inferred == 0 {
+        return None;
+    }
+
+    let source = if inferred > active_total {
+        SessionModeSource::TeamCapacity
+    } else if has_active_flags {
+        SessionModeSource::ActivePlayerCount
+    } else {
+        SessionModeSource::PlayerCount
+    };
+    Some((inferred, source))
 }
 
 fn parse_player_info(
@@ -511,34 +554,42 @@ fn parse_player_info(
 }
 
 pub fn session_mode_hint_from_game(game: &Value) -> Option<&str> {
-    const MODE_FIELDS: &[&str] = &[
-        "Arena",
-        "arena",
-        "Map",
-        "map",
-        "MapName",
-        "mapName",
-        "GameMode",
-        "gameMode",
-        "GameInfo",
-        "gameInfo",
-        "Playlist",
-        "playlist",
-        "PlaylistName",
-        "playlistName",
-        "Mutator",
-        "mutator",
-        "MutatorName",
-        "mutatorName",
-        "Rules",
-        "rules",
+    session_mode_hint_with_source(game).map(|(hint, _)| hint)
+}
+
+fn session_mode_hint_with_source(game: &Value) -> Option<(&str, SessionModeSource)> {
+    const MODE_FIELDS: &[(&str, SessionModeSource)] = &[
+        ("Playlist", SessionModeSource::PlaylistMetadata),
+        ("playlist", SessionModeSource::PlaylistMetadata),
+        ("PlaylistName", SessionModeSource::PlaylistMetadata),
+        ("playlistName", SessionModeSource::PlaylistMetadata),
+        ("GameMode", SessionModeSource::PlaylistMetadata),
+        ("gameMode", SessionModeSource::PlaylistMetadata),
+        ("Arena", SessionModeSource::MapIdentifier),
+        ("arena", SessionModeSource::MapIdentifier),
+        ("Map", SessionModeSource::MapIdentifier),
+        ("map", SessionModeSource::MapIdentifier),
+        ("MapName", SessionModeSource::MapIdentifier),
+        ("mapName", SessionModeSource::MapIdentifier),
+        ("GameInfo", SessionModeSource::MapIdentifier),
+        ("gameInfo", SessionModeSource::MapIdentifier),
+        ("Mutator", SessionModeSource::MapIdentifier),
+        ("mutator", SessionModeSource::MapIdentifier),
+        ("MutatorName", SessionModeSource::MapIdentifier),
+        ("mutatorName", SessionModeSource::MapIdentifier),
+        ("Rules", SessionModeSource::MapIdentifier),
+        ("rules", SessionModeSource::MapIdentifier),
     ];
 
     MODE_FIELDS
         .iter()
-        .filter_map(|field| string_field(game, &[*field]))
-        .find(|hint| SessionMode::from_hint(hint).is_some())
-        .or_else(|| string_field(game, MODE_FIELDS))
+        .filter_map(|(field, source)| string_field(game, &[*field]).map(|hint| (hint, *source)))
+        .find(|(hint, _)| SessionMode::from_hint(hint).is_some())
+        .or_else(|| {
+            MODE_FIELDS.iter().find_map(|(field, source)| {
+                string_field(game, &[*field]).map(|hint| (hint, *source))
+            })
+        })
 }
 
 pub fn parse_platform(id: &str) -> (String, bool) {
@@ -845,7 +896,13 @@ mod tests {
             context(&identity, &previous),
         );
 
-        assert_eq!(event.mode.session_mode(), SessionMode::Freeplay);
+        assert_eq!(
+            event.mode.inference(),
+            ModeInference {
+                mode: SessionMode::Freeplay,
+                source: SessionModeSource::FreeplayShape,
+            }
+        );
     }
 
     #[test]
@@ -875,6 +932,10 @@ mod tests {
         assert_eq!(event.player_count, Some(5));
         assert_eq!(event.mode.player_count, Some(4));
         assert_eq!(event.mode.session_mode(), SessionMode::Twos);
+        assert_eq!(
+            event.mode.inference().source,
+            SessionModeSource::ActivePlayerCount
+        );
     }
 
     #[test]
@@ -904,6 +965,10 @@ mod tests {
             Some("Ranked Doubles 2v2")
         );
         assert_eq!(event.mode.session_mode(), SessionMode::Twos);
+        assert_eq!(
+            event.mode.inference().source,
+            SessionModeSource::PlaylistMetadata
+        );
     }
 
     #[test]
@@ -928,6 +993,10 @@ mod tests {
         assert_eq!(event.player_count, Some(2));
         assert_eq!(event.mode.player_count, Some(4));
         assert_eq!(event.mode.session_mode(), SessionMode::Twos);
+        assert_eq!(
+            event.mode.inference().source,
+            SessionModeSource::TeamCapacity
+        );
     }
 
     #[test]

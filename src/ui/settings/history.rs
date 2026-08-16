@@ -1,5 +1,8 @@
 use crate::state::{AppState, Config};
-use crate::ui::common::{StatusTone, helper_text, setting_row, settings_section, status_text};
+use crate::ui::common::{
+    StatusTone, helper_text, overlay_danger_color, overlay_subtle_color, overlay_success_color,
+    overlay_text_color, overlay_title_color, setting_row, settings_section, status_text,
+};
 use eframe::egui;
 use egui_extras::{Column, TableBuilder};
 use std::sync::Arc;
@@ -85,14 +88,14 @@ pub(crate) fn render_history_settings_tab(
                             ui.label(
                                 egui::RichText::new("MATCHES")
                                     .size(9.0)
-                                    .color(egui::Color32::from_gray(160))
+                                    .color(overlay_title_color())
                                     .strong(),
                             );
                             ui.label(
                                 egui::RichText::new(totals.matches.to_string())
                                     .size(22.0)
                                     .strong()
-                                    .color(egui::Color32::WHITE),
+                                    .color(overlay_text_color()),
                             );
                         });
                     });
@@ -110,14 +113,14 @@ pub(crate) fn render_history_settings_tab(
                             ui.label(
                                 egui::RichText::new("PLAYERS MET")
                                     .size(9.0)
-                                    .color(egui::Color32::from_gray(160))
+                                    .color(overlay_title_color())
                                     .strong(),
                             );
                             ui.label(
                                 egui::RichText::new(totals.players.to_string())
                                     .size(22.0)
                                     .strong()
-                                    .color(egui::Color32::WHITE),
+                                    .color(overlay_text_color()),
                             );
                         });
                     });
@@ -164,7 +167,7 @@ pub(crate) fn render_history_settings_tab(
         }
 
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Search:").color(egui::Color32::from_gray(160)));
+            ui.label(history_muted_text("Search:"));
             let _response = ui.add(
                 egui::TextEdit::singleline(search_query)
                     .hint_text("Search by name or platform...")
@@ -199,22 +202,22 @@ pub(crate) fn render_history_settings_tab(
 
 fn render_record(ui: &mut egui::Ui, wins: u32, losses: u32) {
     let (text, color) = record_text_and_color(wins, losses);
-    ui.label(egui::RichText::new(text).color(color));
+    ui.label(history_value_text(text).color(color));
 }
 
 fn record_text_and_color(wins: u32, losses: u32) -> (String, egui::Color32) {
     let total = u64::from(wins) + u64::from(losses);
     if total == 0 {
-        return ("-".to_string(), egui::Color32::from_gray(180));
+        return ("-".to_string(), overlay_text_color());
     }
     let win_rate = rounded_percent_u64(u64::from(wins), total);
     let text = format!("{win_rate:.0}% ({wins}-{losses})");
     let color = if wins > losses {
-        egui::Color32::from_rgb(100, 220, 140) // Green
+        overlay_success_color()
     } else if losses > wins {
-        egui::Color32::from_rgb(230, 120, 120) // Red
+        overlay_danger_color()
     } else {
-        egui::Color32::from_gray(180) // Gray
+        overlay_text_color()
     };
     (text, color)
 }
@@ -249,7 +252,7 @@ fn render_platform_label(ui: &mut egui::Ui, platform: &str) {
                 &c.to_string(),
                 0.0,
                 egui::TextFormat {
-                    font_id: egui::FontId::proportional(12.5),
+                    font_id: egui::FontId::proportional(11.0),
                     color,
                     ..Default::default()
                 },
@@ -270,10 +273,22 @@ fn render_platform_label(ui: &mut egui::Ui, platform: &str) {
         {
             egui::Color32::from_rgb(255, 65, 80) // Switch Red
         } else {
-            egui::Color32::from_gray(160) // Steam / Default stays gray
+            overlay_text_color()
         };
-        ui.label(egui::RichText::new(platform).color(color));
+        ui.label(history_value_text(platform).color(color));
     }
+}
+
+fn history_muted_text(text: impl Into<String>) -> egui::RichText {
+    egui::RichText::new(text.into())
+        .size(10.0)
+        .color(overlay_subtle_color())
+}
+
+fn history_value_text(text: impl Into<String>) -> egui::RichText {
+    egui::RichText::new(text.into())
+        .size(11.0)
+        .color(overlay_text_color())
 }
 
 fn render_player_table(ui: &mut egui::Ui, players: &[&crate::history::PlayerHistorySummary]) {
@@ -292,45 +307,45 @@ fn render_player_table(ui: &mut egui::Ui, players: &[&crate::history::PlayerHist
         .column(Column::auto().at_least(76.0))
         .header(22.0, |mut header| {
             header.col(|ui| {
-                ui.strong("Player");
+                ui.label(history_muted_text("Player"));
             });
             header.col(|ui| {
-                ui.strong("Platform");
+                ui.label(history_muted_text("Platform"));
             });
             header.col(|ui| {
-                ui.strong("Seen");
+                ui.label(history_muted_text("Seen"));
             });
             header.col(|ui| {
-                ui.strong("With");
+                ui.label(history_muted_text("With"));
             });
             header.col(|ui| {
-                ui.strong("Vs");
+                ui.label(history_muted_text("Vs"));
             });
             header.col(|ui| {
-                ui.strong("W/L With");
+                ui.label(history_muted_text("W/L With"));
             });
             header.col(|ui| {
-                ui.strong("W/L Vs");
+                ui.label(history_muted_text("W/L Vs"));
             });
         })
         .body(|body| {
             body.rows(24.0, players.len(), |mut row| {
                 let player = players[row.index()];
                 row.col(|ui| {
-                    ui.label(&player.name);
+                    ui.label(history_value_text(&player.name));
                 });
                 row.col(|ui| {
                     let platform = formatted_platform(&player.platform);
                     render_platform_label(ui, &platform);
                 });
                 row.col(|ui| {
-                    ui.label(player.total_games().to_string());
+                    ui.label(history_value_text(player.total_games().to_string()));
                 });
                 row.col(|ui| {
-                    ui.label(player.games_with.to_string());
+                    ui.label(history_value_text(player.games_with.to_string()));
                 });
                 row.col(|ui| {
-                    ui.label(player.games_against.to_string());
+                    ui.label(history_value_text(player.games_against.to_string()));
                 });
                 row.col(|ui| {
                     render_record(ui, player.wins_with, player.losses_with);

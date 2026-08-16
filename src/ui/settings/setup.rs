@@ -128,7 +128,14 @@ pub(crate) fn render_setup_settings_tab(
                     .on_hover_text("Writes this PacketSendRate to DefaultStatsAPI.ini.")
                     .clicked()
                 {
-                    apply_stats_api_setup_rate(state, &config_edit.rocket_league_path, rate);
+                    let rocket_league_path = config_edit.rocket_league_path.clone();
+                    apply_stats_api_setup_rate(
+                        state,
+                        &rocket_league_path,
+                        rate,
+                        &mut config_edit.stats_api_packet_send_rate,
+                        changed,
+                    );
                 }
             }
         });
@@ -172,7 +179,14 @@ pub(crate) fn render_setup_settings_tab(
                 .clicked()
             {
                 if let Ok(rate) = custom_rate_str.trim().parse::<u16>() {
-                    apply_stats_api_setup_rate(state, &config_edit.rocket_league_path, rate);
+                    let rocket_league_path = config_edit.rocket_league_path.clone();
+                    apply_stats_api_setup_rate(
+                        state,
+                        &rocket_league_path,
+                        rate,
+                        &mut config_edit.stats_api_packet_send_rate,
+                        changed,
+                    );
                 } else {
                     state.system.stats_api_setup_result.store(Arc::new(
                         crate::setup::StatsApiSetupResult {
@@ -224,9 +238,19 @@ pub(crate) fn render_setup_settings_tab(
     render_hotkey_settings_section(ui, ctx, state, config_edit, changed);
 }
 
-fn apply_stats_api_setup_rate(state: &Arc<AppState>, rocket_league_path: &str, rate: u16) {
+fn apply_stats_api_setup_rate(
+    state: &Arc<AppState>,
+    rocket_league_path: &str,
+    rate: u16,
+    saved_rate: &mut u16,
+    changed: &mut bool,
+) {
     match crate::setup::ensure_stats_api_setup_with_rate(rocket_league_path, rate) {
         Ok(result) => {
+            if *saved_rate != rate {
+                *saved_rate = rate;
+                *changed = true;
+            }
             state.system.stats_api_setup_result.store(Arc::new(result));
             request_stats_api_setup_refresh(state, rocket_league_path.to_string(), true);
         }

@@ -35,6 +35,8 @@ pub async fn run(debug_enabled: bool) -> eframe::Result<()> {
 
     let state = AppState::new_with_debug(debug_enabled);
 
+    refresh_stats_api_setup_on_startup(&state);
+
     history::refresh_totals(&state);
 
     if state.game.local_player_identity.load().is_known() {
@@ -86,4 +88,40 @@ pub async fn run(debug_enabled: bool) -> eframe::Result<()> {
             Ok(Box::new(ui::MainApp::new(state, hwnd)))
         }),
     )
+}
+
+fn refresh_stats_api_setup_on_startup(state: &std::sync::Arc<AppState>) {
+    let config = state.system.config.load();
+    let rocket_league_path = config.rocket_league_path.clone();
+    let packet_send_rate = config.stats_api_packet_send_rate;
+    drop(config);
+
+    match setup::ensure_stats_api_enabled_on_startup(&rocket_league_path, packet_send_rate) {
+        Ok(result) => {
+            if result.changed {
+                log::info!("{}", result.message);
+            }
+            state
+                .system
+                .stats_api_setup_result
+                .store(std::sync::Arc::new(result));
+        }
+        Err(error) => {
+            log::warn!("Could not verify Stats API config at startup: {error}");
+            state
+                .system
+                .stats_api_setup_result
+                .store(std::sync::Arc::new(setup::StatsApiSetupResult {
+                    message: error,
+                    ..Default::default()
+                }));
+        }
+    }
+
+    state
+        .system
+        .stats_api_setup_status
+        .store(std::sync::Arc::new(setup::inspect_stats_api_setup(
+            &rocket_league_path,
+        )));
 }

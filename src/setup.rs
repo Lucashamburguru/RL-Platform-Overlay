@@ -7,6 +7,42 @@ const STATS_API_SECTION: &str = "TAGame.MatchStatsExporter_TA";
 pub const PACKET_SEND_RATE_OPTIONS: [u16; 4] = [0, 5, 15, 30];
 const DEFAULT_PORT: u16 = 49123;
 
+pub fn ensure_stats_api_enabled_on_startup(
+    rocket_league_root: &str,
+    packet_send_rate: u16,
+) -> Result<StatsApiSetupResult, String> {
+    if packet_send_rate == 0 {
+        return Ok(StatsApiSetupResult {
+            message: "Automatic Stats API enablement is turned off.".to_string(),
+            ..Default::default()
+        });
+    }
+    if packet_send_rate > 120 {
+        return Err("PacketSendRate must be between 0 and 120.".to_string());
+    }
+    if rocket_league_root.trim().is_empty() {
+        return Err("Rocket League path is not configured.".to_string());
+    }
+
+    let root = Path::new(rocket_league_root);
+    if !root.join("TAGame").is_dir() {
+        return Err("Configured Rocket League folder does not contain TAGame.".to_string());
+    }
+
+    let status = inspect_stats_api_setup(rocket_league_root);
+    if status.configured {
+        return Ok(StatsApiSetupResult {
+            message: format!(
+                "Stats API config is already enabled at {} Hz.",
+                status.packet_send_rate.unwrap_or(packet_send_rate)
+            ),
+            ..Default::default()
+        });
+    }
+
+    ensure_stats_api_setup_with_rate(rocket_league_root, packet_send_rate)
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct StatsApiSetupStatus {
     pub ini_path: String,
@@ -386,6 +422,70 @@ mod tests {
         let result = ensure_stats_api_setup_with_rate(&root.to_string_lossy(), 30).unwrap();
         assert!(!result.changed);
         assert!(result.backup_path.is_none());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn startup_repairs_disabled_stats_api() {
+        let _guard = backup_lock();
+        let root = temp_root("startup_repair");
+        let ini = stats_ini_path(&root.to_string_lossy());
+        fs::write(
+            &ini,
+            "[TAGame.MatchStatsExporter_TA]\nPacketSendRate=0\nPort=49123\n",
+        )
+        .unwrap();
+
+        let result = ensure_stats_api_enabled_on_startup(&root.to_string_lossy(), 15).unwrap();
+
+        assert!(result.changed);
+        assert!(
+            fs::read_to_string(ini)
+                .unwrap()
+                .contains("PacketSendRate=15")
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn startup_preserves_an_existing_positive_rate() {
+        let root = temp_root("startup_preserve");
+        let ini = stats_ini_path(&root.to_string_lossy());
+        fs::write(
+            &ini,
+            "[TAGame.MatchStatsExporter_TA]\nPacketSendRate=5\nPort=49123\n",
+        )
+        .unwrap();
+
+        let result = ensure_stats_api_enabled_on_startup(&root.to_string_lossy(), 30).unwrap();
+
+        assert!(!result.changed);
+        assert!(
+            fs::read_to_string(ini)
+                .unwrap()
+                .contains("PacketSendRate=5")
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn startup_respects_deliberate_turn_off() {
+        let root = temp_root("startup_off");
+        let ini = stats_ini_path(&root.to_string_lossy());
+        fs::write(
+            &ini,
+            "[TAGame.MatchStatsExporter_TA]\nPacketSendRate=0\nPort=49123\n",
+        )
+        .unwrap();
+
+        let result = ensure_stats_api_enabled_on_startup(&root.to_string_lossy(), 0).unwrap();
+
+        assert!(!result.changed);
+        assert!(
+            fs::read_to_string(ini)
+                .unwrap()
+                .contains("PacketSendRate=0")
+        );
         let _ = fs::remove_dir_all(root);
     }
 }

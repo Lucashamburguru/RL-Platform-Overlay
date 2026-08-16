@@ -857,6 +857,10 @@ pub fn support_diagnostics_bundle(
         empty_label(&session.active_match_id)
     ));
     lines.push(format!("active_mode={}", session.active_mode.label()));
+    lines.push(format!(
+        "active_mode_source={}",
+        session.active_mode_source.label()
+    ));
     lines.push(format!("matches_played={}", session.matches_played));
     lines.push(format!("wins={}", session.wins));
     lines.push(format!("losses={}", session.losses));
@@ -1233,5 +1237,20 @@ mod tests {
         assert!(poller.is_running());
         poller.stop();
         assert!(!poller.is_running());
+    }
+
+    #[test]
+    fn support_bundle_includes_mode_provenance() {
+        let state = crate::state::AppState::new();
+        let mut session = crate::session::SessionState::default();
+        session.active_match_id = "mode-source-test".to_string();
+        session.active_mode = crate::session::SessionMode::Twos;
+        session.active_mode_source = crate::session::SessionModeSource::PlaylistMetadata;
+        state.game.session.store(std::sync::Arc::new(session));
+
+        let bundle = super::support_diagnostics_bundle(&state, false, false, "not running");
+
+        assert!(bundle.contains("active_mode=2v2"));
+        assert!(bundle.contains("active_mode_source=playlist_metadata"));
     }
 }
