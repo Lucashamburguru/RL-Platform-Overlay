@@ -163,19 +163,37 @@ impl Default for RocketLeagueProcessWatcher {
 }
 
 pub(crate) fn is_rocket_league_name(name: &OsStr) -> bool {
-    let normalized = name.to_string_lossy().to_lowercase();
-    normalized == "rocketleague.exe"
-        || normalized == "rocketleague.ex"
-        || normalized == "rocketleague"
-        || normalized == "rocketleague-linux-shipping"
+    // ⚡ Bolt: Use .eq_ignore_ascii_case() to prevent string allocations
+    let name_str = name.to_string_lossy();
+    name_str.eq_ignore_ascii_case("rocketleague.exe")
+        || name_str.eq_ignore_ascii_case("rocketleague.ex")
+        || name_str.eq_ignore_ascii_case("rocketleague")
+        || name_str.eq_ignore_ascii_case("rocketleague-linux-shipping")
 }
 
 fn rocket_league_argument_match(argument: &OsStr) -> Option<String> {
-    let normalized = argument.to_string_lossy().to_lowercase().replace('\\', "/");
-    if normalized.contains("rocketleague.exe")
-        || normalized.contains("rocketleague_eac.exe")
-        || normalized.contains("rocketleague-linux-shipping")
-        || normalized.contains("rocketleague/binaries")
+    // ⚡ Bolt: Zero-allocation case-insensitive string parsing
+    let arg_str = argument.to_string_lossy();
+    let contains_ignore_case = |needle: &str| -> bool {
+        if needle.is_empty() {
+            return true;
+        }
+        if arg_str.len() < needle.len() {
+            return false;
+        }
+        let needle_bytes = needle.as_bytes();
+        arg_str
+            .as_bytes()
+            .windows(needle_bytes.len())
+            .any(|w| w.eq_ignore_ascii_case(needle_bytes))
+    };
+
+    // Check both forward and backward slashes for paths to avoid replace allocation
+    if contains_ignore_case("rocketleague.exe")
+        || contains_ignore_case("rocketleague_eac.exe")
+        || contains_ignore_case("rocketleague-linux-shipping")
+        || contains_ignore_case("rocketleague/binaries")
+        || contains_ignore_case("rocketleague\\binaries")
     {
         Some(format!("command: {}", argument.to_string_lossy()))
     } else {
