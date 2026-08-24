@@ -895,7 +895,7 @@ pub struct LocalPlayerIdentity {
 impl LocalPlayerIdentity {
     pub fn is_known(&self) -> bool {
         !self.name.trim().is_empty()
-            && !self.name.eq_ignore_ascii_case("player")
+            && self.name.to_lowercase() != "player"
             && !self.primary_id.trim().is_empty()
             && !self.platform.trim().is_empty()
             && self.platform != "Unknown"
