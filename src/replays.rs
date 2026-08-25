@@ -920,7 +920,11 @@ fn parse_cloud_metadata(
         team0_score,
         team1_score,
         player_names,
+        players: Vec::new(),
+        goals: Vec::new(),
         replay_id: id.to_string(),
+        duration_seconds: None,
+        frame_count: None,
         file_size: 0, // Mark as cloud entry
         modified_unix_secs: None,
         error: String::new(),

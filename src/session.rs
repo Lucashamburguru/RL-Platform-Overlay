@@ -202,6 +202,8 @@ pub struct SessionState {
     pub active_mode_source: SessionModeSource,
     pub mode_records: BTreeMap<SessionMode, SessionModeRecord>,
     pub local_team: Option<u8>,
+    pub blue_team_name: String,
+    pub orange_team_name: String,
     pub blue_score: u32,
     pub orange_score: u32,
     pub time_seconds: Option<u32>,
@@ -250,6 +252,13 @@ impl SessionState {
             let (blue_score, orange_score) = payload_team_scores(game);
             if blue_score.is_some_and(|score| self.blue_score != score)
                 || orange_score.is_some_and(|score| self.orange_score != score)
+            {
+                return true;
+            }
+
+            let (blue_name, orange_name) = payload_team_names(game);
+            if blue_name.is_some_and(|name| self.blue_team_name != name)
+                || orange_name.is_some_and(|name| self.orange_team_name != name)
             {
                 return true;
             }
@@ -324,6 +333,8 @@ impl SessionState {
             self.active_mode_source = SessionModeSource::Unknown;
             self.result_recorded_for_match = false;
             self.last_result = MatchResult::Unknown;
+            self.blue_team_name.clear();
+            self.orange_team_name.clear();
 
             let b_replay = real_data
                 .get("Game")
@@ -375,6 +386,14 @@ impl SessionState {
             }
             if let Some(score) = orange_score {
                 self.orange_score = score;
+            }
+
+            let (blue_name, orange_name) = payload_team_names(game);
+            if let Some(name) = blue_name {
+                self.blue_team_name = name.to_string();
+            }
+            if let Some(name) = orange_name {
+                self.orange_team_name = name.to_string();
             }
 
             if has_winner && !self.is_watching_replay {
@@ -505,6 +524,8 @@ impl SessionState {
         self.active_mode = SessionMode::Unknown;
         self.active_mode_source = SessionModeSource::Unknown;
         self.local_team = None;
+        self.blue_team_name.clear();
+        self.orange_team_name.clear();
         self.blue_score = 0;
         self.orange_score = 0;
         self.time_seconds = None;
@@ -512,6 +533,16 @@ impl SessionState {
         self.result_recorded_for_match = false;
         self.round_started = false;
         self.is_watching_replay = false;
+    }
+
+    pub fn team_name(&self, team: u8) -> &str {
+        match team {
+            0 if !self.blue_team_name.trim().is_empty() => self.blue_team_name.trim(),
+            1 if !self.orange_team_name.trim().is_empty() => self.orange_team_name.trim(),
+            0 => "Blue",
+            1 => "Orange",
+            _ => "Unknown",
+        }
     }
 
     fn record_result(&mut self, winner: &str) {
@@ -707,6 +738,29 @@ fn payload_team_scores(game: &Value) -> (Option<u32>, Option<u32>) {
     (blue_score, orange_score)
 }
 
+fn payload_team_names(game: &Value) -> (Option<&str>, Option<&str>) {
+    let mut blue_name = None;
+    let mut orange_name = None;
+    if let Some(teams) = game
+        .get("Teams")
+        .or_else(|| game.get("teams"))
+        .and_then(Value::as_array)
+    {
+        for team in teams {
+            let team_num = number_field_u8(team, &["TeamNum", "teamNum", "Team", "team"]);
+            let name = string_field(team, &["Name", "name"])
+                .map(str::trim)
+                .filter(|name| !name.is_empty());
+            match (team_num, name) {
+                (Some(0), Some(name)) => blue_name = Some(name),
+                (Some(1), Some(name)) => orange_name = Some(name),
+                _ => {}
+            }
+        }
+    }
+    (blue_name, orange_name)
+}
+
 fn player_has_round_stats(player: &Value) -> bool {
     [
         &["Score", "score"][..],
@@ -813,6 +867,52 @@ mod tests {
         assert_eq!(session.matches_played, 1);
         assert_eq!(session.active_match_id, "old-guid");
         assert_eq!(session.mode_records[&SessionMode::Hoops].wins, 1);
+    }
+
+    #[test]
+    fn update_state_tracks_custom_team_names_and_falls_back_after_reset() {
+        let mut session = SessionState::default();
+        let data = json!({
+            "MatchGuid": "club-match",
+            "Game": {
+                "Teams": [
+                    {"Name": "The Breakfast Club", "TeamNum": 0, "Score": 2},
+                    {"Name": " Orange ", "TeamNum": 1, "Score": 1}
+                ]
+            }
+        });
+
+        session.handle_update_state(&data, Some(0), SessionMode::Threes);
+
+        assert_eq!(session.team_name(0), "The Breakfast Club");
+        assert_eq!(session.team_name(1), "Orange");
+
+        session.handle_reset_event();
+
+        assert_eq!(session.team_name(0), "Blue");
+        assert_eq!(session.team_name(1), "Orange");
+    }
+
+    #[test]
+    fn team_name_change_is_a_relevant_session_update() {
+        let session = SessionState {
+            active_match_id: "club-match".to_string(),
+            blue_team_name: "Blue".to_string(),
+            orange_team_name: "Orange".to_string(),
+            local_team: Some(0),
+            ..Default::default()
+        };
+        let data = json!({
+            "MatchGuid": "club-match",
+            "Game": {
+                "Teams": [
+                    {"Name": "New Blue Name", "TeamNum": 0, "Score": 0},
+                    {"Name": "Orange", "TeamNum": 1, "Score": 0}
+                ]
+            }
+        });
+
+        assert!(session.would_change(&data, Some(0), SessionMode::Unknown));
     }
 
     #[test]

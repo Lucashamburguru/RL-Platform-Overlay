@@ -27,15 +27,39 @@ pub struct ReplayMetadataEntry {
     pub display_name: String,
     pub player_name: String,
     pub player_names: Vec<String>,
+    pub players: Vec<ReplayPlayerMetadata>,
+    pub goals: Vec<ReplayGoalMetadata>,
     pub map_name: String,
     pub date: String,
     pub match_type: String,
     pub replay_id: String,
     pub team0_score: Option<i32>,
     pub team1_score: Option<i32>,
+    pub duration_seconds: Option<u32>,
+    pub frame_count: Option<i32>,
     pub file_size: u64,
     pub modified_unix_secs: Option<u64>,
     pub error: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ReplayPlayerMetadata {
+    pub name: String,
+    pub team: Option<i32>,
+    pub score: Option<i32>,
+    pub goals: Option<i32>,
+    pub assists: Option<i32>,
+    pub saves: Option<i32>,
+    pub shots: Option<i32>,
+    pub is_bot: Option<bool>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ReplayGoalMetadata {
+    pub player_name: String,
+    pub team: Option<i32>,
+    pub frame: Option<i32>,
+    pub elapsed_seconds: Option<u32>,
 }
 
 impl ReplayMetadataEntry {
@@ -179,6 +203,10 @@ pub fn merged_metadata_snapshot(state: &AppState) -> ReplayMetadataSnapshot {
         if let Some(local_entry) = local.entries.get(filename) {
             entry.file_size = local_entry.file_size;
             entry.modified_unix_secs = local_entry.modified_unix_secs;
+            entry.players = local_entry.players.clone();
+            entry.goals = local_entry.goals.clone();
+            entry.duration_seconds = local_entry.duration_seconds;
+            entry.frame_count = local_entry.frame_count;
         }
         merged.entries.insert(filename.clone(), entry);
     }
@@ -561,13 +589,24 @@ fn decode_windows_1252(bytes: &[u8]) -> String {
 
 pub fn apply_properties(entry: &mut ReplayMetadataEntry, properties: &[(String, HeaderProp)]) {
     entry.player_name = string_property(properties, "PlayerName").unwrap_or_default();
-    entry.player_names = player_names(properties);
+    entry.players = player_stats(properties);
+    entry.player_names = entry.players.iter().fold(Vec::new(), |mut names, player| {
+        if !player.name.trim().is_empty() && !names.contains(&player.name) {
+            names.push(player.name.clone());
+        }
+        names
+    });
+    let record_fps = replay_record_fps(properties);
+    entry.goals = replay_goals(properties, record_fps);
     entry.map_name = string_property(properties, "MapName").unwrap_or_default();
     entry.date = string_property(properties, "Date").unwrap_or_default();
     entry.match_type = string_property(properties, "MatchType").unwrap_or_default();
     entry.replay_id = string_property(properties, "Id").unwrap_or_default();
     entry.team0_score = int_property(properties, "Team0Score");
     entry.team1_score = int_property(properties, "Team1Score");
+    entry.frame_count = int_property(properties, "ReplayLastFrame")
+        .or_else(|| int_property(properties, "NumFrames"));
+    entry.duration_seconds = replay_duration_seconds(entry.frame_count, record_fps);
 
     entry.display_name = ["ReplayName", "ReplayTitle", "Title", "Name"]
         .iter()
@@ -608,23 +647,87 @@ fn prop_as_string(prop: &HeaderProp) -> Option<String> {
     }
 }
 
-fn player_names(properties: &[(String, HeaderProp)]) -> Vec<String> {
+fn bool_property(properties: &[(String, HeaderProp)], key: &str) -> Option<bool> {
+    properties
+        .iter()
+        .find(|(name, _)| name == key)
+        .and_then(|(_, prop)| prop.as_bool())
+}
+
+fn float_property(properties: &[(String, HeaderProp)], key: &str) -> Option<f32> {
+    properties
+        .iter()
+        .find(|(name, _)| name == key)
+        .and_then(|(_, prop)| prop.as_float())
+}
+
+fn player_stats(properties: &[(String, HeaderProp)]) -> Vec<ReplayPlayerMetadata> {
     properties
         .iter()
         .find(|(name, _)| name == "PlayerStats")
         .and_then(|(_, prop)| prop.as_array())
         .map(|players| {
-            let mut names = Vec::new();
+            let mut stats = Vec::new();
             for player in players {
-                if let Some(name) = string_property(player, "Name")
-                    && !names.iter().any(|existing| existing == &name)
-                {
-                    names.push(name);
+                let name = string_property(player, "Name").unwrap_or_default();
+                if !name.trim().is_empty() {
+                    stats.push(ReplayPlayerMetadata {
+                        name,
+                        team: int_property(player, "Team"),
+                        score: int_property(player, "Score"),
+                        goals: int_property(player, "Goals"),
+                        assists: int_property(player, "Assists"),
+                        saves: int_property(player, "Saves"),
+                        shots: int_property(player, "Shots"),
+                        is_bot: bool_property(player, "bBot"),
+                    });
                 }
             }
-            names
+            stats
         })
         .unwrap_or_default()
+}
+
+fn replay_goals(
+    properties: &[(String, HeaderProp)],
+    record_fps: Option<f32>,
+) -> Vec<ReplayGoalMetadata> {
+    properties
+        .iter()
+        .find(|(name, _)| name == "Goals")
+        .and_then(|(_, prop)| prop.as_array())
+        .map(|goals| {
+            goals
+                .iter()
+                .map(|goal| {
+                    let frame = int_property(goal, "frame");
+                    ReplayGoalMetadata {
+                        player_name: string_property(goal, "PlayerName").unwrap_or_default(),
+                        team: int_property(goal, "PlayerTeam"),
+                        frame,
+                        elapsed_seconds: frame.and_then(|frame| {
+                            seconds_from_frames(frame, record_fps?).filter(|_| frame >= 0)
+                        }),
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn replay_record_fps(properties: &[(String, HeaderProp)]) -> Option<f32> {
+    float_property(properties, "RecordFPS")
+        .or_else(|| int_property(properties, "RecordFPS").map(|fps| fps as f32))
+        .filter(|fps| fps.is_finite() && *fps > 0.0)
+}
+
+fn replay_duration_seconds(frame_count: Option<i32>, record_fps: Option<f32>) -> Option<u32> {
+    seconds_from_frames(frame_count.filter(|frames| *frames >= 0)?, record_fps?)
+}
+
+fn seconds_from_frames(frames: i32, fps: f32) -> Option<u32> {
+    let seconds = (frames as f32 / fps).round();
+    (seconds.is_finite() && seconds >= 0.0 && seconds <= u32::MAX as f32).then_some(seconds as u32)
 }
 
 #[cfg(test)]
@@ -633,6 +736,10 @@ mod tests {
 
     fn str_prop(key: &str, value: &str) -> (String, HeaderProp) {
         (key.to_string(), HeaderProp::Str(value.to_string()))
+    }
+
+    fn int_prop(key: &str, value: i32) -> (String, HeaderProp) {
+        (key.to_string(), HeaderProp::Int(value))
     }
 
     #[test]
@@ -669,6 +776,42 @@ mod tests {
 
         assert_eq!(entry.display_name, "Blue One");
         assert_eq!(entry.player_names, vec!["Blue One", "Orange One"]);
+    }
+
+    #[test]
+    fn extracts_player_box_scores_goal_timeline_and_duration() {
+        let mut entry = ReplayMetadataEntry::default();
+        let player_stats = HeaderProp::Array(vec![vec![
+            str_prop("Name", "Blue One"),
+            int_prop("Team", 0),
+            int_prop("Score", 515),
+            int_prop("Goals", 2),
+            int_prop("Assists", 1),
+            int_prop("Saves", 3),
+            int_prop("Shots", 4),
+            ("bBot".to_string(), HeaderProp::Bool(false)),
+        ]]);
+        let goals = HeaderProp::Array(vec![vec![
+            str_prop("PlayerName", "Blue One"),
+            int_prop("PlayerTeam", 0),
+            int_prop("frame", 900),
+        ]]);
+
+        apply_properties(
+            &mut entry,
+            &[
+                ("PlayerStats".to_string(), player_stats),
+                ("Goals".to_string(), goals),
+                int_prop("ReplayLastFrame", 1_800),
+                ("RecordFPS".to_string(), HeaderProp::Float(30.0)),
+            ],
+        );
+
+        assert_eq!(entry.duration_seconds, Some(60));
+        assert_eq!(entry.players[0].score, Some(515));
+        assert_eq!(entry.players[0].saves, Some(3));
+        assert_eq!(entry.goals[0].player_name, "Blue One");
+        assert_eq!(entry.goals[0].elapsed_seconds, Some(30));
     }
 
     fn push_i32(bytes: &mut Vec<u8>, value: i32) {

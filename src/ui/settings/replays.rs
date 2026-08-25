@@ -761,10 +761,80 @@ fn metadata_hover(filename: &str, entry: &crate::replay_metadata::ReplayMetadata
     if !entry.replay_id.trim().is_empty() {
         lines.push(format!("Replay ID: {}", entry.replay_id));
     }
-    if !entry.player_names.is_empty() {
+    if !entry.match_type.trim().is_empty() {
+        lines.push(format!("Match type: {}", entry.match_type));
+    }
+    if let Some(seconds) = entry.duration_seconds {
+        lines.push(format!("Duration: {}", replay_time_label(seconds)));
+    }
+    if !entry.players.is_empty() {
+        lines.push("Players:".to_string());
+        lines.extend(entry.players.iter().map(player_stats_label));
+    } else if !entry.player_names.is_empty() {
         lines.push(format!("Players: {}", entry.player_names.join(", ")));
     }
+    if !entry.goals.is_empty() {
+        lines.push("Goals:".to_string());
+        lines.extend(entry.goals.iter().map(goal_label));
+    }
     lines.join("\n")
+}
+
+fn player_stats_label(player: &crate::replay_metadata::ReplayPlayerMetadata) -> String {
+    let team = match player.team {
+        Some(0) => "Blue".to_string(),
+        Some(1) => "Orange".to_string(),
+        Some(team) => format!("Team {team}"),
+        None => "Unknown team".to_string(),
+    };
+    let mut stats = Vec::new();
+    if let Some(score) = player.score {
+        stats.push(format!("{score} pts"));
+    }
+    for (value, label) in [
+        (player.goals, "G"),
+        (player.assists, "A"),
+        (player.saves, "S"),
+        (player.shots, "Sh"),
+    ] {
+        if let Some(value) = value {
+            stats.push(format!("{value} {label}"));
+        }
+    }
+    let bot = if player.is_bot == Some(true) {
+        " · Bot"
+    } else {
+        ""
+    };
+    if stats.is_empty() {
+        format!("  {} · {team}{bot}", player.name)
+    } else {
+        format!("  {} · {team}{bot} · {}", player.name, stats.join(" · "))
+    }
+}
+
+fn goal_label(goal: &crate::replay_metadata::ReplayGoalMetadata) -> String {
+    let scorer = if goal.player_name.trim().is_empty() {
+        "Unknown scorer"
+    } else {
+        goal.player_name.as_str()
+    };
+    let time = goal
+        .elapsed_seconds
+        .map(replay_time_label)
+        .or_else(|| goal.frame.map(|frame| format!("frame {frame}")))
+        .unwrap_or_else(|| "unknown time".to_string());
+    let team = match goal.team {
+        Some(0) => " · Blue",
+        Some(1) => " · Orange",
+        Some(_) => " · Other team",
+        None => "",
+    };
+    format!("  {time} · {scorer}{team}")
+}
+
+fn replay_time_label(seconds: u32) -> String {
+    format!("{}:{:02}", seconds / 60, seconds % 60)
 }
 
 fn row_matches_query(row: &ReplayCacheRow, query: &str) -> bool {
@@ -878,6 +948,23 @@ mod tests {
             team0_score: Some(3),
             team1_score: Some(2),
             player_names: vec!["One".to_string(), "Two".to_string()],
+            players: vec![crate::replay_metadata::ReplayPlayerMetadata {
+                name: "One".to_string(),
+                team: Some(0),
+                score: Some(515),
+                goals: Some(2),
+                assists: Some(1),
+                saves: Some(3),
+                shots: Some(4),
+                is_bot: Some(false),
+            }],
+            goals: vec![crate::replay_metadata::ReplayGoalMetadata {
+                player_name: "One".to_string(),
+                team: Some(0),
+                frame: Some(900),
+                elapsed_seconds: Some(30),
+            }],
+            duration_seconds: Some(60),
             file_size: 1024,
             ..Default::default()
         }
@@ -913,6 +1000,9 @@ mod tests {
         assert_eq!(row.map, "Stadium_P");
         assert_eq!(row.score, "3-2");
         assert_eq!(row.players, "One + 1");
+        assert!(row.hover.contains("Duration: 1:00"));
+        assert!(row.hover.contains("515 pts · 2 G · 1 A · 3 S · 4 Sh"));
+        assert!(row.hover.contains("0:30 · One"));
     }
 
     #[test]

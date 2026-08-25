@@ -203,7 +203,7 @@ pub(crate) fn render_dashboard(ui: &mut egui::Ui, state: &Arc<AppState>, config:
         ui.allocate_ui_with_layout(
             egui::vec2(main_width, available.y),
             egui::Layout::top_down(egui::Align::Min),
-            |ui| render_team_columns(ui, state, config, &rows, team_bumps),
+            |ui| render_team_columns(ui, state, config, &rows, team_bumps, &dashboard_session),
         );
         ui.add_space(gap);
         ui.allocate_ui_with_layout(
@@ -238,7 +238,7 @@ fn render_scoreboard_hud(ui: &mut egui::Ui, session: &crate::session::SessionSta
             .inner_margin(egui::Margin::symmetric(16, 9));
         blue_tag_frame.show(ui, |ui| {
             ui.label(
-                egui::RichText::new("BLUE")
+                egui::RichText::new(session.team_name(0))
                     .strong()
                     .size(15.0)
                     .color(egui::Color32::WHITE),
@@ -293,7 +293,7 @@ fn render_scoreboard_hud(ui: &mut egui::Ui, session: &crate::session::SessionSta
             .inner_margin(egui::Margin::symmetric(16, 9));
         orange_tag_frame.show(ui, |ui| {
             ui.label(
-                egui::RichText::new("ORANGE")
+                egui::RichText::new(session.team_name(1))
                     .strong()
                     .size(15.0)
                     .color(egui::Color32::WHITE),
@@ -400,6 +400,7 @@ fn render_team_columns(
     config: &Config,
     rows: &[DashboardPlayerRow],
     team_bumps: [u32; 2],
+    session: &crate::session::SessionState,
 ) {
     if rows.is_empty() {
         render_empty_state(ui, state, config);
@@ -408,9 +409,9 @@ fn render_team_columns(
 
     ui.set_min_size(ui.available_size());
     let section_width = ui.available_width();
-    render_team_panel(ui, "Blue Team", 0, rows, config, section_width);
+    render_team_panel(ui, session.team_name(0), 0, rows, config, section_width);
     ui.add_space(14.0);
-    render_team_panel(ui, "Orange Team", 1, rows, config, section_width);
+    render_team_panel(ui, session.team_name(1), 1, rows, config, section_width);
 
     let unknown: Vec<_> = rows
         .iter()
@@ -1308,7 +1309,7 @@ fn render_empty_state(ui: &mut egui::Ui, state: &Arc<AppState>, config: &Config)
             });
         });
         ui.add_space(18.0);
-        render_team_columns(ui, state, config, &rows, [0, 0]);
+        render_team_columns(ui, state, config, &rows, [0, 0], &session);
     });
 }
 
