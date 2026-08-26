@@ -466,6 +466,8 @@ impl<'a> HeaderParser<'a> {
                 .checked_mul(-2)
                 .ok_or_else(|| format!("{section} length overflowed"))?;
             let bytes = self.take(byte_len as usize, section)?;
+            #[allow(unknown_lints)]
+            #[allow(clippy::chunks_exact_to_as_chunks)]
             let code_units: Vec<u16> = bytes
                 .chunks_exact(2)
                 .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
