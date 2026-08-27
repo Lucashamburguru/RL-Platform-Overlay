@@ -1,7 +1,7 @@
 use crate::session::SessionMode;
 use crate::state::{
-    AppState, DashboardMatchSnapshot, PlayerInfo, ReplayTouchOffset, ReplayTouchOffsetState,
-    TeammateBumpTouch, TouchCounterDebounce,
+    AppState, DashboardMatchSnapshot, PlayerInfo, PlayerMap, ReplayTouchOffset,
+    ReplayTouchOffsetState, TeammateBumpTouch, TouchCounterDebounce,
 };
 use crate::stats_api::{StatsApiTransport, TcpJsonSplitter};
 use crate::stats_api_parser::{
@@ -17,6 +17,10 @@ use tokio::net::TcpStream;
 use tokio_tungstenite::connect_async;
 
 fn clear_lobby_state(state: &AppState) {
+    state
+        .game
+        .player_roster_epoch
+        .fetch_add(1, Ordering::SeqCst);
     state.game.players.store(Arc::new(HashMap::new()));
     if let Ok(mut debounce) = state.game.touch_counter_debounce.lock() {
         debounce.clear();
@@ -264,12 +268,17 @@ fn parse_event_for_state(state: &Arc<AppState>, json: &Value) -> StatsApiEvent {
     let current_local_name = state.game.local_player_name.load();
     let cached_identity = state.game.local_player_identity.load();
     let previous_players = state.game.players.load();
+    let fallback_match_scope = format!(
+        "epoch-{}",
+        state.game.player_roster_epoch.load(Ordering::SeqCst)
+    );
     parse_stats_api_event(
         json,
         StatsApiParseContext {
             current_local_name: current_local_name.trim(),
             cached_identity: &cached_identity,
             previous_players: &previous_players,
+            fallback_match_scope: &fallback_match_scope,
         },
     )
 }
@@ -344,13 +353,7 @@ fn update_match_roster(state: &Arc<AppState>, parsed_event: &StatsApiEvent) {
         return;
     }
 
-    let frame_roster: HashMap<String, PlayerInfo> = parsed_event
-        .players
-        .values()
-        .filter_map(|player| {
-            crate::history::player_key(player).map(|key| (key.as_str().to_string(), player.clone()))
-        })
-        .collect();
+    let frame_roster = parsed_event.players.clone();
     if frame_roster.is_empty() {
         return;
     }
@@ -398,10 +401,7 @@ fn apply_local_player_update(state: &Arc<AppState>, parsed_event: &StatsApiEvent
     }
 }
 
-fn store_players_preserving_mmr(
-    state: &Arc<AppState>,
-    players: HashMap<String, PlayerInfo>,
-) -> bool {
+fn store_players_preserving_mmr(state: &Arc<AppState>, players: PlayerMap) -> bool {
     let previous_players = state.game.players.load();
     let history_roster_changed =
         RosterSignature::from_players(&previous_players) != RosterSignature::from_players(&players);
@@ -440,21 +440,16 @@ const CAR_TOUCH_DEBOUNCE_MS: u64 = 450;
 
 fn debounce_touch_counters(
     state: &Arc<AppState>,
-    players: &mut HashMap<String, PlayerInfo>,
+    players: &mut PlayerMap,
     now: std::time::Instant,
 ) {
     let Ok(mut debounce) = state.game.touch_counter_debounce.lock() else {
         return;
     };
-    debounce.retain(|key, _| {
-        players
-            .values()
-            .any(|player| touch_debounce_key(player) == *key)
-    });
+    debounce.retain(|key, _| players.contains_key(key));
 
-    for player in players.values_mut() {
-        let key = touch_debounce_key(player);
-        let entry = match debounce.entry(key) {
+    for (key, player) in players.iter_mut() {
+        let entry = match debounce.entry(key.clone()) {
             std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
             std::collections::hash_map::Entry::Vacant(entry) => {
                 let mut state = TouchCounterDebounce::new(player);
@@ -487,8 +482,8 @@ fn debounce_touch_counters(
 
 fn estimate_teammate_bumps(
     state: &Arc<AppState>,
-    previous_players: &HashMap<String, PlayerInfo>,
-    players: &HashMap<String, PlayerInfo>,
+    previous_players: &PlayerMap,
+    players: &PlayerMap,
     now: std::time::Instant,
 ) {
     let accepted_increments = accepted_car_touch_increments(previous_players, players);
@@ -553,20 +548,15 @@ fn record_replay_touch_offsets(state: &Arc<AppState>, parsed_event: &StatsApiEve
     };
 
     let previous_players = state.game.players.load();
-    let previous_by_key: HashMap<_, _> = previous_players
-        .values()
-        .map(|player| (touch_debounce_key(player), player))
-        .collect();
     let player_offsets = parsed_event
         .players
-        .values()
-        .filter_map(|player| {
-            let key = touch_debounce_key(player);
-            let previous = previous_by_key.get(&key)?;
+        .iter()
+        .filter_map(|(key, player)| {
+            let previous = previous_players.get(key)?;
             let touches = player.touches.saturating_sub(previous.touches);
             let car_touches = player.car_touches.saturating_sub(previous.car_touches);
             (touches > 0 || car_touches > 0).then_some((
-                key,
+                key.clone(),
                 ReplayTouchOffset {
                     touches,
                     car_touches,
@@ -587,7 +577,7 @@ fn record_replay_touch_offsets(state: &Arc<AppState>, parsed_event: &StatsApiEve
 fn apply_replay_touch_offsets(
     state: &Arc<AppState>,
     match_guid: Option<&str>,
-    players: &mut HashMap<String, PlayerInfo>,
+    players: &mut PlayerMap,
 ) {
     let Some(match_guid) = match_guid.map(str::trim).filter(|guid| !guid.is_empty()) else {
         return;
@@ -604,13 +594,11 @@ fn apply_replay_touch_offsets(
         return;
     }
 
-    offsets.player_offsets.retain(|key, _| {
-        players
-            .values()
-            .any(|player| touch_debounce_key(player) == *key)
-    });
-    for player in players.values_mut() {
-        let Some(offset) = offsets.player_offsets.get(&touch_debounce_key(player)) else {
+    offsets
+        .player_offsets
+        .retain(|key, _| players.contains_key(key));
+    for (key, player) in players.iter_mut() {
+        let Some(offset) = offsets.player_offsets.get(key) else {
             continue;
         };
         player.touches = player.touches.saturating_sub(offset.touches);
@@ -619,20 +607,14 @@ fn apply_replay_touch_offsets(
 }
 
 fn accepted_car_touch_increments(
-    previous_players: &HashMap<String, PlayerInfo>,
-    players: &HashMap<String, PlayerInfo>,
-) -> Vec<(String, u8)> {
-    let previous_by_key: HashMap<_, _> = previous_players
-        .values()
-        .map(|player| (touch_debounce_key(player), player.car_touches))
-        .collect();
-
+    previous_players: &PlayerMap,
+    players: &PlayerMap,
+) -> Vec<(crate::state::PlayerKey, u8)> {
     players
-        .values()
-        .filter_map(|player| {
-            let key = touch_debounce_key(player);
-            let previous = previous_by_key.get(&key)?;
-            (player.car_touches > *previous).then_some((key, player.team))
+        .iter()
+        .filter_map(|(key, player)| {
+            let previous = previous_players.get(key)?.car_touches;
+            (player.car_touches > previous).then_some((key.clone(), player.team))
         })
         .collect()
 }
@@ -660,12 +642,6 @@ fn debounced_touch_value(
     *accepted_value = raw_value;
     *last_increment_at = Some(now);
     raw_value
-}
-
-fn touch_debounce_key(player: &PlayerInfo) -> String {
-    crate::history::player_key(player)
-        .map(|key| key.as_str().to_string())
-        .unwrap_or_else(|| player.name.trim().to_ascii_lowercase())
 }
 
 fn update_session_from_event(
@@ -885,6 +861,32 @@ mod tests {
     use serde_json::json;
     use std::sync::atomic::Ordering;
 
+    fn test_player_key(name: &str) -> crate::state::PlayerKey {
+        crate::state::PlayerKey::for_match(
+            &PlayerInfo {
+                name: name.to_string(),
+                ..Default::default()
+            },
+            "test-match",
+            None,
+            0,
+        )
+    }
+
+    fn player_named<'a>(players: &'a PlayerMap, name: &str) -> &'a PlayerInfo {
+        players
+            .values()
+            .find(|player| player.name == name)
+            .unwrap_or_else(|| panic!("missing player {name}"))
+    }
+
+    fn player_named_mut<'a>(players: &'a mut PlayerMap, name: &str) -> &'a mut PlayerInfo {
+        players
+            .values_mut()
+            .find(|player| player.name == name)
+            .unwrap_or_else(|| panic!("missing player {name}"))
+    }
+
     fn handle_update_state_payload(state: &Arc<AppState>, data: &Value) {
         handle_event(state, &json!({ "Event": "UpdateState", "Data": data }));
     }
@@ -975,7 +977,7 @@ mod tests {
 
         let mut initial = std::collections::HashMap::new();
         initial.insert(
-            "Opponent".to_string(),
+            test_player_key("Opponent"),
             crate::state::PlayerInfo {
                 name: "Opponent".to_string(),
                 primary_id: "Epic|2|0".to_string(),
@@ -988,7 +990,7 @@ mod tests {
 
         let mut update_without_mmr = std::collections::HashMap::new();
         update_without_mmr.insert(
-            "Opponent".to_string(),
+            test_player_key("Opponent"),
             crate::state::PlayerInfo {
                 name: "Opponent".to_string(),
                 primary_id: "Epic|2|0".to_string(),
@@ -1001,9 +1003,9 @@ mod tests {
         store_players_preserving_mmr(&state, update_without_mmr);
 
         let players = state.game.players.load();
-        let preserved = players["Opponent"].mmr.as_ref().unwrap();
+        let preserved = player_named(&players, "Opponent").mmr.as_ref().unwrap();
         assert_eq!(preserved.playlists[&13].rating, 1234);
-        assert_eq!(players["Opponent"].boost, 80);
+        assert_eq!(player_named(&players, "Opponent").boost, 80);
     }
 
     #[test]
@@ -1012,7 +1014,7 @@ mod tests {
         let start = std::time::Instant::now();
         let mut players = HashMap::new();
         players.insert(
-            "Me".to_string(),
+            test_player_key("Me"),
             PlayerInfo {
                 name: "Me".to_string(),
                 primary_id: "Steam|1|0".to_string(),
@@ -1023,36 +1025,36 @@ mod tests {
             },
         );
         debounce_touch_counters(&state, &mut players, start);
-        assert_eq!(players["Me"].touches, 1);
-        assert_eq!(players["Me"].car_touches, 1);
+        assert_eq!(player_named(&players, "Me").touches, 1);
+        assert_eq!(player_named(&players, "Me").car_touches, 1);
 
-        players.get_mut("Me").unwrap().touches = 2;
-        players.get_mut("Me").unwrap().car_touches = 2;
+        player_named_mut(&mut players, "Me").touches = 2;
+        player_named_mut(&mut players, "Me").car_touches = 2;
         debounce_touch_counters(
             &state,
             &mut players,
             start + std::time::Duration::from_millis(199),
         );
-        assert_eq!(players["Me"].touches, 1);
-        assert_eq!(players["Me"].car_touches, 1);
+        assert_eq!(player_named(&players, "Me").touches, 1);
+        assert_eq!(player_named(&players, "Me").car_touches, 1);
 
-        players.get_mut("Me").unwrap().touches = 2;
-        players.get_mut("Me").unwrap().car_touches = 2;
+        player_named_mut(&mut players, "Me").touches = 2;
+        player_named_mut(&mut players, "Me").car_touches = 2;
         debounce_touch_counters(
             &state,
             &mut players,
             start + std::time::Duration::from_millis(200),
         );
-        assert_eq!(players["Me"].touches, 2);
-        assert_eq!(players["Me"].car_touches, 1);
+        assert_eq!(player_named(&players, "Me").touches, 2);
+        assert_eq!(player_named(&players, "Me").car_touches, 1);
 
-        players.get_mut("Me").unwrap().car_touches = 2;
+        player_named_mut(&mut players, "Me").car_touches = 2;
         debounce_touch_counters(
             &state,
             &mut players,
             start + std::time::Duration::from_millis(450),
         );
-        assert_eq!(players["Me"].car_touches, 2);
+        assert_eq!(player_named(&players, "Me").car_touches, 2);
     }
 
     #[test]
@@ -1061,7 +1063,7 @@ mod tests {
         let start = std::time::Instant::now();
         let mut players = HashMap::new();
         players.insert(
-            "Me".to_string(),
+            test_player_key("Me"),
             PlayerInfo {
                 name: "Me".to_string(),
                 primary_id: "Steam|1|0".to_string(),
@@ -1073,16 +1075,16 @@ mod tests {
         );
         debounce_touch_counters(&state, &mut players, start);
 
-        players.get_mut("Me").unwrap().touches = 0;
-        players.get_mut("Me").unwrap().car_touches = 0;
+        player_named_mut(&mut players, "Me").touches = 0;
+        player_named_mut(&mut players, "Me").car_touches = 0;
         debounce_touch_counters(
             &state,
             &mut players,
             start + std::time::Duration::from_millis(20),
         );
 
-        assert_eq!(players["Me"].touches, 0);
-        assert_eq!(players["Me"].car_touches, 0);
+        assert_eq!(player_named(&players, "Me").touches, 0);
+        assert_eq!(player_named(&players, "Me").car_touches, 0);
     }
 
     fn touch_player(name: &str, team: u8, car_touches: u32) -> PlayerInfo {
@@ -1099,11 +1101,11 @@ mod tests {
         let state = AppState::new();
         let start = std::time::Instant::now();
         let mut previous = HashMap::new();
-        previous.insert("BlueOne".to_string(), touch_player("BlueOne", 0, 2));
-        previous.insert("BlueTwo".to_string(), touch_player("BlueTwo", 0, 4));
+        previous.insert(test_player_key("BlueOne"), touch_player("BlueOne", 0, 2));
+        previous.insert(test_player_key("BlueTwo"), touch_player("BlueTwo", 0, 4));
 
         let mut players = previous.clone();
-        players.get_mut("BlueOne").unwrap().car_touches = 3;
+        player_named_mut(&mut players, "BlueOne").car_touches = 3;
         estimate_teammate_bumps(&state, &previous, &players, start);
         assert_eq!(
             state
@@ -1116,7 +1118,7 @@ mod tests {
         );
 
         previous = players.clone();
-        players.get_mut("BlueTwo").unwrap().car_touches = 5;
+        player_named_mut(&mut players, "BlueTwo").car_touches = 5;
         estimate_teammate_bumps(
             &state,
             &previous,
@@ -1140,14 +1142,17 @@ mod tests {
         let state = AppState::new();
         let start = std::time::Instant::now();
         let mut previous = HashMap::new();
-        previous.insert("BlueOne".to_string(), touch_player("BlueOne", 0, 1));
-        previous.insert("BlueTwo".to_string(), touch_player("BlueTwo", 0, 1));
-        previous.insert("OrangeOne".to_string(), touch_player("OrangeOne", 1, 1));
+        previous.insert(test_player_key("BlueOne"), touch_player("BlueOne", 0, 1));
+        previous.insert(test_player_key("BlueTwo"), touch_player("BlueTwo", 0, 1));
+        previous.insert(
+            test_player_key("OrangeOne"),
+            touch_player("OrangeOne", 1, 1),
+        );
 
         let mut players = previous.clone();
-        players.get_mut("BlueOne").unwrap().car_touches = 2;
-        players.get_mut("BlueTwo").unwrap().car_touches = 2;
-        players.get_mut("OrangeOne").unwrap().car_touches = 2;
+        player_named_mut(&mut players, "BlueOne").car_touches = 2;
+        player_named_mut(&mut players, "BlueTwo").car_touches = 2;
+        player_named_mut(&mut players, "OrangeOne").car_touches = 2;
         estimate_teammate_bumps(&state, &previous, &players, start);
 
         assert_eq!(
@@ -1166,8 +1171,8 @@ mod tests {
         let state = AppState::new();
         let start = std::time::Instant::now();
         let mut previous = HashMap::new();
-        previous.insert("BlueOne".to_string(), touch_player("BlueOne", 0, 1));
-        previous.insert("BlueTwo".to_string(), touch_player("BlueTwo", 0, 1));
+        previous.insert(test_player_key("BlueOne"), touch_player("BlueOne", 0, 1));
+        previous.insert(test_player_key("BlueTwo"), touch_player("BlueTwo", 0, 1));
 
         let players = previous.clone();
         estimate_teammate_bumps(&state, &previous, &players, start);
@@ -1238,8 +1243,8 @@ mod tests {
 
         let snapshot = state.game.dashboard_match_snapshot.load();
         assert_eq!(snapshot.match_guid, "match-one");
-        assert_eq!(snapshot.players["Me"].score, 700);
-        assert_eq!(snapshot.players["Opponent"].score, 300);
+        assert_eq!(player_named(&snapshot.players, "Me").score, 700);
+        assert_eq!(player_named(&snapshot.players, "Opponent").score, 300);
         assert_eq!(snapshot.session.blue_score, 2);
         drop(snapshot);
 
@@ -1260,7 +1265,7 @@ mod tests {
 
         let snapshot = state.game.dashboard_match_snapshot.load();
         assert_eq!(snapshot.match_guid, "match-one");
-        assert_eq!(snapshot.players["Opponent"].score, 300);
+        assert_eq!(player_named(&snapshot.players, "Opponent").score, 300);
     }
 
     #[test]
@@ -1359,18 +1364,18 @@ mod tests {
         assert!(state.game.session.load().is_watching_replay);
 
         let players = state.game.players.load();
-        assert_eq!(players["Me"].score, 300);
-        assert_eq!(players["Me"].touches, 4);
-        assert_eq!(players["Me"].car_touches, 2);
-        assert_eq!(players["Mate"].score, 100);
-        assert_eq!(players["Mate"].touches, 2);
-        assert_eq!(players["Mate"].car_touches, 1);
+        assert_eq!(player_named(&players, "Me").score, 300);
+        assert_eq!(player_named(&players, "Me").touches, 4);
+        assert_eq!(player_named(&players, "Me").car_touches, 2);
+        assert_eq!(player_named(&players, "Mate").score, 100);
+        assert_eq!(player_named(&players, "Mate").touches, 2);
+        assert_eq!(player_named(&players, "Mate").car_touches, 1);
         drop(players);
 
         let snapshot = state.game.dashboard_match_snapshot.load();
-        assert_eq!(snapshot.players["Me"].score, 300);
-        assert_eq!(snapshot.players["Me"].touches, 4);
-        assert_eq!(snapshot.players["Me"].car_touches, 2);
+        assert_eq!(player_named(&snapshot.players, "Me").score, 300);
+        assert_eq!(player_named(&snapshot.players, "Me").touches, 4);
+        assert_eq!(player_named(&snapshot.players, "Me").car_touches, 2);
         assert_eq!(snapshot.team_bumps, [0, 0]);
     }
 
@@ -1451,8 +1456,8 @@ mod tests {
         );
 
         let players = state.game.players.load();
-        assert_eq!(players["Me"].touches, 4);
-        assert_eq!(players["Me"].car_touches, 2);
+        assert_eq!(player_named(&players, "Me").touches, 4);
+        assert_eq!(player_named(&players, "Me").car_touches, 2);
         drop(players);
 
         handle_update_state_payload(
@@ -1480,8 +1485,8 @@ mod tests {
         );
 
         let players = state.game.players.load();
-        assert_eq!(players["Me"].touches, 5);
-        assert_eq!(players["Me"].car_touches, 3);
+        assert_eq!(player_named(&players, "Me").touches, 5);
+        assert_eq!(player_named(&players, "Me").car_touches, 3);
     }
 
     #[test]
@@ -1515,10 +1520,10 @@ mod tests {
 
         let players = state.game.players.load();
         assert_eq!(&**state.game.local_player_name.load(), "Me");
-        assert!(players["Me"].is_local);
-        assert_eq!(players["Me"].team, 1);
-        assert_eq!(players["Mate"].boost, 88);
-        assert!(!players["Opponent"].is_local);
+        assert!(player_named(&players, "Me").is_local);
+        assert_eq!(player_named(&players, "Me").team, 1);
+        assert_eq!(player_named(&players, "Mate").boost, 88);
+        assert!(!player_named(&players, "Opponent").is_local);
     }
 
     #[test]
@@ -1559,9 +1564,9 @@ mod tests {
         let players = state.game.players.load();
         assert_eq!(&**state.game.local_player_name.load(), "cyberPeng");
         assert_eq!(state.game.local_team.load(Ordering::SeqCst), 0);
-        assert!(players["cyberPeng"].is_local);
-        assert_eq!(players["C-Block"].team, 0);
-        assert_eq!(players["C-Block"].boost, 88);
+        assert!(player_named(&players, "cyberPeng").is_local);
+        assert_eq!(player_named(&players, "C-Block").team, 0);
+        assert_eq!(player_named(&players, "C-Block").boost, 88);
     }
 
     #[test]
@@ -1589,9 +1594,9 @@ mod tests {
         handle_update_state_payload(&state, &data);
 
         let players = state.game.players.load();
-        assert!(players["CachedName"].is_local);
+        assert!(player_named(&players, "CachedName").is_local);
         assert_eq!(state.game.local_team.load(Ordering::SeqCst), 1);
-        assert!(!players["Opponent"].is_local);
+        assert!(!player_named(&players, "Opponent").is_local);
     }
 
     #[test]
@@ -1629,7 +1634,7 @@ mod tests {
 
         let players = state.game.players.load();
         // The spectated player should not be marked as local
-        assert!(!players["SpectatedPlayer"].is_local);
+        assert!(!player_named(&players, "SpectatedPlayer").is_local);
         // The local player identity should still be MyRealName
         assert_eq!(state.game.local_player_identity.load().name, "MyRealName");
         assert_eq!(**state.game.local_player_name.load(), "MyRealName");
@@ -1982,7 +1987,7 @@ mod tests {
         let players = state.game.players.load();
         assert_eq!(&**state.game.local_player_name.load(), "cyberPeng");
         assert_eq!(state.game.local_team.load(Ordering::SeqCst), 0);
-        assert!(players["cyberPeng"].is_local);
+        assert!(player_named(&players, "cyberPeng").is_local);
         let session = state.game.session.load();
         assert_eq!(session.active_mode, crate::session::SessionMode::Freeplay);
         assert_eq!(session.matches_played, 0);
@@ -2111,7 +2116,7 @@ mod tests {
         let players = state.game.players.load();
         assert_eq!(&**state.game.local_player_name.load(), "WindowsPlayer");
         assert_eq!(state.game.local_team.load(Ordering::SeqCst), 1);
-        assert!(players["WindowsPlayer"].is_local);
+        assert!(player_named(&players, "WindowsPlayer").is_local);
         drop(players);
 
         let session = state.game.session.load();
@@ -2388,8 +2393,8 @@ mod tests {
             first_roster_change
         );
         let players = state.game.players.load();
-        assert_eq!(players["Me"].boost, 99);
-        assert_eq!(players["Me"].score, 300);
+        assert_eq!(player_named(&players, "Me").boost, 99);
+        assert_eq!(player_named(&players, "Me").score, 300);
     }
 
     #[test]

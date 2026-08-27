@@ -1,4 +1,4 @@
-use crate::state::{AppState, PlayerInfo};
+use crate::state::{AppState, PlayerInfo, PlayerKey, PlayerMap};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -285,11 +285,11 @@ fn extract_tracker_stats(payload: &Value) -> Option<TrackerSnapshot> {
     Some(snapshot)
 }
 
-type CachedTrackerPlayer = Option<(String, TrackerSnapshot)>;
-type PendingTrackerPlayer = Option<(String, String, TrackerPlayer)>;
+type CachedTrackerPlayer = Option<(PlayerKey, TrackerSnapshot)>;
+type PendingTrackerPlayer = Option<(PlayerKey, String, TrackerPlayer)>;
 
 fn select_next_player(
-    players: &HashMap<String, PlayerInfo>,
+    players: &PlayerMap,
     mmr_cache: &mut HashMap<String, MmrCacheEntry>,
     fetching_players: &mut std::collections::HashSet<String>,
     failed_fetches: &HashMap<String, Instant>,
@@ -299,20 +299,20 @@ fn select_next_player(
     }
     let mut target_player = None;
     let mut cached_player = None;
-    for (name, info) in players.iter() {
+    for (player_key, info) in players.iter() {
         // Only fetch for supported platforms and non-bots
         if info.is_local || info.is_bot {
             continue;
         }
 
-        let Some((cache_key, tracker_player)) = tracker_player_from_info(name, info) else {
+        let Some((cache_key, tracker_player)) = tracker_player_from_info(info) else {
             continue;
         };
 
         if let Some(cache_entry) = mmr_cache.get(&cache_key) {
             if cache_entry.fetched_at.elapsed() < MMR_CACHE_TTL {
                 if info.mmr.is_none() {
-                    cached_player = Some((name.clone(), cache_entry.snapshot.clone()));
+                    cached_player = Some((player_key.clone(), cache_entry.snapshot.clone()));
                     break;
                 } else {
                     continue;
@@ -332,7 +332,7 @@ fn select_next_player(
             continue;
         }
 
-        target_player = Some((name.clone(), cache_key, tracker_player));
+        target_player = Some((player_key.clone(), cache_key, tracker_player));
         break;
     }
     (cached_player, target_player)
@@ -340,14 +340,14 @@ fn select_next_player(
 
 fn apply_player_mmr(
     state: &AppState,
-    name: &str,
+    player_key: &PlayerKey,
     snapshot: TrackerSnapshot,
     only_if_missing: bool,
 ) {
     state.game.players.rcu(|players| {
         let mut players_map = (**players).clone();
         if let Some(player_info) = players_map
-            .get_mut(name)
+            .get_mut(player_key)
             .filter(|p| !p.is_local && (!only_if_missing || p.mmr.is_none()))
         {
             player_info.mmr = Some(snapshot.clone());
@@ -409,12 +409,13 @@ pub fn start_mmr_fetch_task(state: Arc<AppState>) {
                 )
             };
 
-            if let Some((name, snapshot)) = cached_player {
-                apply_player_mmr(&state, &name, snapshot, true);
+            if let Some((player_key, snapshot)) = cached_player {
+                apply_player_mmr(&state, &player_key, snapshot, true);
                 continue;
             }
 
-            if let Some((name, cache_key, tracker_player)) = target_player {
+            if let Some((player_key, cache_key, tracker_player)) = target_player {
+                let name = tracker_player.player_name.clone();
                 fetching_players.insert(cache_key.clone());
                 append_tracker_log(
                     &state,
@@ -444,7 +445,7 @@ pub fn start_mmr_fetch_task(state: Arc<AppState>) {
                                 fetched_at: Instant::now(),
                             },
                         );
-                        apply_player_mmr(&state, &name, snapshot, false);
+                        apply_player_mmr(&state, &player_key, snapshot, false);
                         fetching_players.remove(&cache_key);
                     }
                     Err(e) => {
@@ -467,7 +468,7 @@ pub fn start_mmr_fetch_task(state: Arc<AppState>) {
                                         fetched_at: Instant::now(),
                                     },
                                 );
-                                apply_player_mmr(&state, &name, snapshot, false);
+                                apply_player_mmr(&state, &player_key, snapshot, false);
                                 fetching_players.remove(&cache_key);
                             }
                             MmrError::HttpStatus(429) => {
@@ -531,7 +532,7 @@ pub fn start_mmr_fetch_task(state: Arc<AppState>) {
     });
 }
 
-fn tracker_player_from_info(name: &str, info: &PlayerInfo) -> Option<(String, TrackerPlayer)> {
+fn tracker_player_from_info(info: &PlayerInfo) -> Option<(String, TrackerPlayer)> {
     let platform_lower = info.platform.to_lowercase();
     if info.is_local || info.is_bot || platform_lower == "bot" || platform_lower == "unknown" {
         return None;
@@ -545,9 +546,9 @@ fn tracker_player_from_info(name: &str, info: &PlayerInfo) -> Option<(String, Tr
         .nth(1)
         .filter(|id| !id.trim().is_empty())
         .map(|id| id.to_string())
-        .unwrap_or_else(|| name.to_string());
+        .unwrap_or_else(|| info.name.clone());
     let cache_key = if info.primary_id.trim().is_empty() {
-        format!("{}|{}", platform_lower, name.to_lowercase())
+        format!("{}|{}", platform_lower, info.name.to_lowercase())
     } else {
         info.primary_id.to_lowercase()
     };
@@ -556,7 +557,7 @@ fn tracker_player_from_info(name: &str, info: &PlayerInfo) -> Option<(String, Tr
         cache_key,
         TrackerPlayer {
             platform: info.platform.clone(),
-            player_name: name.to_string(),
+            player_name: info.name.clone(),
             player_id: actual_id,
         },
     ))
@@ -673,7 +674,7 @@ fn tracker_player_from_identity(
         platform: identity.platform.clone(),
         ..Default::default()
     };
-    tracker_player_from_info(&identity.name, &info)
+    tracker_player_from_info(&info)
 }
 
 fn append_tracker_log(state: &AppState, message: String) {
@@ -698,7 +699,13 @@ fn append_tracker_log(state: &AppState, message: String) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::{LocalPlayerIdentity, PlayerInfo};
+    use crate::state::{LocalPlayerIdentity, PlayerInfo, PlayerKey, PlayerMap};
+
+    fn insert_player(players: &mut PlayerMap, player: PlayerInfo) -> PlayerKey {
+        let key = PlayerKey::from_account(&player).expect("test player needs account identity");
+        players.insert(key.clone(), player);
+        key
+    }
 
     #[tokio::test]
     #[ignore = "hits live tracker.gg endpoints"]
@@ -812,7 +819,7 @@ mod tests {
             ..Default::default()
         };
 
-        assert!(tracker_player_from_info("Me", &info).is_none());
+        assert!(tracker_player_from_info(&info).is_none());
     }
 
     #[test]
@@ -824,7 +831,7 @@ mod tests {
             ..Default::default()
         };
 
-        let (cache_key, player) = tracker_player_from_info("Opponent", &info).unwrap();
+        let (cache_key, player) = tracker_player_from_info(&info).unwrap();
 
         assert_eq!(cache_key, "steam|76561198000000000|0");
         assert_eq!(player.player_id, "76561198000000000");
@@ -833,9 +840,9 @@ mod tests {
 
     #[test]
     fn test_select_next_player_cooldown() {
-        let mut players = HashMap::new();
-        players.insert(
-            "Player1".to_string(),
+        let mut players = PlayerMap::new();
+        insert_player(
+            &mut players,
             PlayerInfo {
                 name: "Player1".to_string(),
                 primary_id: "Epic|player1|0".to_string(),
@@ -843,8 +850,8 @@ mod tests {
                 ..Default::default()
             },
         );
-        players.insert(
-            "Player2".to_string(),
+        insert_player(
+            &mut players,
             PlayerInfo {
                 name: "Player2".to_string(),
                 primary_id: "Epic|player2|0".to_string(),
@@ -864,16 +871,13 @@ mod tests {
             &mut fetching_players,
             &failed_fetches,
         );
-        let selected_name = target.unwrap().0;
-        assert!(selected_name == "Player1" || selected_name == "Player2");
+        let (selected_key, selected_cache_key, selected_player) = target.unwrap();
+        assert!(
+            selected_player.player_name == "Player1" || selected_player.player_name == "Player2"
+        );
 
         // 2. Put the selected player on cooldown in failed_fetches.
-        let cache_key = if selected_name == "Player1" {
-            "epic|player1|0".to_string()
-        } else {
-            "epic|player2|0".to_string()
-        };
-        failed_fetches.insert(cache_key, Instant::now() + Duration::from_secs(60));
+        failed_fetches.insert(selected_cache_key, Instant::now() + Duration::from_secs(60));
 
         // 3. Select again, the other player must be chosen because the first one is on cooldown.
         let (_, target2) = select_next_player(
@@ -882,9 +886,42 @@ mod tests {
             &mut fetching_players,
             &failed_fetches,
         );
-        let second_selected_name = target2.unwrap().0;
-        assert_ne!(selected_name, second_selected_name);
-        assert!(second_selected_name == "Player1" || second_selected_name == "Player2");
+        let (second_key, _, second_player) = target2.unwrap();
+        assert_ne!(selected_key, second_key);
+        assert!(second_player.player_name == "Player1" || second_player.player_name == "Player2");
+    }
+
+    #[test]
+    fn player_mmr_result_is_discarded_after_same_name_identity_changes() {
+        let state = AppState::new();
+        let mut initial = PlayerMap::new();
+        let old_key = insert_player(
+            &mut initial,
+            PlayerInfo {
+                name: "SameName".to_string(),
+                primary_id: "Epic|old-account|0".to_string(),
+                platform: "Epic".to_string(),
+                ..Default::default()
+            },
+        );
+        state.game.players.store(Arc::new(initial));
+
+        let mut replacement = PlayerMap::new();
+        let replacement_key = insert_player(
+            &mut replacement,
+            PlayerInfo {
+                name: "SameName".to_string(),
+                primary_id: "Epic|new-account|0".to_string(),
+                platform: "Epic".to_string(),
+                ..Default::default()
+            },
+        );
+        state.game.players.store(Arc::new(replacement));
+
+        apply_player_mmr(&state, &old_key, TrackerSnapshot::default(), false);
+
+        let players = state.game.players.load();
+        assert!(players[&replacement_key].mmr.is_none());
     }
 
     #[test]

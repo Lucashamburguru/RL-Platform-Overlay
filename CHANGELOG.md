@@ -10,11 +10,13 @@ All notable changes to this project will be documented in this file.
 ### Changed
 - **Reproducible Build Toolchain**: Pins Rust 1.98 with required formatting and lint components, uses the lockfile consistently, and shares one canonical check script across local development, CI, and release builds.
 - **Safer Release Automation**: Builds all platform artifacts before a single publish job creates the GitHub release, and replaces the release helper with changelog promotion, clean-tree validation, exact file staging, annotated tags, and explicit pushes.
+- **Stable Player Identity**: Keys live player state by normalized platform and account identity, with match-scoped fallbacks for bots and temporarily unidentified players, so duplicate display names remain distinct throughout a match.
 
 ### Fixed
 - **Dependency Advisories**: Updates compatible `crossbeam-epoch` and `webbrowser` releases while documenting time-bounded exceptions for transitive `quick-xml` advisories that require a future GUI stack upgrade.
 - **Replay Trust Validation**: Fully parses replay containers and verifies header/body CRCs before uploads, download acceptance, local duplicate suppression, or in-place Hoops repair, while leaving fast library metadata scans header-only.
 - **Hoops Fixer Integrity**: Requires a recognized legacy token replacement, rejects corrupt inputs and invalid outputs, verifies existing backups match the replay being replaced, and refuses invalid backups during restoration.
+- **Identity-Safe MMR Results**: Discards delayed player MMR responses when the captured account is no longer in the roster, even if its replacement uses the same display name.
 
 ---
 

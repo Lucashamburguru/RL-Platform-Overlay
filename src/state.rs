@@ -834,10 +834,77 @@ pub struct PlayerInfo {
     pub mmr: Option<TrackerSnapshot>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PlayerKey(String);
+
+impl PlayerKey {
+    pub fn from_account(player: &PlayerInfo) -> Option<Self> {
+        if player.is_bot {
+            return None;
+        }
+
+        let name = player.name.trim();
+        let primary_id = player.primary_id.trim();
+        let platform = player.platform.trim();
+        if name.is_empty()
+            || primary_id.is_empty()
+            || primary_id.eq_ignore_ascii_case("Unknown|0|0")
+            || platform.is_empty()
+            || platform.eq_ignore_ascii_case("Unknown")
+            || platform.eq_ignore_ascii_case("BOT")
+        {
+            return None;
+        }
+
+        Some(Self(format!(
+            "{}:{}",
+            platform.to_ascii_lowercase(),
+            primary_id.to_ascii_lowercase()
+        )))
+    }
+
+    pub fn for_match(
+        player: &PlayerInfo,
+        match_scope: &str,
+        shortcut: Option<i64>,
+        roster_index: usize,
+    ) -> Self {
+        if let Some(key) = Self::from_account(player) {
+            return key;
+        }
+
+        let scope = normalized_key_part(match_scope, "pending");
+        let platform = normalized_key_part(&player.platform, "unknown");
+        let name = normalized_key_part(&player.name, "player");
+        let discriminator = shortcut
+            .map(|value| format!("shortcut-{value}"))
+            .unwrap_or_else(|| format!("slot-{roster_index}"));
+        Self(format!(
+            "match:{scope}:{platform}:{}:{name}:{discriminator}",
+            player.team
+        ))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+fn normalized_key_part(value: &str, fallback: &str) -> String {
+    let normalized = value.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        fallback.to_string()
+    } else {
+        normalized.replace(':', "%3a")
+    }
+}
+
+pub type PlayerMap = HashMap<PlayerKey, PlayerInfo>;
+
 #[derive(Clone, Debug, Default)]
 pub struct DashboardMatchSnapshot {
     pub match_guid: String,
-    pub players: HashMap<String, PlayerInfo>,
+    pub players: PlayerMap,
     pub session: SessionState,
     pub local_team: Option<u8>,
     pub team_bumps: [u32; 2],
@@ -866,12 +933,12 @@ pub struct ReplayTouchOffset {
 #[derive(Clone, Debug, Default)]
 pub struct ReplayTouchOffsetState {
     pub match_guid: String,
-    pub player_offsets: HashMap<String, ReplayTouchOffset>,
+    pub player_offsets: HashMap<PlayerKey, ReplayTouchOffset>,
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct TeammateBumpEstimateState {
-    pub pending: HashMap<String, TeammateBumpTouch>,
+    pub pending: HashMap<PlayerKey, TeammateBumpTouch>,
     pub team_bumps: [u32; 2],
 }
 
@@ -1000,12 +1067,13 @@ pub struct GameLobbyState {
     pub local_player_name: ArcSwap<String>,
     pub local_player_identity: ArcSwap<LocalPlayerIdentity>,
     pub local_team: std::sync::atomic::AtomicU8,
-    pub players: ArcSwap<HashMap<String, PlayerInfo>>,
-    pub touch_counter_debounce: std::sync::Mutex<HashMap<String, TouchCounterDebounce>>,
+    pub player_roster_epoch: AtomicU64,
+    pub players: ArcSwap<PlayerMap>,
+    pub touch_counter_debounce: std::sync::Mutex<HashMap<PlayerKey, TouchCounterDebounce>>,
     pub teammate_bump_estimator: std::sync::Mutex<TeammateBumpEstimateState>,
     pub replay_touch_offsets: std::sync::Mutex<ReplayTouchOffsetState>,
     pub dashboard_match_snapshot: ArcSwap<DashboardMatchSnapshot>,
-    pub match_roster: ArcSwap<HashMap<String, PlayerInfo>>,
+    pub match_roster: ArcSwap<PlayerMap>,
     pub match_roster_guid: ArcSwap<String>,
     pub session: ArcSwap<SessionState>,
 }
@@ -1125,6 +1193,7 @@ impl AppState {
                 local_player_name: ArcSwap::from_pointee("".to_string()),
                 local_player_identity: ArcSwap::from_pointee(cached_local_player_identity),
                 local_team: std::sync::atomic::AtomicU8::new(NO_TEAM),
+                player_roster_epoch: AtomicU64::new(0),
                 players: ArcSwap::from_pointee(HashMap::new()),
                 touch_counter_debounce: std::sync::Mutex::new(HashMap::new()),
                 teammate_bump_estimator: std::sync::Mutex::new(TeammateBumpEstimateState::default()),

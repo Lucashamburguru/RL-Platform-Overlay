@@ -1,5 +1,5 @@
 use crate::session::{MatchResult, SessionMode, SessionState};
-use crate::state::{AppState, NO_TEAM, PlayerInfo, config_dir};
+use crate::state::{AppState, NO_TEAM, PlayerInfo, PlayerKey, config_dir};
 use rusqlite::{Connection, OptionalExtension, params};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -78,38 +78,8 @@ pub struct HistoryPlayersSnapshot {
     pub error: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PlayerKey(String);
-
-impl PlayerKey {
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
 pub fn player_key(player: &PlayerInfo) -> Option<PlayerKey> {
-    if player.is_bot {
-        return None;
-    }
-
-    let name = player.name.trim();
-    let primary_id = player.primary_id.trim();
-    let platform = player.platform.trim();
-    if name.is_empty()
-        || primary_id.is_empty()
-        || primary_id.eq_ignore_ascii_case("Unknown|0|0")
-        || platform.is_empty()
-        || platform.eq_ignore_ascii_case("Unknown")
-        || platform.eq_ignore_ascii_case("BOT")
-    {
-        return None;
-    }
-
-    Some(PlayerKey(format!(
-        "{}:{}",
-        platform.to_ascii_lowercase(),
-        primary_id.to_ascii_lowercase()
-    )))
+    PlayerKey::from_account(player)
 }
 
 fn with_connection<F, T>(state: &AppState, f: F) -> Result<T, HistoryError>
@@ -231,7 +201,7 @@ pub fn refresh_lobby_history(state: &Arc<AppState>) {
         .values()
         .filter(|player| !is_local_history_player(player, &local_identity, &local_player_name))
         .filter_map(player_key)
-        .map(|key| key.0)
+        .map(|key| key.as_str().to_string())
         .collect();
 
     let state_clone = state.clone();

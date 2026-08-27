@@ -3,7 +3,7 @@ use crate::json_utils::{
     number_field_u32, string_field,
 };
 use crate::session::{MatchResult, SessionMode, SessionModeSource};
-use crate::state::{LocalPlayerIdentity, PlayerInfo};
+use crate::state::{LocalPlayerIdentity, PlayerInfo, PlayerKey, PlayerMap};
 use serde_json::Value;
 use std::collections::HashMap;
 
@@ -11,7 +11,8 @@ use std::collections::HashMap;
 pub struct StatsApiParseContext<'a> {
     pub current_local_name: &'a str,
     pub cached_identity: &'a LocalPlayerIdentity,
-    pub previous_players: &'a HashMap<String, PlayerInfo>,
+    pub previous_players: &'a PlayerMap,
+    pub fallback_match_scope: &'a str,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -20,7 +21,7 @@ pub struct StatsApiEvent {
     pub data: Value,
     pub match_guid: Option<String>,
     pub game: Option<Value>,
-    pub players: HashMap<String, PlayerInfo>,
+    pub players: PlayerMap,
     pub player_count: Option<usize>,
     pub local_player_hint: Option<LocalPlayerHint>,
     pub session_mode_hint: Option<String>,
@@ -103,6 +104,14 @@ pub fn parse_stats_api_data(
     context: StatsApiParseContext<'_>,
 ) -> StatsApiEvent {
     let game = data.get("Game").or_else(|| data.get("game")).cloned();
+    let match_guid = string_field(&data, &["MatchGuid", "matchGuid"])
+        .map(str::to_string)
+        .unwrap_or_default();
+    let player_scope = if match_guid.is_empty() {
+        context.fallback_match_scope
+    } else {
+        &match_guid
+    };
     let hints = game.as_ref().map(extract_game_hints).unwrap_or_default();
     let target_player_name = target_player_name(&data, &hints);
     let effective_local_name = hints
@@ -120,6 +129,7 @@ pub fn parse_stats_api_data(
         hints.has_target,
         context.cached_identity,
         context.previous_players,
+        player_scope,
     );
     let local_player_hint = players
         .values()
@@ -143,7 +153,6 @@ pub fn parse_stats_api_data(
     let (mode_player_count, player_count_source) = player_count_inference
         .map(|(count, source)| (Some(count), source))
         .unwrap_or((None, SessionModeSource::Unknown));
-    let match_guid = string_field(&data, &["MatchGuid", "matchGuid"]).map(str::to_string);
     let (session_mode_hint, mode_hint_source) = game
         .as_ref()
         .and_then(session_mode_hint_with_source)
@@ -168,14 +177,14 @@ pub fn parse_stats_api_data(
         .unwrap_or(false);
     let (blue_score, orange_score) = game.as_ref().map(team_scores).unwrap_or((0, 0));
     let score = ScoreSignature {
-        match_guid: match_guid.clone().unwrap_or_default(),
+        match_guid: match_guid.clone(),
         blue_score,
         orange_score,
         has_winner,
         winner: winner_hint.clone().unwrap_or_default(),
     };
     let mode = ModeSignature {
-        match_guid: match_guid.clone().unwrap_or_default(),
+        match_guid: match_guid.clone(),
         mode_hint: session_mode_hint.clone(),
         mode_hint_source,
         player_count: mode_player_count,
@@ -185,7 +194,7 @@ pub fn parse_stats_api_data(
     StatsApiEvent {
         event_name,
         data,
-        match_guid,
+        match_guid: (!match_guid.is_empty()).then_some(match_guid),
         game,
         players,
         player_count,
@@ -204,7 +213,7 @@ pub fn parse_stats_api_data(
 }
 
 impl RosterSignature {
-    pub fn from_players(players: &HashMap<String, PlayerInfo>) -> Self {
+    pub fn from_players(players: &PlayerMap) -> Self {
         let mut signature: Vec<_> = players
             .values()
             .filter_map(|player| {
@@ -397,8 +406,9 @@ fn parse_players(
     current_local_name: &str,
     has_target: bool,
     cached_identity: &LocalPlayerIdentity,
-    previous_players: &HashMap<String, PlayerInfo>,
-) -> HashMap<String, PlayerInfo> {
+    previous_players: &PlayerMap,
+    match_scope: &str,
+) -> PlayerMap {
     let Some(players) = data
         .get("Players")
         .or_else(|| data.get("players"))
@@ -408,17 +418,21 @@ fn parse_players(
     };
 
     let mut parsed = HashMap::new();
-    for player_payload in players {
-        let Some(player) = parse_player_info(
+    for (roster_index, player_payload) in players.iter().enumerate() {
+        let Some(mut player) = parse_player_info(
             player_payload,
             current_local_name,
             has_target,
             cached_identity,
-            previous_players,
         ) else {
             continue;
         };
-        parsed.insert(player.name.clone(), player);
+        let shortcut = number_field(player_payload, &["Shortcut", "shortcut"]);
+        let key = PlayerKey::for_match(&player, match_scope, shortcut, roster_index);
+        player.mmr = previous_players
+            .get(&key)
+            .and_then(|previous| previous.mmr.clone());
+        parsed.insert(key, player);
     }
     parsed
 }
@@ -497,7 +511,6 @@ fn parse_player_info(
     current_local_name: &str,
     has_target: bool,
     cached_identity: &LocalPlayerIdentity,
-    previous_players: &HashMap<String, PlayerInfo>,
 ) -> Option<PlayerInfo> {
     let name = string_field(player_payload, &["Name", "name"])
         .unwrap_or("")
@@ -547,9 +560,7 @@ fn parse_player_info(
         car_touches: number_field_u32(player_payload, &["CarTouches", "carTouches", "car_touches"])
             .unwrap_or(0),
         demos: number_field_u32(player_payload, &["Demos", "demos"]).unwrap_or(0),
-        mmr: previous_players
-            .get(&name)
-            .and_then(|prev| prev.mmr.clone()),
+        mmr: None,
     })
 }
 
@@ -662,14 +673,34 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    fn player_named<'a>(players: &'a PlayerMap, name: &str) -> &'a PlayerInfo {
+        players
+            .values()
+            .find(|player| player.name == name)
+            .unwrap_or_else(|| panic!("missing player {name}"))
+    }
+
+    fn player_named_mut<'a>(players: &'a mut PlayerMap, name: &str) -> &'a mut PlayerInfo {
+        players
+            .values_mut()
+            .find(|player| player.name == name)
+            .unwrap_or_else(|| panic!("missing player {name}"))
+    }
+
+    fn player_map(player: PlayerInfo) -> PlayerMap {
+        let key = PlayerKey::from_account(&player).expect("test player needs account identity");
+        HashMap::from([(key, player)])
+    }
+
     fn context<'a>(
         cached_identity: &'a LocalPlayerIdentity,
-        previous_players: &'a HashMap<String, PlayerInfo>,
+        previous_players: &'a PlayerMap,
     ) -> StatsApiParseContext<'a> {
         StatsApiParseContext {
             current_local_name: "",
             cached_identity,
             previous_players,
+            fallback_match_scope: "test-epoch",
         }
     }
 
@@ -722,7 +753,74 @@ mod tests {
         assert_eq!(event.score.orange_score, 1);
         assert_eq!(event.winner_hint.as_deref(), Some("Blue"));
         assert_eq!(event.local_player_hint.as_ref().unwrap().name, "Me");
-        assert_eq!(event.players["Me"].boost, 82);
+        assert_eq!(player_named(&event.players, "Me").boost, 82);
+    }
+
+    #[test]
+    fn duplicate_display_names_keep_distinct_account_keys() {
+        let identity = LocalPlayerIdentity::default();
+        let previous = PlayerMap::new();
+        let event = parse_stats_api_event(
+            &json!({
+                "Event": "UpdateState",
+                "Data": {
+                    "MatchGuid": "same-name-match",
+                    "Players": [
+                        {"Name": "Duplicate", "PrimaryId": "Steam|111|0", "TeamNum": 0},
+                        {"Name": "Duplicate", "PrimaryId": "Epic|222|0", "TeamNum": 1}
+                    ]
+                }
+            }),
+            context(&identity, &previous),
+        );
+
+        assert_eq!(event.players.len(), 2);
+        assert!(
+            event
+                .players
+                .values()
+                .all(|player| player.name == "Duplicate")
+        );
+        assert!(
+            event
+                .players
+                .keys()
+                .any(|key| key.as_str() == "steam:steam|111|0")
+        );
+        assert!(
+            event
+                .players
+                .keys()
+                .any(|key| key.as_str() == "epic:epic|222|0")
+        );
+    }
+
+    #[test]
+    fn incomplete_identity_fallbacks_are_distinct_and_match_scoped() {
+        fn parse_fallbacks(match_guid: &str) -> PlayerMap {
+            let identity = LocalPlayerIdentity::default();
+            let previous = PlayerMap::new();
+            parse_stats_api_event(
+                &json!({
+                    "Event": "UpdateState",
+                    "Data": {
+                        "MatchGuid": match_guid,
+                        "Players": [
+                            {"Name": "Bot", "PrimaryId": "Unknown|0|0", "Shortcut": 7, "TeamNum": 0},
+                            {"Name": "Bot", "PrimaryId": "Unknown|0|0", "Shortcut": 8, "TeamNum": 0}
+                        ]
+                    }
+                }),
+                context(&identity, &previous),
+            )
+            .players
+        }
+
+        let first = parse_fallbacks("match-a");
+        let second = parse_fallbacks("match-b");
+        assert_eq!(first.len(), 2);
+        assert_eq!(second.len(), 2);
+        assert!(first.keys().all(|key| !second.contains_key(key)));
     }
 
     #[test]
@@ -758,7 +856,7 @@ mod tests {
             context(&identity, &previous),
         );
 
-        let player = &event.players["Me"];
+        let player = player_named(&event.players, "Me");
         assert_eq!(event.winner_team_num, None);
         assert_eq!(event.score.blue_score, 0);
         assert_eq!(event.score.orange_score, 2);
@@ -811,7 +909,7 @@ mod tests {
             context(&identity, &previous),
         );
 
-        assert!(event.players["Renamed"].is_local);
+        assert!(player_named(&event.players, "Renamed").is_local);
         assert_eq!(event.local_player_hint.as_ref().unwrap().team, 1);
     }
 
@@ -836,8 +934,8 @@ mod tests {
             context(&identity, &previous),
         );
 
-        assert!(event.players["cyberPeng"].is_local);
-        assert!(!event.players["Opponent"].is_local);
+        assert!(player_named(&event.players, "cyberPeng").is_local);
+        assert!(!player_named(&event.players, "Opponent").is_local);
         assert_eq!(event.local_player_hint.as_ref().unwrap().name, "cyberPeng");
     }
 
@@ -872,8 +970,8 @@ mod tests {
             context(&identity, &previous),
         );
 
-        assert!(event.players["WindowsPlayer"].is_local);
-        assert!(!event.players["Opponent"].is_local);
+        assert!(player_named(&event.players, "WindowsPlayer").is_local);
+        assert!(!player_named(&event.players, "Opponent").is_local);
         assert_eq!(
             event.local_player_hint.as_ref().unwrap().name,
             "WindowsPlayer"
@@ -1001,24 +1099,20 @@ mod tests {
 
     #[test]
     fn roster_signature_ignores_boost_and_stats() {
-        let mut first = HashMap::new();
-        first.insert(
-            "Me".to_string(),
-            PlayerInfo {
-                name: "Me".to_string(),
-                primary_id: "Steam|1|0".to_string(),
-                platform: "Steam".to_string(),
-                team: 0,
-                is_local: true,
-                boost: 12,
-                score: 5,
-                ..Default::default()
-            },
-        );
+        let first = player_map(PlayerInfo {
+            name: "Me".to_string(),
+            primary_id: "Steam|1|0".to_string(),
+            platform: "Steam".to_string(),
+            team: 0,
+            is_local: true,
+            boost: 12,
+            score: 5,
+            ..Default::default()
+        });
         let mut second = first.clone();
-        second.get_mut("Me").unwrap().boost = 99;
-        second.get_mut("Me").unwrap().score = 500;
-        second.get_mut("Me").unwrap().touches = 40;
+        player_named_mut(&mut second, "Me").boost = 99;
+        player_named_mut(&mut second, "Me").score = 500;
+        player_named_mut(&mut second, "Me").touches = 40;
 
         assert_eq!(
             RosterSignature::from_players(&first),
@@ -1028,34 +1122,26 @@ mod tests {
 
     #[test]
     fn roster_signature_changes_on_identity_team_or_local_changes() {
-        let mut first = HashMap::new();
-        first.insert(
-            "Me".to_string(),
-            PlayerInfo {
-                name: "Me".to_string(),
-                primary_id: "Steam|1|0".to_string(),
-                platform: "Steam".to_string(),
-                team: 0,
-                is_local: true,
-                ..Default::default()
-            },
-        );
+        let first = player_map(PlayerInfo {
+            name: "Me".to_string(),
+            primary_id: "Steam|1|0".to_string(),
+            platform: "Steam".to_string(),
+            team: 0,
+            is_local: true,
+            ..Default::default()
+        });
         let mut team_changed = first.clone();
-        team_changed.get_mut("Me").unwrap().team = 1;
+        player_named_mut(&mut team_changed, "Me").team = 1;
         let mut local_changed = first.clone();
-        local_changed.get_mut("Me").unwrap().is_local = false;
-        let mut identity_changed = HashMap::new();
-        identity_changed.insert(
-            "Other".to_string(),
-            PlayerInfo {
-                name: "Other".to_string(),
-                primary_id: "Steam|2|0".to_string(),
-                platform: "Steam".to_string(),
-                team: 0,
-                is_local: true,
-                ..Default::default()
-            },
-        );
+        player_named_mut(&mut local_changed, "Me").is_local = false;
+        let identity_changed = player_map(PlayerInfo {
+            name: "Other".to_string(),
+            primary_id: "Steam|2|0".to_string(),
+            platform: "Steam".to_string(),
+            team: 0,
+            is_local: true,
+            ..Default::default()
+        });
 
         let original = RosterSignature::from_players(&first);
         assert_ne!(original, RosterSignature::from_players(&team_changed));
