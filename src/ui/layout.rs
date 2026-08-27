@@ -11,7 +11,7 @@ pub(super) fn render_arrange_hud_banner(ctx: &egui::Context) {
             egui::Frame::default()
                 .fill(egui::Color32::from_rgba_unmultiplied(24, 22, 15, 238))
                 .stroke(egui::Stroke::new(
-                    1.0,
+                    1.0_f32,
                     egui::Color32::from_rgb(220, 190, 90),
                 ))
                 .corner_radius(6.0)
@@ -52,7 +52,7 @@ pub(super) fn render_drag_position_handle(
     ui.painter().rect_stroke(
         rect,
         rounding,
-        egui::Stroke::new(1.0, egui::Color32::from_rgb(220, 190, 90)),
+        egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(220, 190, 90)),
         egui::StrokeKind::Inside,
     );
     ui.painter().text(

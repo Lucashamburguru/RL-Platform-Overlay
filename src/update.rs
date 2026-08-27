@@ -720,7 +720,7 @@ mod tests {
                                 "prerelease": false,
                                 "tag_name": "v999.0.0",
                                 "html_url": "https://github.com/Lucashamburguru/RL-Platform-Overlay/releases/tag/v999.0.0",
-                                "body": "## What's Changed\\n\\n- Added updater changelog",
+                                "body": "## What's Changed\n\n- Added updater changelog",
                                 "assets": [
                                     {{
                                         "name": "rl-platform-overlay.exe",

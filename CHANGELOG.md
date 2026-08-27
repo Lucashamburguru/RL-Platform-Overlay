@@ -6,7 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ---
 
-## [0.1.45] - 2026-08-26
+## [0.1.46] - 2026-08-27
 
 ### Added
 - **Setup Readiness Checklist**: Adds a live checklist to Setup for installation detection, Stats API configuration, restart status, game connection, and recent Stats API data.
@@ -17,7 +17,7 @@ All notable changes to this project will be documented in this file.
 ### Changed
 - **Render and Replay Performance**: Avoids cloning the full configuration for dashboard frames, decouples dashboard-only repaint cadence, and caches plus virtualizes large replay-cache views.
 - **Performance Diagnostics**: Records production frame timing, foreground samples, and explicit overlay CPU/memory while performance recording is enabled.
-- **Automated Release Notes**: GitHub releases now generate notes automatically so the updater can present a changelog without maintaining a second release-description source.
+- **Curated Release Notes**: Publishes the matching `CHANGELOG.md` section as the GitHub release body so the in-app updater shows the complete user-facing release without maintaining a second release-description source.
 - **Dashboard Header and Highlights**: Reflows scoreboard and status details into additional rows on narrower dashboards, and renames the cumulative Event Feed to the more accurate Match Highlights.
 - **Player-Facing README Rewrite**: Reworked the README to explain what players see in-game, how setup works, and how the app stays separate from Rocket League without sounding like a generic product page.
 - **Overlay Theme Consistency**: Normalized the visual theme across the lobby overlay, session tracker, and teammate boost HUD with shared panel, text, team, and boost colors.
@@ -28,6 +28,15 @@ All notable changes to this project will be documented in this file.
 - **Stats API Launch Readiness**: Rechecks `DefaultStatsAPI.ini` before every overlay launch path and returns users to Setup instead of opening an overlay without an enabled Stats API.
 - **Dashboard Team Name Overflow**: Truncates long API-provided team names in compact scoreboard badges without widening normal Blue/Orange labels, while preserving the full name on hover and in roster headings.
 - **Replay Header Parsing Limits**: Rejects oversized, truncated, deeply nested, or excessive replay header metadata before parsing to avoid expensive or invalid reads.
+- **Release Test Fixture**: Corrects the updater integration test's mocked GitHub release notes so CI validates decoded multiline changelog text instead of literal escape characters.
+- **Rust 1.98 Compatibility**: Makes UI stroke widths explicitly `f32` and adopts the fixed-size slice chunk API required by the latest stable Clippy checks.
+
+---
+
+## [0.1.45] - 2026-08-26
+
+### Note
+- **Unpublished Release**: The tag did not produce release artifacts because its CI run failed; all intended changes are included in `0.1.46`.
 
 ---
 
