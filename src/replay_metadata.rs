@@ -156,6 +156,7 @@ pub fn start_metadata_scan(state: Arc<AppState>, folder: String) {
                         )
                     };
                     state.replays.metadata_cache.store(Arc::new(snapshot));
+                    refresh_merged_metadata_cache(&state);
                     if let Ok(mut lock) = state.replays.metadata_status.lock() {
                         *lock = status;
                     }
@@ -193,7 +194,7 @@ pub fn start_metadata_scan(state: Arc<AppState>, folder: String) {
     });
 }
 
-pub fn merged_metadata_snapshot(state: &AppState) -> ReplayMetadataSnapshot {
+pub(crate) fn refresh_merged_metadata_cache(state: &AppState) {
     let local = state.replays.metadata_cache.load();
     let cloud = state.replays.cloud_metadata_cache.load();
     let mut merged = (**local).clone();
@@ -210,7 +211,11 @@ pub fn merged_metadata_snapshot(state: &AppState) -> ReplayMetadataSnapshot {
         }
         merged.entries.insert(filename.clone(), entry);
     }
-    merged
+    state.replays.merged_metadata_cache.store(Arc::new(merged));
+}
+
+pub fn merged_metadata_snapshot(state: &AppState) -> Arc<ReplayMetadataSnapshot> {
+    state.replays.merged_metadata_cache.load_full()
 }
 
 fn scan_folder(state: &AppState, folder: &str) -> ReplayMetadataSnapshot {
@@ -995,8 +1000,11 @@ mod tests {
                     ..Default::default()
                 },
             )])));
+        refresh_merged_metadata_cache(&state);
 
         let merged = merged_metadata_snapshot(&state);
+        let same_snapshot = merged_metadata_snapshot(&state);
+        assert!(Arc::ptr_eq(&merged, &same_snapshot));
         let entry = &merged.entries["match.replay"];
         assert_eq!(entry.display_name, "Cloud title");
         assert_eq!(entry.replay_id, "cloud-id");

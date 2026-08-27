@@ -22,6 +22,13 @@ pub(super) use replays::render_replays_settings_tab;
 pub(super) use session::render_session_settings_tab;
 pub(super) use setup::render_setup_settings_tab;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ArrangeHudAction {
+    Start,
+    Done,
+    Cancel,
+}
+
 pub(super) fn render_settings_tabs(
     ui: &mut egui::Ui,
     selected: &mut SettingsTab,
@@ -74,6 +81,20 @@ pub(super) fn render_update_notice(ui: &mut egui::Ui, state: &Arc<AppState>) {
             .strong()
             .color(egui::Color32::from_rgb(255, 226, 150)),
         );
+        egui::CollapsingHeader::new("What's new")
+            .id_salt("update_release_notes")
+            .show(ui, |ui| {
+                egui::ScrollArea::vertical()
+                    .id_salt("update_release_notes_scroll")
+                    .max_height(180.0)
+                    .show(ui, |ui| {
+                        if version_check.release_notes.is_empty() {
+                            ui.weak("No release notes were provided for this version.");
+                        } else {
+                            ui.label(version_check.release_notes.as_str());
+                        }
+                    });
+            });
         ui.horizontal(|ui| {
             #[cfg(target_os = "windows")]
             {
@@ -122,7 +143,8 @@ pub(super) fn render_launch_controls(
     config_edit: &mut crate::state::Config,
     changed: &mut bool,
     confirm_modal: &mut Option<super::app::ConfirmAction>,
-) {
+) -> Option<ArrangeHudAction> {
+    let mut arrange_action = None;
     ui.horizontal(|ui| {
         ui.set_width(ui.available_width());
         let btn_text = if is_launched {
@@ -137,9 +159,13 @@ pub(super) fn render_launch_controls(
             )
             .clicked()
         {
-            let new_val = !is_launched;
-            state.flags.is_launched.store(new_val, Ordering::SeqCst);
-            if new_val {
+            if is_launched {
+                state.flags.is_launched.store(false, Ordering::SeqCst);
+            } else if crate::input::try_launch_overlay_at_path(
+                state,
+                &config_edit.rocket_league_path,
+                "settings_button",
+            ) {
                 if config_edit.dashboard_open_with_overlay {
                     config_edit.dashboard_enabled = true;
                     *changed = true;
@@ -165,11 +191,43 @@ pub(super) fn render_launch_controls(
         });
 
         ui.add_space(8.0);
-        if ui
-            .checkbox(&mut config_edit.layout_mode, "Drag Position")
-            .changed()
+        if config_edit.layout_mode {
+            if ui
+                .add(egui::Button::new(egui::RichText::new("Done").strong()))
+                .on_hover_text("Save the current HUD positions")
+                .clicked()
+            {
+                config_edit.layout_mode = false;
+                *changed = true;
+                arrange_action = Some(ArrangeHudAction::Done);
+            }
+            if ui
+                .button("Cancel")
+                .on_hover_text("Restore the HUD positions from before arranging")
+                .clicked()
+            {
+                config_edit.layout_mode = false;
+                *changed = true;
+                arrange_action = Some(ArrangeHudAction::Cancel);
+            }
+            if ui
+                .button("Reset All")
+                .on_hover_text("Return every movable HUD panel to its default position")
+                .clicked()
+            {
+                config_edit.lobby_manual_position = None;
+                config_edit.teammate_boost_manual_position = None;
+                config_edit.session_manual_position = None;
+                *changed = true;
+            }
+        } else if ui
+            .button(egui::RichText::new("Arrange HUD").strong())
+            .on_hover_text("Preview and drag all enabled HUD panels")
+            .clicked()
         {
+            config_edit.layout_mode = true;
             *changed = true;
+            arrange_action = Some(ArrangeHudAction::Start);
         }
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -192,4 +250,5 @@ pub(super) fn render_launch_controls(
             );
         });
     });
+    arrange_action
 }

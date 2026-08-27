@@ -177,6 +177,8 @@ pub struct ProcessDiagnosticsSample {
 #[derive(Clone, Debug)]
 pub struct ResourceSnapshot {
     pub timestamp_ms: u128,
+    pub overlay_cpu_usage: f32,
+    pub overlay_memory_mb: u64,
     pub rl_cpu_usage: f32,
     pub rl_memory_mb: u64,
     pub eac_cpu_usage: f32,
@@ -653,8 +655,16 @@ pub fn write_alt_tab_diagnostics_log(
                 .collect::<Vec<_>>()
                 .join(", ");
             lines.push(format!(
-                "timestamp_ms={} rl_cpu={:.1}% rl_mem={}MB eac_cpu={:.1}% eac_mem={}MB sys_cpu={:.1}% top=[{}]",
-                s.timestamp_ms, s.rl_cpu_usage, s.rl_memory_mb, s.eac_cpu_usage, s.eac_memory_mb, s.system_cpu_usage, top
+                "timestamp_ms={} overlay_cpu={:.1}% overlay_mem={}MB rl_cpu={:.1}% rl_mem={}MB eac_cpu={:.1}% eac_mem={}MB sys_cpu={:.1}% top=[{}]",
+                s.timestamp_ms,
+                s.overlay_cpu_usage,
+                s.overlay_memory_mb,
+                s.rl_cpu_usage,
+                s.rl_memory_mb,
+                s.eac_cpu_usage,
+                s.eac_memory_mb,
+                s.system_cpu_usage,
+                top
             ));
         }
     }
@@ -1064,7 +1074,8 @@ impl ResourcePoller {
 
         self.handle = Some(thread::spawn(move || {
             let mut sys = System::new_all();
-            let process_refresh_kind = ProcessRefreshKind::nothing().with_cpu();
+            let process_refresh_kind = ProcessRefreshKind::nothing().with_cpu().with_memory();
+            let overlay_pid = sysinfo::Pid::from_u32(std::process::id());
 
             while running_flag.load(Ordering::Relaxed) {
                 sys.refresh_cpu_usage();
@@ -1078,11 +1089,16 @@ impl ResourcePoller {
                 let mut rl_mem = 0;
                 let mut eac_cpu = 0.0;
                 let mut eac_mem = 0;
+                let mut overlay_cpu = 0.0;
+                let mut overlay_mem = 0;
 
                 for process in sys.processes().values() {
                     let name = process.name().to_string_lossy();
 
-                    if is_rocket_league_process(&name) {
+                    if process.pid() == overlay_pid {
+                        overlay_cpu = process.cpu_usage();
+                        overlay_mem = process.memory() / BYTES_PER_MB;
+                    } else if is_rocket_league_process(&name) {
                         rl_cpu += process.cpu_usage();
                         rl_mem += process.memory() / BYTES_PER_MB;
                     } else if is_easy_anticheat_process(&name) || is_eos_process(&name) {
@@ -1103,6 +1119,8 @@ impl ResourcePoller {
 
                 tracker_ref.add_snapshot(ResourceSnapshot {
                     timestamp_ms: crate::stats_api::now_ms(),
+                    overlay_cpu_usage: overlay_cpu,
+                    overlay_memory_mb: overlay_mem,
                     rl_cpu_usage: rl_cpu,
                     rl_memory_mb: rl_mem,
                     eac_cpu_usage: eac_cpu,
@@ -1177,6 +1195,8 @@ mod tests {
     fn test_resource_snapshot_creation() {
         let snapshot = super::ResourceSnapshot {
             timestamp_ms: 12345,
+            overlay_cpu_usage: 2.5,
+            overlay_memory_mb: 96,
             rl_cpu_usage: 15.5,
             rl_memory_mb: 2048,
             eac_cpu_usage: 1.2,
@@ -1184,6 +1204,7 @@ mod tests {
             system_cpu_usage: 25.0,
             top_processes: vec![],
         };
+        assert_eq!(snapshot.overlay_memory_mb, 96);
         assert_eq!(snapshot.rl_memory_mb, 2048);
     }
 
@@ -1192,6 +1213,8 @@ mod tests {
         let tracker = super::ResourceTracker::new();
         tracker.add_snapshot(super::ResourceSnapshot {
             timestamp_ms: 100,
+            overlay_cpu_usage: 0.0,
+            overlay_memory_mb: 0,
             rl_cpu_usage: 0.0,
             rl_memory_mb: 0,
             eac_cpu_usage: 0.0,
@@ -1210,6 +1233,8 @@ mod tests {
         for i in 0..(super::MAX_RESOURCE_SNAPSHOTS + 5) {
             tracker.add_snapshot(super::ResourceSnapshot {
                 timestamp_ms: i as u128 * 100,
+                overlay_cpu_usage: 0.0,
+                overlay_memory_mb: 0,
                 rl_cpu_usage: 0.0,
                 rl_memory_mb: 0,
                 eac_cpu_usage: 0.0,

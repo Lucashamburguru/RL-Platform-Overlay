@@ -2,6 +2,35 @@ use crate::state::AppState;
 use eframe::egui;
 use std::sync::Arc;
 
+pub(super) fn render_arrange_hud_banner(ctx: &egui::Context) {
+    egui::Area::new("arrange_hud_banner".into())
+        .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -18.0))
+        .order(egui::Order::Foreground)
+        .interactable(false)
+        .show(ctx, |ui| {
+            egui::Frame::default()
+                .fill(egui::Color32::from_rgba_unmultiplied(24, 22, 15, 238))
+                .stroke(egui::Stroke::new(
+                    1.0,
+                    egui::Color32::from_rgb(220, 190, 90),
+                ))
+                .corner_radius(6.0)
+                .inner_margin(egui::Margin::symmetric(14, 8))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new("Arrange HUD")
+                                .strong()
+                                .color(egui::Color32::from_rgb(245, 220, 130)),
+                        );
+                        ui.separator();
+                        ui.label("Drag the gold handles to move panels");
+                        ui.weak("Use Done or Cancel in Settings when finished");
+                    });
+                });
+        });
+}
+
 pub(super) fn render_drag_position_handle(
     ui: &mut egui::Ui,
     enabled: bool,

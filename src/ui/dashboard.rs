@@ -46,7 +46,7 @@ struct DashboardPlayerRow {
 pub(crate) fn render_dashboard_viewport(
     ctx: &egui::Context,
     state: Arc<AppState>,
-    config: Config,
+    config: Arc<Config>,
     viewport_state: &mut DashboardViewportState,
 ) {
     let placement = monitor::dashboard_placement(
@@ -114,7 +114,7 @@ pub(crate) fn render_dashboard_viewport(
                         .inner_margin(egui::Margin::same(18)),
                 )
                 .show(ctx, |ui| {
-                    render_dashboard(ui, &state, &config);
+                    render_dashboard(ui, &state, config.as_ref());
                 });
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         },
@@ -227,23 +227,50 @@ pub(crate) fn render_dashboard(ui: &mut egui::Ui, state: &Arc<AppState>, config:
     });
 }
 
+const SCOREBOARD_TEAM_NAME_MAX_CHARS: usize = 16;
+
+fn compact_scoreboard_team_name(name: &str) -> std::borrow::Cow<'_, str> {
+    if name.chars().count() <= SCOREBOARD_TEAM_NAME_MAX_CHARS {
+        return std::borrow::Cow::Borrowed(name);
+    }
+
+    let mut compact = String::new();
+    compact.extend(name.chars().take(SCOREBOARD_TEAM_NAME_MAX_CHARS - 1));
+    compact.push('…');
+    std::borrow::Cow::Owned(compact)
+}
+
+fn render_scoreboard_team_badge(
+    ui: &mut egui::Ui,
+    name: &str,
+    fill: egui::Color32,
+) -> egui::Response {
+    let compact_name = compact_scoreboard_team_name(name);
+    egui::Frame::default()
+        .fill(fill)
+        .corner_radius(6)
+        .inner_margin(egui::Margin::symmetric(16, 9))
+        .show(ui, |ui| {
+            ui.add(egui::Label::new(
+                egui::RichText::new(compact_name.as_ref())
+                    .strong()
+                    .size(15.0)
+                    .color(egui::Color32::WHITE),
+            ))
+            .on_hover_text(name);
+        })
+        .response
+}
+
 fn render_scoreboard_hud(ui: &mut egui::Ui, session: &crate::session::SessionState) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing = egui::vec2(8.0, 0.0);
 
-        // Blue Team Badge
-        let blue_tag_frame = egui::Frame::default()
-            .fill(egui::Color32::from_rgb(0, 110, 220))
-            .corner_radius(6)
-            .inner_margin(egui::Margin::symmetric(16, 9));
-        blue_tag_frame.show(ui, |ui| {
-            ui.label(
-                egui::RichText::new(session.team_name(0))
-                    .strong()
-                    .size(15.0)
-                    .color(egui::Color32::WHITE),
-            );
-        });
+        let _ = render_scoreboard_team_badge(
+            ui,
+            session.team_name(0),
+            egui::Color32::from_rgb(0, 110, 220),
+        );
 
         // Blue Score Badge
         let blue_score_frame = egui::Frame::default()
@@ -286,20 +313,107 @@ fn render_scoreboard_hud(ui: &mut egui::Ui, session: &crate::session::SessionSta
             );
         });
 
-        // Orange Team Badge
-        let orange_tag_frame = egui::Frame::default()
-            .fill(egui::Color32::from_rgb(220, 100, 10))
-            .corner_radius(6)
-            .inner_margin(egui::Margin::symmetric(16, 9));
-        orange_tag_frame.show(ui, |ui| {
-            ui.label(
-                egui::RichText::new(session.team_name(1))
-                    .strong()
-                    .size(15.0)
-                    .color(egui::Color32::WHITE),
-            );
-        });
+        let _ = render_scoreboard_team_badge(
+            ui,
+            session.team_name(1),
+            egui::Color32::from_rgb(220, 100, 10),
+        );
     });
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DashboardTopBandLayout {
+    Wide,
+    Medium,
+    Compact,
+}
+
+fn dashboard_top_band_layout(width: f32) -> DashboardTopBandLayout {
+    if width >= 1650.0 {
+        DashboardTopBandLayout::Wide
+    } else if width >= 1250.0 {
+        DashboardTopBandLayout::Medium
+    } else {
+        DashboardTopBandLayout::Compact
+    }
+}
+
+fn render_dashboard_identity(
+    ui: &mut egui::Ui,
+    is_connected: bool,
+    session: &crate::session::SessionState,
+) {
+    let connection = if is_connected {
+        ("CONNECTED", egui::Color32::from_rgb(105, 220, 135))
+    } else {
+        ("WAITING", egui::Color32::from_rgb(225, 190, 90))
+    };
+    ui.vertical(|ui| {
+        ui.label(
+            egui::RichText::new("RL Dashboard")
+                .strong()
+                .size(22.0)
+                .color(egui::Color32::from_rgb(238, 241, 248)),
+        );
+        ui.label(
+            egui::RichText::new(connection.0)
+                .strong()
+                .size(13.0)
+                .color(connection.1),
+        );
+    });
+    ui.separator();
+    ui.label(
+        egui::RichText::new(session.active_mode.label())
+            .size(24.0)
+            .color(egui::Color32::from_rgb(230, 232, 238)),
+    );
+}
+
+fn render_status_pills_left_to_right(
+    ui: &mut egui::Ui,
+    session: &crate::session::SessionState,
+    player_count: usize,
+) {
+    stat_pill(ui, "PLAYERS", player_count.to_string());
+    stat_pill(
+        ui,
+        "SESSION",
+        format!(
+            "{}W {}L | {}% | {}",
+            session.wins,
+            session.losses,
+            win_rate(session.wins, session.losses),
+            streak_label(session.streak)
+        ),
+    );
+    stat_pill(ui, "CLOCK", clock_label(session));
+    if !session.active_match_id.is_empty() {
+        stat_pill(ui, "MATCH", short_match_id(&session.active_match_id));
+    }
+}
+
+fn render_status_pills_right_to_left(
+    ui: &mut egui::Ui,
+    session: &crate::session::SessionState,
+    player_count: usize,
+) {
+    if !session.active_match_id.is_empty() {
+        stat_pill(ui, "MATCH", short_match_id(&session.active_match_id));
+    }
+    stat_pill(ui, "CLOCK", clock_label(session));
+    stat_pill(
+        ui,
+        "SESSION",
+        format!(
+            "{}W {}L | {}% | {}",
+            session.wins,
+            session.losses,
+            win_rate(session.wins, session.losses),
+            streak_label(session.streak)
+        ),
+    );
+    stat_pill(ui, "PLAYERS", player_count.to_string());
 }
 
 fn render_top_band(
@@ -319,55 +433,41 @@ fn render_top_band(
         let inner_width = (target_width - 36.0).max(0.0);
         ui.set_min_width(inner_width);
         ui.set_max_width(inner_width);
-        ui.horizontal(|ui| {
-            let connection = if is_connected {
-                ("CONNECTED", egui::Color32::from_rgb(105, 220, 135))
-            } else {
-                ("WAITING", egui::Color32::from_rgb(225, 190, 90))
-            };
-            ui.vertical(|ui| {
-                ui.label(
-                    egui::RichText::new("RL Dashboard")
-                        .strong()
-                        .size(22.0)
-                        .color(egui::Color32::from_rgb(238, 241, 248)),
-                );
-                ui.label(
-                    egui::RichText::new(connection.0)
-                        .strong()
-                        .size(13.0)
-                        .color(connection.1),
-                );
-            });
-            ui.separator();
-            ui.label(
-                egui::RichText::new(session.active_mode.label())
-                    .size(24.0)
-                    .color(egui::Color32::from_rgb(230, 232, 238)),
-            );
-            ui.separator();
-            ui.add_space(4.0);
-            render_scoreboard_hud(ui, session);
-            ui.add_space(8.0);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if !session.active_match_id.is_empty() {
-                    stat_pill(ui, "MATCH", short_match_id(&session.active_match_id));
-                }
-                stat_pill(ui, "CLOCK", clock_label(session));
-                stat_pill(
-                    ui,
-                    "SESSION",
-                    format!(
-                        "{}W {}L | {}% | {}",
-                        session.wins,
-                        session.losses,
-                        win_rate(session.wins, session.losses),
-                        streak_label(session.streak)
-                    ),
-                );
-                stat_pill(ui, "PLAYERS", player_count.to_string());
-            });
-        });
+        match dashboard_top_band_layout(inner_width) {
+            DashboardTopBandLayout::Wide => {
+                ui.horizontal(|ui| {
+                    render_dashboard_identity(ui, is_connected, session);
+                    ui.separator();
+                    ui.add_space(4.0);
+                    render_scoreboard_hud(ui, session);
+                    ui.add_space(8.0);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        render_status_pills_right_to_left(ui, session, player_count);
+                    });
+                });
+            }
+            DashboardTopBandLayout::Medium => {
+                ui.horizontal(|ui| {
+                    render_dashboard_identity(ui, is_connected, session);
+                    ui.separator();
+                    ui.add_space(4.0);
+                    render_scoreboard_hud(ui, session);
+                });
+                ui.add_space(8.0);
+                ui.horizontal_wrapped(|ui| {
+                    render_status_pills_left_to_right(ui, session, player_count);
+                });
+            }
+            DashboardTopBandLayout::Compact => {
+                ui.horizontal(|ui| render_dashboard_identity(ui, is_connected, session));
+                ui.add_space(8.0);
+                ui.horizontal(|ui| render_scoreboard_hud(ui, session));
+                ui.add_space(8.0);
+                ui.horizontal_wrapped(|ui| {
+                    render_status_pills_left_to_right(ui, session, player_count);
+                });
+            }
+        }
     });
 }
 
@@ -1385,8 +1485,8 @@ fn render_side_rail(ui: &mut egui::Ui, context: SideRailContext<'_>) {
 
     if context.config.dashboard_show_event_feed {
         ui.add_space(8.0);
-        render_status_panel(ui, "Event Feed", |ui| {
-            render_event_feed(ui, context.rows, context.session);
+        render_status_panel(ui, "Match Highlights", |ui| {
+            render_match_highlights(ui, context.rows, context.session);
         });
     }
 
@@ -1424,7 +1524,7 @@ fn render_side_rail(ui: &mut egui::Ui, context: SideRailContext<'_>) {
     }
 }
 
-fn render_event_feed(
+fn render_match_highlights(
     ui: &mut egui::Ui,
     rows: &[DashboardPlayerRow],
     session: &crate::session::SessionState,
@@ -1856,6 +1956,35 @@ fn short_match_id(match_id: &str) -> String {
 mod tests {
     use super::*;
     use crate::mmr::TrackerPlaylistSnapshot;
+
+    #[test]
+    fn scoreboard_team_names_are_compacted_unicode_safely() {
+        assert_eq!(compact_scoreboard_team_name("Blue"), "Blue");
+        assert_eq!(
+            compact_scoreboard_team_name("FLOWKIRKALICIOUSEXPEALIBROSTATE"),
+            "FLOWKIRKALICIOU…"
+        );
+        assert_eq!(
+            compact_scoreboard_team_name("🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀"),
+            "🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀…"
+        );
+    }
+
+    #[test]
+    fn dashboard_top_band_uses_responsive_breakpoints() {
+        assert_eq!(
+            dashboard_top_band_layout(1920.0),
+            DashboardTopBandLayout::Wide
+        );
+        assert_eq!(
+            dashboard_top_band_layout(1440.0),
+            DashboardTopBandLayout::Medium
+        );
+        assert_eq!(
+            dashboard_top_band_layout(960.0),
+            DashboardTopBandLayout::Compact
+        );
+    }
 
     fn player(name: &str, team: u8, score: u32, is_local: bool) -> PlayerInfo {
         PlayerInfo {

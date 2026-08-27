@@ -759,6 +759,7 @@ pub struct VersionCheck {
     pub update_available: bool,
     pub latest_tag: String,
     pub release_url: String,
+    pub release_notes: String,
     pub windows_download_url: String,
     pub windows_checksum_url: String,
     pub windows_signature_url: String,
@@ -937,6 +938,7 @@ pub struct ReplaysState {
     pub download_active: AtomicBool,
     pub metadata_cache: ArcSwap<crate::replay_metadata::ReplayMetadataSnapshot>,
     pub cloud_metadata_cache: ArcSwap<HashMap<String, crate::replay_metadata::ReplayMetadataEntry>>,
+    pub merged_metadata_cache: ArcSwap<crate::replay_metadata::ReplayMetadataSnapshot>,
     pub metadata_scan_control: std::sync::Mutex<crate::replay_metadata::MetadataScanControl>,
     pub metadata_scan_running: AtomicBool,
     pub metadata_status: Arc<std::sync::Mutex<String>>,
@@ -1016,6 +1018,7 @@ pub struct SystemState {
     pub network_diagnostics: ArcSwap<NetworkDiagnostics>,
     pub stats_api_setup_status: ArcSwap<crate::setup::StatsApiSetupStatus>,
     pub stats_api_setup_refresh_running: AtomicBool,
+    pub stats_api_setup_attention_requested: AtomicBool,
     pub stats_api_setup_result: ArcSwap<StatsApiSetupResult>,
     pub http_client: Arc<wreq::Client>,
     pub ballchasing_client: Arc<wreq::Client>,
@@ -1142,6 +1145,7 @@ impl AppState {
                     ..Default::default()
                 }),
                 stats_api_setup_refresh_running: AtomicBool::new(false),
+                stats_api_setup_attention_requested: AtomicBool::new(false),
                 stats_api_setup_result: ArcSwap::from_pointee(StatsApiSetupResult::default()),
                 http_client,
                 ballchasing_client,
@@ -1168,6 +1172,9 @@ impl AppState {
                     crate::replay_metadata::ReplayMetadataSnapshot::default(),
                 ),
                 cloud_metadata_cache: ArcSwap::from_pointee(HashMap::new()),
+                merged_metadata_cache: ArcSwap::from_pointee(
+                    crate::replay_metadata::ReplayMetadataSnapshot::default(),
+                ),
                 metadata_scan_control: std::sync::Mutex::new(
                     crate::replay_metadata::MetadataScanControl::default(),
                 ),
@@ -1247,6 +1254,11 @@ impl AppState {
 
     pub fn flush_config(&self) -> Result<(), String> {
         self.config_writer.flush()
+    }
+
+    pub(crate) fn config_revision(&self) -> u64 {
+        self.config_revision
+            .load(std::sync::atomic::Ordering::SeqCst)
     }
 
     fn publish_config(&self, config: Config) {

@@ -1036,6 +1036,7 @@ async fn run_sync_replays(state: Arc<AppState>) -> Result<(), String> {
         .replays
         .cloud_metadata_cache
         .store(Arc::new(cloud_entries));
+    crate::replay_metadata::refresh_merged_metadata_cache(&state);
 
     // Update config cache with these formatted filenames
     let filenames: Vec<String> = fetched_ids

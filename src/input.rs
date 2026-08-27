@@ -70,6 +70,52 @@ pub fn toggle_settings_hotkey(state: &Arc<AppState>, source: &str) {
     log::info!("Settings menu visibility toggled to: {}", !current);
 }
 
+pub fn try_launch_overlay_at_path(
+    state: &Arc<AppState>,
+    rocket_league_path: &str,
+    source: &str,
+) -> bool {
+    let status = crate::setup::inspect_stats_api_setup(rocket_league_path);
+    let configured = status.configured;
+    let detail = status.message.clone();
+    state.system.stats_api_setup_status.store(Arc::new(status));
+
+    if !configured {
+        state.flags.is_launched.store(false, Ordering::SeqCst);
+        state
+            .flags
+            .is_settings_visible
+            .store(true, Ordering::SeqCst);
+        state
+            .system
+            .stats_api_setup_attention_requested
+            .store(true, Ordering::SeqCst);
+        state
+            .system
+            .stats_api_setup_result
+            .store(Arc::new(crate::setup::StatsApiSetupResult {
+                message: format!(
+                    "Overlay was not launched. Enable the Stats API below, then try again. {detail}"
+                ),
+                ..Default::default()
+            }));
+        append_hotkey_debug_log(
+            hotkey_debug_logging_enabled(state),
+            format!("overlay_launch_blocked source={source} reason={detail}"),
+        );
+        log::warn!("Overlay launch blocked ({source}): {detail}");
+        return false;
+    }
+
+    state.flags.is_launched.store(true, Ordering::SeqCst);
+    true
+}
+
+pub fn try_launch_overlay(state: &Arc<AppState>, source: &str) -> bool {
+    let rocket_league_path = state.system.config.load().rocket_league_path.clone();
+    try_launch_overlay_at_path(state, &rocket_league_path, source)
+}
+
 pub fn toggle_launch_hotkey(state: &Arc<AppState>, source: &str) {
     let event_ms = crate::stats_api::now_ms();
     let last = state
@@ -91,8 +137,10 @@ pub fn toggle_launch_hotkey(state: &Arc<AppState>, source: &str) {
         .store(event_ms as u64, Ordering::SeqCst);
     let current = state.flags.is_launched.load(Ordering::SeqCst);
     let new = !current;
-    state.flags.is_launched.store(new, Ordering::SeqCst);
     if new {
+        if !try_launch_overlay(state, source) {
+            return;
+        }
         let config = state.system.config.load();
         if config.dashboard_open_with_overlay && !config.dashboard_enabled {
             drop(config);
@@ -102,6 +150,8 @@ pub fn toggle_launch_hotkey(state: &Arc<AppState>, source: &str) {
             .flags
             .is_settings_visible
             .store(false, Ordering::SeqCst);
+    } else {
+        state.flags.is_launched.store(false, Ordering::SeqCst);
     }
     append_hotkey_debug_log(
         state.debug_logging_enabled.load(Ordering::SeqCst),
@@ -397,6 +447,59 @@ fn handle_controller_hotkey(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn overlay_launch_is_blocked_when_stats_api_file_is_not_enabled() {
+        let state = AppState::new();
+        state
+            .flags
+            .is_settings_visible
+            .store(false, Ordering::SeqCst);
+
+        assert!(!try_launch_overlay_at_path(&state, "", "test"));
+        assert!(!state.flags.is_launched.load(Ordering::SeqCst));
+        assert!(state.flags.is_settings_visible.load(Ordering::SeqCst));
+        assert!(
+            state
+                .system
+                .stats_api_setup_attention_requested
+                .load(Ordering::SeqCst)
+        );
+        assert!(
+            state
+                .system
+                .stats_api_setup_result
+                .load()
+                .message
+                .contains("Overlay was not launched")
+        );
+    }
+
+    #[test]
+    fn overlay_launch_succeeds_when_stats_api_file_is_enabled() {
+        let state = AppState::new();
+        let root = std::env::temp_dir().join(format!(
+            "rl_overlay_launch_ready_{}",
+            crate::stats_api::now_ms()
+        ));
+        let config_dir = root.join("TAGame").join("Config");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::write(
+            config_dir.join("DefaultStatsAPI.ini"),
+            "[TAGame.MatchStatsExporter_TA]\nPacketSendRate=30\nPort=49123\n",
+        )
+        .unwrap();
+
+        assert!(try_launch_overlay_at_path(
+            &state,
+            &root.to_string_lossy(),
+            "test"
+        ));
+        assert!(state.flags.is_launched.load(Ordering::SeqCst));
+        assert!(state.system.stats_api_setup_status.load().configured);
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn duplicate_keyboard_sources_toggle_hud_once() {

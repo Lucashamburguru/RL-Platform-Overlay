@@ -17,6 +17,7 @@ pub const LATEST_RELEASE_URL: &str =
 const WINDOWS_ASSET_NAME: &str = "rl-platform-overlay.exe";
 const WINDOWS_CHECKSUM_ASSET_NAME: &str = "rl-platform-overlay.exe.sha256";
 const WINDOWS_SIGNATURE_ASSET_NAME: &str = "rl-platform-overlay.exe.sig";
+const MAX_RELEASE_NOTES_CHARS: usize = 16_000;
 pub const RELEASE_SIGNING_PUBLIC_KEY_B64: &str = "PZxbpTJyQ7EzHd77YcsTT/BbTZecf6T7HVC3XO6AQpw=";
 #[cfg(any(target_os = "windows", test))]
 const UPDATE_SCRIPT: &str = r#"
@@ -338,11 +339,25 @@ async fn check_latest_release(state: &AppState) -> Result<VersionCheck, String> 
             .as_str()
             .unwrap_or("https://github.com/Lucashamburguru/RL-Platform-Overlay/releases/latest")
             .to_string(),
+        release_notes: release_notes(&release),
         windows_download_url: windows_asset,
         windows_checksum_url: windows_checksum,
         windows_signature_url: windows_signature,
         error: String::new(),
     })
+}
+
+fn release_notes(release: &Value) -> String {
+    let Some(notes) = release["body"].as_str().map(str::trim) else {
+        return String::new();
+    };
+    let mut chars = notes.chars();
+    let truncated: String = chars.by_ref().take(MAX_RELEASE_NOTES_CHARS).collect();
+    if chars.next().is_some() {
+        format!("{truncated}\n\n… Release notes truncated. Open the release page to read more.")
+    } else {
+        truncated
+    }
 }
 
 fn release_asset_url(release: &Value, asset_name: &str) -> Option<String> {
@@ -475,6 +490,7 @@ mod tests {
         let release = json!({
             "tag_name": "v0.2.0",
             "html_url": "https://github.com/example/repo/releases/tag/v0.2.0",
+            "body": "\n## What's Changed\n\n- Added release notes\n",
             "assets": [
                 {
                     "name": "rl-platform-overlay.exe",
@@ -496,6 +512,21 @@ mod tests {
             release_asset_url(&release, WINDOWS_SIGNATURE_ASSET_NAME),
             Some("https://example.com/rl-platform-overlay.exe.sig".to_string())
         );
+        assert_eq!(
+            release_notes(&release),
+            "## What's Changed\n\n- Added release notes"
+        );
+    }
+
+    #[test]
+    fn release_notes_are_empty_when_missing_and_bounded_when_large() {
+        assert!(release_notes(&json!({})).is_empty());
+
+        let oversized = "a".repeat(MAX_RELEASE_NOTES_CHARS + 1);
+        let notes = release_notes(&json!({ "body": oversized }));
+
+        assert!(notes.starts_with(&"a".repeat(MAX_RELEASE_NOTES_CHARS)));
+        assert!(notes.ends_with("Open the release page to read more."));
     }
 
     #[test]
@@ -684,11 +715,12 @@ mod tests {
 
                     if req.contains("GET /releases/latest") {
                         let body = format!(
-                            r#"{{
+                            r###"{{
                                 "draft": false,
                                 "prerelease": false,
                                 "tag_name": "v999.0.0",
                                 "html_url": "https://github.com/Lucashamburguru/RL-Platform-Overlay/releases/tag/v999.0.0",
+                                "body": "## What's Changed\\n\\n- Added updater changelog",
                                 "assets": [
                                     {{
                                         "name": "rl-platform-overlay.exe",
@@ -703,7 +735,7 @@ mod tests {
                                         "browser_download_url": "http://{}/download/rl-platform-overlay.exe.sig"
                                     }}
                                 ]
-                            }}"#,
+                            }}"###,
                             addr_str_local, addr_str_local, addr_str_local
                         );
                         let resp = format!(
@@ -790,6 +822,10 @@ mod tests {
             if check.checked {
                 assert!(check.update_available, "Expected update to be available");
                 assert_eq!(check.latest_tag, "v999.0.0");
+                assert_eq!(
+                    check.release_notes,
+                    "## What's Changed\n\n- Added updater changelog"
+                );
                 assert!(
                     check.error.is_empty(),
                     "Expected no check error, got: {}",

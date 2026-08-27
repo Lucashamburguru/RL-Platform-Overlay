@@ -1,6 +1,7 @@
 use crate::state::{AppState, Config};
 use crate::ui::common::{StatusTone, helper_text, setting_row, settings_section, status_text};
 use eframe::egui;
+use egui_extras::{Column, TableBuilder};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
@@ -445,7 +446,7 @@ pub(crate) fn render_replays_settings_tab(
 }
 
 fn maybe_start_metadata_scan(state: &Arc<AppState>, folder: &str) {
-    let snapshot = crate::replay_metadata::merged_metadata_snapshot(state);
+    let snapshot = state.replays.metadata_cache.load();
     if snapshot.folder != folder {
         crate::replay_metadata::start_metadata_scan(state.clone(), folder.to_string());
     }
@@ -540,84 +541,114 @@ fn render_replay_cache(
         }
     });
 
-    let rows = replay_cache_rows(&config_edit.uploaded_replays, &snapshot.entries, &search);
+    let rows =
+        cached_replay_cache_rows(ui, state, &config_edit.uploaded_replays, snapshot, &search);
     ui.add_space(4.0);
-    egui::ScrollArea::both().max_height(210.0).show(ui, |ui| {
-        egui::Grid::new("replay_cache_grid")
-            .striped(true)
-            .num_columns(6)
-            .min_col_width(68.0)
-            .show(ui, |ui| {
-                ui.strong("Replay");
-                ui.strong("Date");
-                ui.strong("Map");
-                ui.strong("Score");
-                ui.strong("Players");
-                ui.strong("Action");
-                ui.end_row();
-
-                for row in rows {
-                    ui.label(row.primary.clone())
-                        .on_hover_text(row.hover.clone());
-                    ui.label(
-                        egui::RichText::new(row.date.clone())
-                            .size(11.0)
-                            .color(egui::Color32::from_gray(178)),
-                    )
-                    .on_hover_text(row.hover.clone());
-                    ui.label(
-                        egui::RichText::new(row.map.clone())
-                            .size(11.0)
-                            .color(egui::Color32::from_gray(178)),
-                    )
-                    .on_hover_text(row.hover.clone());
-                    ui.label(
-                        egui::RichText::new(row.score.clone())
-                            .size(11.0)
-                            .color(egui::Color32::from_gray(178)),
-                    )
-                    .on_hover_text(row.hover.clone());
-                    ui.label(
-                        egui::RichText::new(row.players.clone())
-                            .size(11.0)
-                            .color(egui::Color32::from_gray(178)),
-                    )
-                    .on_hover_text(row.hover.clone());
-
+    let table_height = (rows.len() as f32 * 24.0 + 24.0).min(210.0);
+    let download_active = state.replays.download_active.load(Ordering::SeqCst);
+    let download_enabled =
+        !download_active && !config_edit.ballchasing_api_key.trim().is_empty() && path_valid;
+    TableBuilder::new(ui)
+        .striped(true)
+        .resizable(false)
+        .min_scrolled_height(table_height)
+        .max_scroll_height(table_height)
+        .column(Column::remainder().at_least(120.0))
+        .column(Column::auto().at_least(70.0))
+        .column(Column::auto().at_least(70.0))
+        .column(Column::auto().at_least(48.0))
+        .column(Column::auto().at_least(85.0))
+        .column(Column::auto().at_least(65.0))
+        .header(22.0, |mut header| {
+            for label in ["Replay", "Date", "Map", "Score", "Players", "Action"] {
+                header.col(|ui| {
+                    ui.strong(label);
+                });
+            }
+        })
+        .body(|body| {
+            body.rows(24.0, rows.len(), |mut table_row| {
+                let row = &rows[table_row.index()];
+                table_row.col(|ui| {
+                    ui.label(row.primary.as_str())
+                        .on_hover_text(row.hover.as_str());
+                });
+                for value in [&row.date, &row.map, &row.score, &row.players] {
+                    table_row.col(|ui| {
+                        ui.label(
+                            egui::RichText::new(value.as_str())
+                                .size(11.0)
+                                .color(egui::Color32::from_gray(178)),
+                        )
+                        .on_hover_text(row.hover.as_str());
+                    });
+                }
+                table_row.col(|ui| {
                     let is_local = row.source_label == "Local metadata";
                     let is_failed = row.source_label == "Parse failed";
-                    if is_local {
+                    if is_local || is_failed {
                         ui.label(
-                            egui::RichText::new("Local")
+                            egui::RichText::new(if is_local { "Local" } else { "Error" })
                                 .size(11.0)
-                                .color(egui::Color32::from_rgb(100, 220, 120)),
+                                .color(row.source_color),
                         )
-                        .on_hover_text(row.hover.clone());
-                    } else if is_failed {
-                        ui.label(
-                            egui::RichText::new("Error")
-                                .size(11.0)
-                                .color(egui::Color32::from_rgb(230, 95, 85)),
-                        )
-                        .on_hover_text(row.hover.clone());
+                        .on_hover_text(row.hover.as_str());
                     } else {
-                        let download_active = state.replays.download_active.load(Ordering::SeqCst);
-                        let api_key_empty = config_edit.ballchasing_api_key.trim().is_empty();
-                        let path_invalid = !path_valid;
-
-                        let btn = ui.add_enabled(
-                            !download_active && !api_key_empty && !path_invalid,
-                            egui::Button::new("Download").small(),
-                        );
+                        let btn =
+                            ui.add_enabled(download_enabled, egui::Button::new("Download").small());
                         if btn.clicked() {
                             let id = row.filename.trim_end_matches(".replay").to_string();
                             crate::replays::start_download_replay_task(state.clone(), id);
                         }
                     }
-                    ui.end_row();
-                }
+                });
             });
+        });
+}
+
+#[derive(Clone)]
+struct ReplayRowsCache {
+    config_revision: u64,
+    metadata: Arc<crate::replay_metadata::ReplayMetadataSnapshot>,
+    query: String,
+    rows: Arc<Vec<ReplayCacheRow>>,
+}
+
+fn cached_replay_cache_rows(
+    ui: &mut egui::Ui,
+    state: &AppState,
+    uploaded_replays: &[String],
+    metadata: Arc<crate::replay_metadata::ReplayMetadataSnapshot>,
+    search: &str,
+) -> Arc<Vec<ReplayCacheRow>> {
+    let cache_id = ui.make_persistent_id("replay_cache_rows");
+    let config_revision = state.config_revision();
+    let query = search.trim().to_ascii_lowercase();
+    if let Some(cache) = ui.data(|data| data.get_temp::<ReplayRowsCache>(cache_id))
+        && cache.config_revision == config_revision
+        && Arc::ptr_eq(&cache.metadata, &metadata)
+        && cache.query == query
+    {
+        return cache.rows;
+    }
+
+    let rows = Arc::new(replay_cache_rows(
+        uploaded_replays,
+        &metadata.entries,
+        &query,
+    ));
+    ui.data_mut(|data| {
+        data.insert_temp(
+            cache_id,
+            ReplayRowsCache {
+                config_revision,
+                metadata,
+                query,
+                rows: rows.clone(),
+            },
+        )
     });
+    rows
 }
 
 #[derive(Clone, Debug, PartialEq)]

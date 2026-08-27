@@ -74,7 +74,10 @@ pub(crate) fn render_dashboard_settings_tab(
                         *changed = true;
                     }
                     if ui
-                        .checkbox(&mut config_edit.dashboard_show_event_feed, "Event Feed")
+                        .checkbox(
+                            &mut config_edit.dashboard_show_event_feed,
+                            "Match Highlights",
+                        )
                         .changed()
                     {
                         *changed = true;

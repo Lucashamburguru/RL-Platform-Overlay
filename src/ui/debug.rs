@@ -356,6 +356,7 @@ fn render_performance_diagnostics(ui: &mut egui::Ui, state: &Arc<AppState>) {
             {
                 let next_recording = !recording;
                 state.diagnostics.foreground_tracker.set_enabled(next_recording);
+                state.diagnostics.frame_tracker.set_enabled(next_recording);
 
                 if let Ok(mut poller) = state.diagnostics.resource_poller.lock() {
                     if next_recording && !poller.is_running() {

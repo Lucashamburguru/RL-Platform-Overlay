@@ -4,17 +4,38 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+---
+
+## [0.1.45] - 2026-08-26
+
 ### Added
+- **Setup Readiness Checklist**: Adds a live checklist to Setup for installation detection, Stats API configuration, restart status, game connection, and recent Stats API data.
+- **Guided Arrange HUD**: Replaces the drag-position toggle with an explicit Arrange HUD workflow for all movable panels, including persistent instructions plus Done, Cancel, and reversible Reset All controls.
+- **In-Updater Release Notes**: Shows the latest GitHub release notes in a bounded, collapsible “What's new” section before updating, with a clear fallback when a release has no notes.
 - **Updated Preview Screenshots**: Replaced the outdated README preview with new setup, overlay, and dashboard screenshots, including smaller README-friendly versions for wide screenshots.
 
 ### Changed
+- **Render and Replay Performance**: Avoids cloning the full configuration for dashboard frames, decouples dashboard-only repaint cadence, and caches plus virtualizes large replay-cache views.
+- **Performance Diagnostics**: Records production frame timing, foreground samples, and explicit overlay CPU/memory while performance recording is enabled.
+- **Automated Release Notes**: GitHub releases now generate notes automatically so the updater can present a changelog without maintaining a second release-description source.
+- **Dashboard Header and Highlights**: Reflows scoreboard and status details into additional rows on narrower dashboards, and renames the cumulative Event Feed to the more accurate Match Highlights.
 - **Player-Facing README Rewrite**: Reworked the README to explain what players see in-game, how setup works, and how the app stays separate from Rocket League without sounding like a generic product page.
 - **Overlay Theme Consistency**: Normalized the visual theme across the lobby overlay, session tracker, and teammate boost HUD with shared panel, text, team, and boost colors.
 - **UI String Matching**: Replaced several render-path lowercase substring checks with shared allocation-free ASCII case-insensitive matching.
 - **Replay Parser Dependency**: Updated `boxcars` from `0.11.3` to `0.11.5`.
 
 ### Fixed
+- **Stats API Launch Readiness**: Rechecks `DefaultStatsAPI.ini` before every overlay launch path and returns users to Setup instead of opening an overlay without an enabled Stats API.
+- **Dashboard Team Name Overflow**: Truncates long API-provided team names in compact scoreboard badges without widening normal Blue/Orange labels, while preserving the full name on hover and in roster headings.
 - **Replay Header Parsing Limits**: Rejects oversized, truncated, deeply nested, or excessive replay header metadata before parsing to avoid expensive or invalid reads.
+
+---
+
+## [0.1.44] - 2026-08-25
+
+### Added
+- **Club Team Names**: Uses Stats API team names in dashboard score badges and roster panels, while retaining Blue and Orange as safe fallbacks.
+- **Detailed Replay Metadata**: Adds player box scores, goal timing, match duration, and match type to replay details.
 
 ---
 

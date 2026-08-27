@@ -1,6 +1,7 @@
 use crate::state::{AppState, Config};
 use crate::ui::common::{
-    StatusTone, debug_status_row, helper_text, setting_row, settings_section, status_text,
+    StatusTone, debug_status_row, helper_text, setting_row, settings_section, status_color,
+    status_text,
 };
 use crate::ui::hotkeys::render_hotkey_settings_section;
 use eframe::egui;
@@ -236,6 +237,174 @@ pub(crate) fn render_setup_settings_tab(
 
     ui.add_space(10.0);
     render_hotkey_settings_section(ui, ctx, state, config_edit, changed);
+
+    ui.add_space(10.0);
+    render_setup_readiness(ui, state, is_rl_running);
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ReadinessState {
+    Complete,
+    ActionNeeded,
+    Waiting,
+}
+
+struct ReadinessItem {
+    label: &'static str,
+    detail: String,
+    state: ReadinessState,
+}
+
+fn setup_readiness_items(
+    setup: &crate::setup::StatsApiSetupStatus,
+    result: &crate::setup::StatsApiSetupResult,
+    is_rl_running: bool,
+    is_connected: bool,
+    last_event: &str,
+    last_event_unix_ms: u128,
+    now_unix_ms: u128,
+) -> Vec<ReadinessItem> {
+    let live_packets = is_connected
+        && last_event_unix_ms > 0
+        && now_unix_ms.saturating_sub(last_event_unix_ms) <= 10_000;
+
+    vec![
+        ReadinessItem {
+            label: "Rocket League installation",
+            detail: if setup.installation_found {
+                "Installation folder found.".to_string()
+            } else {
+                "Select or auto-detect the Rocket League folder above.".to_string()
+            },
+            state: if setup.installation_found {
+                ReadinessState::Complete
+            } else {
+                ReadinessState::ActionNeeded
+            },
+        },
+        ReadinessItem {
+            label: "Stats API enabled",
+            detail: if setup.configured {
+                format!(
+                    "Enabled at {} Hz.",
+                    setup.packet_send_rate.unwrap_or_default()
+                )
+            } else if setup.installation_found {
+                "Choose a rate of 5 Hz or higher above.".to_string()
+            } else {
+                "Waiting for a valid installation folder.".to_string()
+            },
+            state: if setup.configured {
+                ReadinessState::Complete
+            } else if setup.installation_found {
+                ReadinessState::ActionNeeded
+            } else {
+                ReadinessState::Waiting
+            },
+        },
+        ReadinessItem {
+            label: "Rocket League started with current settings",
+            detail: if result.restart_required && is_rl_running {
+                "Restart Rocket League to load the updated Stats API setting.".to_string()
+            } else if result.restart_required {
+                "Start Rocket League to load the updated Stats API setting.".to_string()
+            } else if is_rl_running {
+                "Rocket League is running.".to_string()
+            } else {
+                "Start Rocket League when configuration is complete.".to_string()
+            },
+            state: if result.restart_required {
+                ReadinessState::ActionNeeded
+            } else if is_rl_running {
+                ReadinessState::Complete
+            } else {
+                ReadinessState::Waiting
+            },
+        },
+        ReadinessItem {
+            label: "Game connection",
+            detail: if is_connected {
+                "Connected to Rocket League.".to_string()
+            } else if is_rl_running {
+                "Waiting for Rocket League to open the Stats API connection.".to_string()
+            } else {
+                "Waiting for Rocket League to start.".to_string()
+            },
+            state: if is_connected {
+                ReadinessState::Complete
+            } else {
+                ReadinessState::Waiting
+            },
+        },
+        ReadinessItem {
+            label: "Live game data",
+            detail: if live_packets {
+                format!("Receiving Stats API events ({last_event}).")
+            } else if is_connected {
+                "Connected; waiting for live Stats API events.".to_string()
+            } else {
+                "Waiting for the game connection.".to_string()
+            },
+            state: if live_packets {
+                ReadinessState::Complete
+            } else {
+                ReadinessState::Waiting
+            },
+        },
+    ]
+}
+
+fn render_setup_readiness(ui: &mut egui::Ui, state: &Arc<AppState>, is_rl_running: bool) {
+    let setup = state.system.stats_api_setup_status.load();
+    let result = state.system.stats_api_setup_result.load();
+    let diagnostics = state.system.network_diagnostics.load();
+    let items = setup_readiness_items(
+        &setup,
+        &result,
+        is_rl_running,
+        state.flags.is_connected.load(Ordering::SeqCst),
+        &diagnostics.last_event,
+        diagnostics.last_event_unix_ms,
+        crate::stats_api::now_ms(),
+    );
+    let completed = items
+        .iter()
+        .filter(|item| item.state == ReadinessState::Complete)
+        .count();
+
+    settings_section(ui, "Setup Readiness", |ui| {
+        ui.horizontal_wrapped(|ui| {
+            let ready = completed == items.len();
+            ui.label(
+                egui::RichText::new(if ready {
+                    "Ready for live matches"
+                } else {
+                    "Finish setup and verify the connection"
+                })
+                .strong()
+                .color(status_color(if ready {
+                    StatusTone::Success
+                } else {
+                    StatusTone::Warning
+                })),
+            );
+            ui.weak(format!("{completed}/{} checks complete", items.len()));
+        });
+        ui.add_space(6.0);
+
+        for item in items {
+            let (icon, tone) = match item.state {
+                ReadinessState::Complete => ("✓", StatusTone::Success),
+                ReadinessState::ActionNeeded => ("!", StatusTone::Warning),
+                ReadinessState::Waiting => ("○", StatusTone::Neutral),
+            };
+            ui.horizontal_wrapped(|ui| {
+                ui.label(egui::RichText::new(icon).strong().color(status_color(tone)));
+                ui.label(egui::RichText::new(item.label).strong());
+                ui.label(helper_text(item.detail));
+            });
+        }
+    });
 }
 
 fn apply_stats_api_setup_rate(
@@ -407,5 +576,43 @@ mod tests {
             "/tmp/rocket-league".to_string(),
             false
         ));
+    }
+
+    #[test]
+    fn readiness_requires_recent_packets_for_live_data() {
+        let setup = crate::setup::StatsApiSetupStatus {
+            installation_found: true,
+            configured: true,
+            packet_send_rate: Some(30),
+            ..Default::default()
+        };
+        let result = crate::setup::StatsApiSetupResult::default();
+
+        let recent =
+            setup_readiness_items(&setup, &result, true, true, "UpdateState", 95_000, 100_000);
+        let stale =
+            setup_readiness_items(&setup, &result, true, true, "UpdateState", 80_000, 100_000);
+
+        assert_eq!(recent[4].state, ReadinessState::Complete);
+        assert_eq!(stale[4].state, ReadinessState::Waiting);
+    }
+
+    #[test]
+    fn readiness_surfaces_restart_as_an_action() {
+        let setup = crate::setup::StatsApiSetupStatus {
+            installation_found: true,
+            configured: true,
+            packet_send_rate: Some(15),
+            ..Default::default()
+        };
+        let result = crate::setup::StatsApiSetupResult {
+            restart_required: true,
+            ..Default::default()
+        };
+
+        let items = setup_readiness_items(&setup, &result, true, false, "", 0, 100_000);
+
+        assert_eq!(items[2].state, ReadinessState::ActionNeeded);
+        assert!(items[2].detail.contains("Restart Rocket League"));
     }
 }

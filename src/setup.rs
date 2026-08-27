@@ -46,6 +46,7 @@ pub fn ensure_stats_api_enabled_on_startup(
 #[derive(Clone, Debug, Default)]
 pub struct StatsApiSetupStatus {
     pub ini_path: String,
+    pub installation_found: bool,
     pub exists: bool,
     pub configured: bool,
     pub packet_send_rate: Option<u16>,
@@ -78,9 +79,20 @@ pub fn inspect_stats_api_setup(rocket_league_root: &str) -> StatsApiSetupStatus 
         };
     }
 
+    let installation_found = Path::new(rocket_league_root).join("TAGame").is_dir();
+    if !installation_found {
+        return StatsApiSetupStatus {
+            ini_path: ini_path.display().to_string(),
+            message: "The selected folder does not contain a Rocket League installation."
+                .to_string(),
+            ..Default::default()
+        };
+    }
+
     let Ok(content) = fs::read_to_string(&ini_path) else {
         return StatsApiSetupStatus {
             ini_path: ini_path.display().to_string(),
+            installation_found,
             exists: false,
             message: "DefaultStatsAPI.ini was not found.".to_string(),
             ..Default::default()
@@ -98,6 +110,7 @@ pub fn inspect_stats_api_setup(rocket_league_root: &str) -> StatsApiSetupStatus 
 
     StatsApiSetupStatus {
         ini_path: ini_path.display().to_string(),
+        installation_found,
         exists: true,
         configured,
         packet_send_rate,

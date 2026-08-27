@@ -11,10 +11,34 @@ use super::hotkeys::egui_to_rdev_key;
 use super::lobby_overlay::render_overlay;
 use super::session_hud::render_session_overlay;
 use super::settings::{
-    render_boost_settings_tab, render_history_settings_tab, render_launch_controls,
-    render_overlay_settings_tab, render_replays_settings_tab, render_session_settings_tab,
-    render_settings_tabs, render_setup_settings_tab, render_update_notice,
+    ArrangeHudAction, render_boost_settings_tab, render_history_settings_tab,
+    render_launch_controls, render_overlay_settings_tab, render_replays_settings_tab,
+    render_session_settings_tab, render_settings_tabs, render_setup_settings_tab,
+    render_update_notice,
 };
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct HudPositionSnapshot {
+    lobby: Option<[f32; 2]>,
+    boost: Option<[f32; 2]>,
+    session: Option<[f32; 2]>,
+}
+
+impl HudPositionSnapshot {
+    fn from_config(config: &crate::state::Config) -> Self {
+        Self {
+            lobby: config.lobby_manual_position,
+            boost: config.teammate_boost_manual_position,
+            session: config.session_manual_position,
+        }
+    }
+
+    fn restore(self, config: &mut crate::state::Config) {
+        config.lobby_manual_position = self.lobby;
+        config.teammate_boost_manual_position = self.boost;
+        config.session_manual_position = self.session;
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConfirmAction {
@@ -42,6 +66,7 @@ pub struct MainApp {
     hwnd: Option<isize>,
     rocket_league_process_watcher: crate::assets::RocketLeagueProcessWatcher,
     launched_by_layout_mode: bool,
+    hud_position_snapshot: Option<HudPositionSnapshot>,
     confirm_modal: Option<ConfirmAction>,
     tos_accepted: bool,
     history_search_query: String,
@@ -63,6 +88,7 @@ impl MainApp {
             hwnd,
             rocket_league_process_watcher: crate::assets::RocketLeagueProcessWatcher::new(),
             launched_by_layout_mode: false,
+            hud_position_snapshot: None,
             confirm_modal: None,
             tos_accepted: false,
             history_search_query: String::new(),
@@ -76,6 +102,19 @@ impl MainApp {
         }
 
         let detection = self.rocket_league_process_watcher.detect();
+        if !self.is_rl_running && detection.running {
+            let setup_result = self.state.system.stats_api_setup_result.load();
+            if setup_result.restart_required {
+                self.state.system.stats_api_setup_result.store(Arc::new(
+                    crate::setup::StatsApiSetupResult {
+                        restart_required: false,
+                        message: "Rocket League restart detected. The Stats API setting should now be active."
+                            .to_string(),
+                        ..(**setup_result).clone()
+                    },
+                ));
+            }
+        }
         self.is_rl_running = detection.running;
         self.rl_process_detection_detail = detection.detail;
         self.last_rl_check = now;
@@ -105,6 +144,62 @@ mod tests {
             now - std::time::Duration::from_millis(1500)
         ));
     }
+
+    #[test]
+    fn hud_position_snapshot_restores_all_movable_panels() {
+        let mut config = crate::state::Config {
+            lobby_manual_position: Some([0.1, 0.2]),
+            teammate_boost_manual_position: None,
+            session_manual_position: Some([0.3, 0.4]),
+            ..Default::default()
+        };
+        let snapshot = HudPositionSnapshot::from_config(&config);
+
+        config.lobby_manual_position = None;
+        config.teammate_boost_manual_position = Some([0.5, 0.6]);
+        config.session_manual_position = None;
+        snapshot.restore(&mut config);
+
+        assert_eq!(config.lobby_manual_position, Some([0.1, 0.2]));
+        assert_eq!(config.teammate_boost_manual_position, None);
+        assert_eq!(config.session_manual_position, Some([0.3, 0.4]));
+    }
+
+    #[test]
+    fn dashboard_only_repaint_uses_dashboard_cadence() {
+        let inputs = RepaintInputs {
+            is_launched: false,
+            show_settings: false,
+            show_hud: false,
+            show_session_overlay: false,
+            show_boost_panel: false,
+            show_dashboard: true,
+            layout_mode: false,
+        };
+
+        assert_eq!(
+            repaint_delay(&inputs, false, false),
+            Duration::from_millis(100)
+        );
+    }
+
+    #[test]
+    fn visible_hud_keeps_interactive_repaint_cadence() {
+        let inputs = RepaintInputs {
+            is_launched: true,
+            show_settings: false,
+            show_hud: true,
+            show_session_overlay: false,
+            show_boost_panel: false,
+            show_dashboard: false,
+            layout_mode: false,
+        };
+
+        assert_eq!(
+            repaint_delay(&inputs, false, false),
+            Duration::from_millis(16)
+        );
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -131,6 +226,8 @@ impl eframe::App for MainApp {
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         ctx.set_zoom_factor(1.0);
+        self.state.diagnostics.frame_tracker.record_frame();
+        self.state.diagnostics.foreground_tracker.record_sample();
 
         if self.state.flags.should_exit.load(Ordering::SeqCst) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -152,12 +249,25 @@ impl eframe::App for MainApp {
                 .load(Ordering::SeqCst);
         let show_settings =
             self.state.flags.is_settings_visible.load(Ordering::SeqCst) || is_recording_any;
+        if self
+            .state
+            .system
+            .stats_api_setup_attention_requested
+            .swap(false, Ordering::SeqCst)
+        {
+            self.settings_tab = SettingsTab::Setup;
+        }
 
-        // Auto-disable drag positioning when settings are closed or overlay is stopped to ensure click-through is restored
+        // Leaving the guided arrangement workflow without Done behaves like Cancel.
         let mut config = self.state.system.config.load();
         if (!show_settings || !is_launched) && config.layout_mode {
-            self.state
-                .update_config(|config| config.layout_mode = false);
+            let snapshot = self.hud_position_snapshot.take();
+            self.state.update_config(|config| {
+                if let Some(snapshot) = snapshot {
+                    snapshot.restore(config);
+                }
+                config.layout_mode = false;
+            });
             config = self.state.system.config.load();
             if self.launched_by_layout_mode {
                 self.state.flags.is_launched.store(false, Ordering::SeqCst);
@@ -298,6 +408,10 @@ impl eframe::App for MainApp {
                         render_teammate_boost(ctx, &self.state);
                     } else if show_boost_position_preview {
                         render_teammate_boost_position_preview(ctx, &self.state, false);
+                    }
+
+                    if config.layout_mode {
+                        super::layout::render_arrange_hud_banner(ctx);
                     }
 
                     // Keep window on top every frame when launched
@@ -520,15 +634,24 @@ impl eframe::App for MainApp {
                                 .button(egui::RichText::new("Launch Overlay").heading())
                                 .clicked()
                             {
-                                self.state.flags.is_launched.store(true, Ordering::SeqCst);
-                                if config.dashboard_open_with_overlay && !config.dashboard_enabled {
+                                if crate::input::try_launch_overlay(
+                                    &self.state,
+                                    "stopped_screen_button",
+                                ) {
+                                    if config.dashboard_open_with_overlay
+                                        && !config.dashboard_enabled
+                                    {
+                                        self.state.update_config(|config| {
+                                            config.dashboard_enabled = true
+                                        });
+                                    }
                                     self.state
-                                        .update_config(|config| config.dashboard_enabled = true);
+                                        .flags
+                                        .is_settings_visible
+                                        .store(false, Ordering::SeqCst);
+                                } else {
+                                    self.settings_tab = SettingsTab::Setup;
                                 }
-                                self.state
-                                    .flags
-                                    .is_settings_visible
-                                    .store(false, Ordering::SeqCst);
                             }
                             ui.add_space(20.0);
                             if ui.button("Quit").clicked() {
@@ -561,7 +684,7 @@ impl eframe::App for MainApp {
             render_dashboard_viewport(
                 ctx,
                 self.state.clone(),
-                (**config).clone(),
+                config.clone(),
                 &mut self.dashboard_viewport_state,
             );
         } else {
@@ -605,14 +728,17 @@ fn schedule_repaint(ctx: &egui::Context, state: &Arc<AppState>, inputs: RepaintI
     let has_spinner = state.mmr.local_mmr.load().fetching
         || state.diagnostics.debug_capture_status.load().running
         || boost_operation_running(state);
+    ctx.request_repaint_after(repaint_delay(&inputs, has_drag_input, has_spinner));
+}
+
+fn repaint_delay(inputs: &RepaintInputs, has_drag_input: bool, has_spinner: bool) -> Duration {
     let needs_animation = inputs.show_hud
         || inputs.show_session_overlay
         || inputs.show_boost_panel
-        || inputs.show_dashboard
         || has_drag_input
         || has_spinner;
 
-    let delay = if needs_animation {
+    if needs_animation {
         Duration::from_millis(16)
     } else if inputs.is_launched || inputs.show_dashboard {
         Duration::from_millis(100)
@@ -620,8 +746,7 @@ fn schedule_repaint(ctx: &egui::Context, state: &Arc<AppState>, inputs: RepaintI
         Duration::from_millis(250)
     } else {
         Duration::from_millis(1000)
-    };
-    ctx.request_repaint_after(delay);
+    }
 }
 
 fn boost_operation_running(state: &Arc<AppState>) -> bool {
@@ -821,7 +946,7 @@ impl MainApp {
         ui.add_space(8.0);
         ui.separator();
         ui.add_space(4.0);
-        render_launch_controls(
+        let arrange_action = render_launch_controls(
             ui,
             ctx,
             &self.state,
@@ -831,12 +956,36 @@ impl MainApp {
             &mut self.confirm_modal,
         );
 
+        match arrange_action {
+            Some(ArrangeHudAction::Start) => {
+                self.hud_position_snapshot = Some(HudPositionSnapshot::from_config(&config));
+            }
+            Some(ArrangeHudAction::Done) => {
+                self.hud_position_snapshot = None;
+            }
+            Some(ArrangeHudAction::Cancel) => {
+                if let Some(snapshot) = self.hud_position_snapshot.take() {
+                    snapshot.restore(config_edit);
+                }
+            }
+            None => {}
+        }
+
         if changed {
             // Auto-enable launch when drag positioning is turned on
             if config_edit.layout_mode && !config.layout_mode {
                 if !is_launched {
-                    self.state.flags.is_launched.store(true, Ordering::SeqCst);
-                    self.launched_by_layout_mode = true;
+                    if crate::input::try_launch_overlay_at_path(
+                        &self.state,
+                        &config_edit.rocket_league_path,
+                        "layout_mode",
+                    ) {
+                        self.launched_by_layout_mode = true;
+                    } else {
+                        config_edit.layout_mode = false;
+                        self.hud_position_snapshot = None;
+                        self.settings_tab = SettingsTab::Setup;
+                    }
                 }
             }
             // Auto-disable launch when drag positioning is turned off, if it was launched by layout mode
