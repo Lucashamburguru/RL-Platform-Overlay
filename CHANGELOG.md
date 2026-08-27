@@ -13,6 +13,8 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 - **Dependency Advisories**: Updates compatible `crossbeam-epoch` and `webbrowser` releases while documenting time-bounded exceptions for transitive `quick-xml` advisories that require a future GUI stack upgrade.
+- **Replay Trust Validation**: Fully parses replay containers and verifies header/body CRCs before uploads, download acceptance, local duplicate suppression, or in-place Hoops repair, while leaving fast library metadata scans header-only.
+- **Hoops Fixer Integrity**: Requires a recognized legacy token replacement, rejects corrupt inputs and invalid outputs, verifies existing backups match the replay being replaced, and refuses invalid backups during restoration.
 
 ---
 

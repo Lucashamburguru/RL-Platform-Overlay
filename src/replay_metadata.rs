@@ -1,5 +1,5 @@
 use crate::state::AppState;
-use boxcars::HeaderProp;
+use boxcars::{HeaderProp, ParserBuilder};
 use std::collections::HashMap;
 use std::fs;
 use std::io::Read;
@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 const MAX_REPLAY_HEADER_BYTES: usize = 16 * 1024 * 1024;
+const MAX_STRICT_REPLAY_BYTES: usize = 128 * 1024 * 1024;
 const MAX_HEADER_PROPERTY_DEPTH: usize = 64;
 const MAX_HEADER_PROPERTIES: usize = 50_000;
 
@@ -357,35 +358,68 @@ fn read_replay_header_prefix(path: &Path) -> std::io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
-pub(crate) fn validate_replay_file(path: &Path) -> Result<(), String> {
-    let bytes = read_replay_header_prefix(path)
-        .map_err(|error| format!("Could not read replay header: {error}"))?;
-    parse_header_properties(&bytes).map(|_| ())
+pub(crate) fn validate_replay_file_strict(path: &Path) -> Result<(), String> {
+    let metadata =
+        fs::metadata(path).map_err(|error| format!("Could not inspect replay file: {error}"))?;
+    if metadata.len() > MAX_STRICT_REPLAY_BYTES as u64 {
+        return Err(format!(
+            "Replay exceeds the {} MiB validation limit.",
+            MAX_STRICT_REPLAY_BYTES / (1024 * 1024)
+        ));
+    }
+    let bytes = fs::read(path).map_err(|error| format!("Could not read replay file: {error}"))?;
+    validate_replay_bytes_strict(&bytes)
 }
 
-pub(crate) fn validate_replay_bytes(bytes: &[u8]) -> Result<(), String> {
-    if bytes.len() < 8 {
-        return Err("Replay is shorter than its header prefix.".to_string());
+/// Validates the complete replay container and both section CRCs without
+/// decoding volatile network frames. Use this before a replay crosses a trust
+/// boundary (upload, download acceptance, or in-place mutation); metadata scans
+/// intentionally keep using the bounded header-only validator above.
+pub(crate) fn validate_replay_bytes_strict(bytes: &[u8]) -> Result<(), String> {
+    if bytes.len() > MAX_STRICT_REPLAY_BYTES {
+        return Err(format!(
+            "Replay exceeds the {} MiB validation limit.",
+            MAX_STRICT_REPLAY_BYTES / (1024 * 1024)
+        ));
     }
-    let header_len = i32::from_le_bytes(
-        bytes[0..4]
-            .try_into()
-            .map_err(|_| "Replay header prefix is invalid.".to_string())?,
-    );
-    if header_len < 0 {
-        return Err("Replay header length is negative.".to_string());
-    }
-    let header_len = header_len as usize;
-    if header_len > MAX_REPLAY_HEADER_BYTES {
+
+    let header_size = bytes
+        .get(..4)
+        .and_then(|value| <[u8; 4]>::try_from(value).ok())
+        .map(i32::from_le_bytes)
+        .ok_or_else(|| "Replay is missing its header size.".to_string())?;
+    let header_size =
+        usize::try_from(header_size).map_err(|_| "Replay header size is negative.".to_string())?;
+    if header_size > MAX_REPLAY_HEADER_BYTES {
         return Err("Replay header length exceeds parser limit.".to_string());
     }
-    let header_end = 8_usize
-        .checked_add(header_len)
+    let body_prefix = 8_usize
+        .checked_add(header_size)
         .ok_or_else(|| "Replay header length overflowed.".to_string())?;
-    let header = bytes
-        .get(..header_end)
-        .ok_or_else(|| "Replay header length exceeds downloaded file size.".to_string())?;
-    parse_header_properties(header).map(|_| ())
+    let body_size = bytes
+        .get(body_prefix..body_prefix.saturating_add(4))
+        .and_then(|value| <[u8; 4]>::try_from(value).ok())
+        .map(i32::from_le_bytes)
+        .ok_or_else(|| "Replay is missing its body size.".to_string())?;
+    let body_size =
+        usize::try_from(body_size).map_err(|_| "Replay body size is negative.".to_string())?;
+    let expected_size = body_prefix
+        .checked_add(8)
+        .and_then(|prefix| prefix.checked_add(body_size))
+        .ok_or_else(|| "Replay body length overflowed.".to_string())?;
+    if expected_size != bytes.len() {
+        return Err(format!(
+            "Replay container length is inconsistent (expected {expected_size} bytes, found {}).",
+            bytes.len()
+        ));
+    }
+
+    ParserBuilder::new(bytes)
+        .always_check_crc()
+        .never_parse_network_data()
+        .parse()
+        .map(|_| ())
+        .map_err(|error| format!("Replay structure or CRC is invalid: {error}"))
 }
 
 fn parse_header_properties(bytes: &[u8]) -> Result<Vec<(String, HeaderProp)>, String> {

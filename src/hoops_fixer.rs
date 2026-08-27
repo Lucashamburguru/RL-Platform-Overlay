@@ -1,6 +1,7 @@
 use crate::state::AppState;
-use std::fs;
-use std::path::PathBuf;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
 #[derive(Clone, Debug)]
@@ -8,6 +9,8 @@ pub struct PatchDetail {
     pub desc: String,
     pub count: usize,
 }
+
+type FixedReplay = (Vec<u8>, Vec<PatchDetail>);
 
 struct Candidate {
     old: Vec<u8>,
@@ -121,19 +124,12 @@ pub fn calculate_ue3_crc(data: &[u8]) -> u32 {
     (!crc).swap_bytes()
 }
 
-/// Checks if the haystack contains the needle text.
-fn contains_bytes(haystack: &[u8], needle: &str) -> bool {
-    let needle_bytes = needle.as_bytes();
-    if needle_bytes.len() > haystack.len() {
-        return false;
-    }
-    haystack
-        .windows(needle_bytes.len())
-        .any(|w| w == needle_bytes)
-}
-
 /// Scans the body byte-by-byte and replaces any occurrences of old_token with new_token.
 fn replace_token(body: &[u8], old_token: &[u8], new_token: &[u8]) -> (Option<Vec<u8>>, usize) {
+    if old_token.len() > body.len() {
+        return (None, 0);
+    }
+
     // First, check if there's any match in the body
     let mut first_match = None;
     for i in 0..=body.len().saturating_sub(old_token.len()) {
@@ -167,11 +163,14 @@ fn replace_token(body: &[u8], old_token: &[u8], new_token: &[u8]) -> (Option<Vec
     (Some(result), count)
 }
 
-/// Fixes a single Rocket League replay file's legacy hoops tags and updates both header and body CRCs.
-/// Returns Some((fixed_bytes, logs)) if a change was successfully made, or None if no fix was needed.
-pub fn fix_single_replay(data: &[u8]) -> Option<(Vec<u8>, Vec<PatchDetail>)> {
+/// Fixes a validated Rocket League replay's recognized legacy Hoops tokens and
+/// updates the affected body CRC. Invalid inputs are rejected rather than
+/// having their stored CRCs silently replaced.
+fn fix_single_replay(data: &[u8]) -> Result<Option<FixedReplay>, String> {
+    crate::replay_metadata::validate_replay_bytes_strict(data)?;
+
     if data.len() < 8 {
-        return None;
+        return Err("Replay is shorter than its header prefix.".to_string());
     }
 
     // Read header size (first 4 bytes)
@@ -179,7 +178,7 @@ pub fn fix_single_replay(data: &[u8]) -> Option<(Vec<u8>, Vec<PatchDetail>)> {
     h_sz_bytes.copy_from_slice(&data[0..4]);
     let h_sz = u32::from_le_bytes(h_sz_bytes) as usize;
     if h_sz > data.len() || h_sz + 8 > data.len() {
-        return None;
+        return Err("Replay header length exceeds file size.".to_string());
     }
 
     // Header data payload
@@ -189,7 +188,7 @@ pub fn fix_single_replay(data: &[u8]) -> Option<(Vec<u8>, Vec<PatchDetail>)> {
     // Body prefix position
     let body_prefix_pos = 8 + h_sz;
     if body_prefix_pos + 8 > data.len() {
-        return None;
+        return Err("Replay is missing its body prefix.".to_string());
     }
 
     let mut body_size_bytes = [0u8; 4];
@@ -197,56 +196,31 @@ pub fn fix_single_replay(data: &[u8]) -> Option<(Vec<u8>, Vec<PatchDetail>)> {
     let body_size = u32::from_le_bytes(body_size_bytes) as usize;
 
     if body_prefix_pos + 8 + body_size > data.len() {
-        return None;
+        return Err("Replay body length exceeds file size.".to_string());
     }
-
-    // Check if this is a legacy hoops/mutator replay
-    let is_hoops = contains_bytes(data, "Archetypes.Ball.Ball_BasketBall")
-        || contains_bytes(data, "Archetypes.Ball.Ball_Basketball")
-        || contains_bytes(data, "HoopsStadium")
-        || contains_bytes(data, "hoopsStreet")
-        || contains_bytes(data, "GameEvent_Basketball")
-        || contains_bytes(data, ".upk");
 
     let body_data = &data[body_prefix_pos + 8..body_prefix_pos + 8 + body_size];
     let mut final_body_data = body_data.to_vec();
     let mut patch_details = Vec::new();
 
-    if is_hoops {
-        let candidates = get_candidates();
-        for candidate in candidates {
-            let (new_body, count) = replace_token(&final_body_data, &candidate.old, &candidate.new);
-            if count > 0 {
-                patch_details.push(PatchDetail {
-                    desc: candidate.desc.clone(),
-                    count,
-                });
-                if let Some(nb) = new_body {
-                    final_body_data = nb;
-                }
+    for candidate in get_candidates() {
+        let (new_body, count) = replace_token(&final_body_data, &candidate.old, &candidate.new);
+        if count > 0 {
+            patch_details.push(PatchDetail {
+                desc: candidate.desc.clone(),
+                count,
+            });
+            if let Some(nb) = new_body {
+                final_body_data = nb;
             }
         }
     }
 
-    // Verify if changes were made or if original CRCs were mismatching
-    let old_h_crc = u32::from_le_bytes([data[4], data[5], data[6], data[7]]);
-    let old_body_crc = u32::from_le_bytes([
-        data[body_prefix_pos + 4],
-        data[body_prefix_pos + 5],
-        data[body_prefix_pos + 6],
-        data[body_prefix_pos + 7],
-    ]);
+    if patch_details.is_empty() {
+        return Ok(None);
+    }
 
     let new_body_crc = calculate_ue3_crc(&final_body_data);
-
-    let changed = final_body_data.len() != body_size
-        || final_body_data != body_data
-        || h_crc != old_h_crc
-        || new_body_crc != old_body_crc;
-
-    if !changed {
-        return None;
-    }
 
     // Reconstruct the final patched .replay buffer
     let new_body_size = final_body_data.len();
@@ -282,7 +256,46 @@ pub fn fix_single_replay(data: &[u8]) -> Option<(Vec<u8>, Vec<PatchDetail>)> {
         }
     }
 
-    Some((final_replay, patch_details))
+    crate::replay_metadata::validate_replay_bytes_strict(&final_replay)
+        .map_err(|error| format!("Patched replay failed validation: {error}"))?;
+
+    Ok(Some((final_replay, patch_details)))
+}
+
+/// Creates the canonical backup once and verifies that an existing backup is
+/// byte-for-byte the input about to be replaced. A stale backup blocks mutation
+/// instead of giving the user a misleading recovery point.
+fn ensure_matching_backup(path: &Path, data: &[u8]) -> Result<PathBuf, String> {
+    let mut backup_path = path.to_path_buf();
+    backup_path.set_extension("replay.bak");
+
+    match OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&backup_path)
+    {
+        Ok(mut backup) => {
+            let result = backup.write_all(data).and_then(|_| backup.sync_all());
+            if let Err(error) = result {
+                drop(backup);
+                let _ = fs::remove_file(&backup_path);
+                return Err(format!("Could not write backup: {error}"));
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            let existing = fs::read(&backup_path)
+                .map_err(|read_error| format!("Could not read existing backup: {read_error}"))?;
+            if existing != data {
+                return Err(
+                    "Existing backup does not match this replay; restore, move, or delete it before retrying."
+                        .to_string(),
+                );
+            }
+        }
+        Err(error) => return Err(format!("Could not create backup: {error}")),
+    }
+
+    Ok(backup_path)
 }
 
 /// Helper to set AppState's hoops fixer status.
@@ -390,57 +403,49 @@ fn run_folder_fix(state: Arc<AppState>) {
             }
         };
 
-        // Basic replay validation check
-        let is_valid = data.len() >= 100
-            && (contains_bytes(&data[0..100.min(data.len())], "RL_REPLAY")
-                || contains_bytes(&data[0..100.min(data.len())], "Replay"));
+        match fix_single_replay(&data) {
+            Ok(Some((fixed_bytes, patches))) => {
+                // Replay needs patching!
+                if let Err(error) = ensure_matching_backup(&path, &data) {
+                    append_log(&state, format!("❌ {filename}: {error}"));
+                    continue;
+                }
 
-        if !is_valid {
-            // Skip silently or log invalid files? Let's skip invalid files as they aren't replays.
-            continue;
-        }
+                // Write fixed replay atomically
+                let tmp_path = path.with_extension("replay.tmp");
+                if let Err(e) = fs::write(&tmp_path, &fixed_bytes) {
+                    append_log(
+                        &state,
+                        format!("❌ {filename}: Could not write temp file ({e})"),
+                    );
+                    let _ = fs::remove_file(&tmp_path);
+                    continue;
+                }
+                if let Err(e) = fs::rename(&tmp_path, &path) {
+                    append_log(
+                        &state,
+                        format!(
+                            "❌ {filename}: Could not rename temp file to replace original ({e})"
+                        ),
+                    );
+                    let _ = fs::remove_file(&tmp_path);
+                    continue;
+                }
 
-        if let Some((fixed_bytes, patches)) = fix_single_replay(&data) {
-            // Replay needs patching!
-            // First save backup as .replay.bak (preserving original if it already exists)
-            let mut backup_path = path.clone();
-            backup_path.set_extension("replay.bak");
-
-            if !backup_path.exists()
-                && let Err(e) = fs::write(&backup_path, &data)
-            {
-                append_log(
-                    &state,
-                    format!("❌ {filename}: Could not write backup ({e})"),
-                );
-                continue;
+                fixed_count += 1;
+                append_log(&state, format!("✔ Fixed {filename}:"));
+                for patch in patches {
+                    append_log(
+                        &state,
+                        format!("    * {} (applied {}x)", patch.desc, patch.count),
+                    );
+                }
             }
-
-            // Write fixed replay atomically
-            let tmp_path = path.with_extension("replay.tmp");
-            if let Err(e) = fs::write(&tmp_path, &fixed_bytes) {
+            Ok(None) => {}
+            Err(error) => {
                 append_log(
                     &state,
-                    format!("❌ {filename}: Could not write temp file ({e})"),
-                );
-                let _ = fs::remove_file(&tmp_path);
-                continue;
-            }
-            if let Err(e) = fs::rename(&tmp_path, &path) {
-                append_log(
-                    &state,
-                    format!("❌ {filename}: Could not rename temp file to replace original ({e})"),
-                );
-                let _ = fs::remove_file(&tmp_path);
-                continue;
-            }
-
-            fixed_count += 1;
-            append_log(&state, format!("✔ Fixed {filename}:"));
-            for patch in patches {
-                append_log(
-                    &state,
-                    format!("    * {} (applied {}x)", patch.desc, patch.count),
+                    format!("⚠ Skipped {filename}: replay failed validation ({error})"),
                 );
             }
         }
@@ -512,6 +517,26 @@ fn run_restore_backups(state: Arc<AppState>) {
             {
                 let mut original_path = path.clone();
                 original_path.set_file_name(original_name);
+
+                let backup = match fs::read(&path) {
+                    Ok(backup) => backup,
+                    Err(error) => {
+                        append_log(
+                            &state,
+                            format!("❌ Failed to read backup {filename}: {error}"),
+                        );
+                        err_count += 1;
+                        continue;
+                    }
+                };
+                if let Err(error) = crate::replay_metadata::validate_replay_bytes_strict(&backup) {
+                    append_log(
+                        &state,
+                        format!("❌ Refused invalid backup {filename}: {error}"),
+                    );
+                    err_count += 1;
+                    continue;
+                }
 
                 if let Err(e) = fs::copy(&path, &original_path) {
                     append_log(&state, format!("❌ Failed to restore {original_name}: {e}"));
@@ -621,6 +646,48 @@ fn run_delete_backups(state: Arc<AppState>) {
 mod tests {
     use super::*;
 
+    fn build_replay(package: Option<&str>) -> Vec<u8> {
+        fn push_i32(bytes: &mut Vec<u8>, value: i32) {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+
+        let mut header = Vec::new();
+        push_i32(&mut header, 868);
+        push_i32(&mut header, 22);
+        push_i32(&mut header, 10);
+        header.extend_from_slice(&make_token("TAGame.Replay"));
+        header.extend_from_slice(&make_token("None"));
+
+        let mut body = Vec::new();
+        // Levels, keyframes, network data, debug info, and tick marks.
+        for _ in 0..5 {
+            push_i32(&mut body, 0);
+        }
+        if let Some(package) = package {
+            push_i32(&mut body, 1);
+            body.extend_from_slice(&make_token(package));
+        } else {
+            push_i32(&mut body, 0);
+        }
+        // Objects, names, class index, and net cache.
+        for _ in 0..4 {
+            push_i32(&mut body, 0);
+        }
+
+        let mut replay = Vec::new();
+        push_i32(&mut replay, header.len() as i32);
+        replay.extend_from_slice(&calculate_ue3_crc(&header).to_le_bytes());
+        replay.extend_from_slice(&header);
+        push_i32(&mut replay, body.len() as i32);
+        replay.extend_from_slice(&calculate_ue3_crc(&body).to_le_bytes());
+        replay.extend_from_slice(&body);
+        replay
+    }
+
+    fn body_prefix(replay: &[u8]) -> usize {
+        8 + u32::from_le_bytes(replay[..4].try_into().unwrap()) as usize
+    }
+
     #[test]
     fn test_unreal_crc_matches_expected() {
         // Simple verification that calculate_ue3_crc produces expected values.
@@ -636,46 +703,19 @@ mod tests {
 
     #[test]
     fn test_fix_single_replay_patches_tokens_and_updates_crcs() {
-        // Build a mock replay byte buffer:
-        // Bytes 0..4: Header size (little-endian u32) = 12
-        // Bytes 4..8: Header CRC (little-endian u32)
-        // Bytes 8..20: Header payload (12 bytes, containing "RL_REPLAY")
-        // Bytes 20..24: Body size (little-endian u32)
-        // Bytes 24..28: Body CRC (little-endian u32)
-        // Bytes 28..: Body payload (containing a legacy hoops token)
-
-        let header_payload = b"RL_REPLAY_123"; // 13 bytes
-        let h_sz = header_payload.len();
-        let h_crc = calculate_ue3_crc(header_payload);
-
-        let old_token = make_token("Archetypes.Ball.Ball_BasketBall_Mutator");
-        let _new_token = make_token("Archetypes.Ball.Ball_BasketBall");
-
-        let mut body_payload = Vec::new();
-        body_payload.extend_from_slice(b"some prefix bytes...");
-        body_payload.extend_from_slice(&old_token);
-        body_payload.extend_from_slice(b"...some suffix bytes");
-
-        let body_sz = body_payload.len();
-        let body_crc = calculate_ue3_crc(&body_payload);
-
-        let mut mock_replay = Vec::new();
-        mock_replay.extend_from_slice(&(h_sz as u32).to_le_bytes());
-        mock_replay.extend_from_slice(&h_crc.to_le_bytes());
-        mock_replay.extend_from_slice(header_payload);
-        mock_replay.extend_from_slice(&(body_sz as u32).to_le_bytes());
-        mock_replay.extend_from_slice(&body_crc.to_le_bytes());
-        mock_replay.extend_from_slice(&body_payload);
-
-        // Extra trailing data
-        let trailing_data = b"some keyframe data at the end";
-        mock_replay.extend_from_slice(trailing_data);
+        let mock_replay = build_replay(Some("Archetypes.Ball.Ball_BasketBall_Mutator"));
+        let h_sz = u32::from_le_bytes(mock_replay[..4].try_into().unwrap()) as usize;
+        let body_prefix_pos = body_prefix(&mock_replay);
+        let body_sz = u32::from_le_bytes(
+            mock_replay[body_prefix_pos..body_prefix_pos + 4]
+                .try_into()
+                .unwrap(),
+        ) as usize;
 
         // Run the fixer on the mock replay
-        let result = fix_single_replay(&mock_replay);
-        assert!(result.is_some(), "Expected replay to be patched");
-
-        let (fixed_bytes, patches) = result.unwrap();
+        let (fixed_bytes, patches) = fix_single_replay(&mock_replay)
+            .unwrap()
+            .expect("expected replay to be patched");
         assert_eq!(patches.len(), 1);
         assert_eq!(
             patches[0].desc,
@@ -698,7 +738,7 @@ mod tests {
             fixed_bytes[6],
             fixed_bytes[7],
         ]);
-        assert_eq!(fixed_h_crc, h_crc);
+        assert_eq!(fixed_h_crc, calculate_ue3_crc(&fixed_bytes[8..8 + h_sz]));
 
         let body_prefix_pos = 8 + fixed_h_sz;
         let fixed_body_sz = u32::from_le_bytes([
@@ -724,18 +764,66 @@ mod tests {
         assert_eq!(fixed_body_crc, calculated_fixed_body_crc);
 
         // Check that the old token was replaced by the new token
-        assert!(!contains_bytes(
-            fixed_body_payload,
-            "Archetypes.Ball.Ball_BasketBall_Mutator"
-        ));
-        assert!(contains_bytes(
-            fixed_body_payload,
-            "Archetypes.Ball.Ball_BasketBall"
-        ));
+        assert!(
+            !fixed_body_payload
+                .windows("Archetypes.Ball.Ball_BasketBall_Mutator".len())
+                .any(|window| window == b"Archetypes.Ball.Ball_BasketBall_Mutator")
+        );
+        assert!(
+            fixed_body_payload
+                .windows("Archetypes.Ball.Ball_BasketBall".len())
+                .any(|window| window == b"Archetypes.Ball.Ball_BasketBall")
+        );
+        assert!(crate::replay_metadata::validate_replay_bytes_strict(&fixed_bytes).is_ok());
+    }
 
-        // Check trailing data is still intact
-        let fixed_trailing_offset = body_prefix_pos + 8 + fixed_body_sz;
-        let fixed_trailing = &fixed_bytes[fixed_trailing_offset..];
-        assert_eq!(fixed_trailing, trailing_data);
+    #[test]
+    fn fixer_rejects_bad_header_and_body_crcs() {
+        let replay = build_replay(Some("Archetypes.Ball.Ball_BasketBall_Mutator"));
+
+        let mut bad_header = replay.clone();
+        bad_header[4] ^= 1;
+        assert!(fix_single_replay(&bad_header).is_err());
+
+        let mut bad_body = replay;
+        let body_prefix = body_prefix(&bad_body);
+        bad_body[body_prefix + 4] ^= 1;
+        assert!(fix_single_replay(&bad_body).is_err());
+    }
+
+    #[test]
+    fn fixer_ignores_marker_only_and_non_hoops_replays() {
+        assert!(
+            fix_single_replay(&build_replay(Some("HoopsStadium_Unrelated")))
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            fix_single_replay(&build_replay(Some("Stadium_P")))
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn fixer_is_idempotent() {
+        let replay = build_replay(Some("Archetypes.Ball.Ball_BasketBall_Mutator"));
+        let (fixed, _) = fix_single_replay(&replay).unwrap().unwrap();
+        assert!(fix_single_replay(&fixed).unwrap().is_none());
+    }
+
+    #[test]
+    fn backup_must_match_the_replay_being_replaced() {
+        let temp = tempfile::tempdir().unwrap();
+        let replay_path = temp.path().join("match.replay");
+        let original = build_replay(Some("Archetypes.Ball.Ball_BasketBall_Mutator"));
+        fs::write(&replay_path, &original).unwrap();
+
+        let backup = ensure_matching_backup(&replay_path, &original).unwrap();
+        assert_eq!(fs::read(&backup).unwrap(), original);
+        ensure_matching_backup(&replay_path, &original).unwrap();
+
+        let different = build_replay(Some("Archetypes.Ball.Ball_Basketball"));
+        assert!(ensure_matching_backup(&replay_path, &different).is_err());
     }
 }

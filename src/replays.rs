@@ -144,7 +144,7 @@ async fn run_replay_upload(state: Arc<AppState>, scan_all_as_uploaded: bool) -> 
                     let Ok(file_bytes) = tokio::fs::read(&replay.path).await else {
                         continue;
                     };
-                    if let Ok(status_code) = upload_file_to_ballchasing(
+                    match upload_file_to_ballchasing(
                         &state.system.ballchasing_client,
                         &api_key,
                         &visibility,
@@ -152,13 +152,23 @@ async fn run_replay_upload(state: Arc<AppState>, scan_all_as_uploaded: bool) -> 
                         file_bytes,
                     )
                     .await
-                        && UploadStatus::from_status_code(status_code).is_cached_success()
                     {
-                        mark_replays_uploaded(&state, std::slice::from_ref(&replay.filename));
-                        set_status(
+                        Ok(status_code)
+                            if UploadStatus::from_status_code(status_code).is_cached_success() =>
+                        {
+                            mark_replays_uploaded(&state, std::slice::from_ref(&replay.filename));
+                            set_status(
+                                &state,
+                                &format!("Success: Uploaded recent {}", replay.filename),
+                            );
+                        }
+                        Ok(status_code) => set_status(
                             &state,
-                            &format!("Success: Uploaded recent {}", replay.filename),
-                        );
+                            &format!(
+                                "Error: Recent replay upload failed with status {status_code}"
+                            ),
+                        ),
+                        Err(error) => set_status(&state, &format!("Error: {error}")),
                     }
                 }
             }
@@ -299,6 +309,9 @@ async fn upload_file_to_ballchasing(
     filename: &str,
     file_bytes: Vec<u8>,
 ) -> Result<u16, String> {
+    crate::replay_metadata::validate_replay_bytes_strict(&file_bytes)
+        .map_err(|error| format!("Replay failed validation and was not uploaded: {error}"))?;
+
     let part = wreq::multipart::Part::bytes(file_bytes)
         .file_name(filename.to_string())
         .mime_str("application/octet-stream")
@@ -1134,7 +1147,7 @@ async fn run_download_replay(state: Arc<AppState>, replay_id: String) -> Result<
     let mut invalid_existing_path = None;
 
     if tokio::fs::metadata(&target_path).await.is_ok() {
-        if crate::replay_metadata::validate_replay_file(&target_path).is_ok() {
+        if crate::replay_metadata::validate_replay_file_strict(&target_path).is_ok() {
             set_status(
                 &state,
                 &format!("Success: Replay {id_formatted} already exists locally"),
@@ -1152,7 +1165,7 @@ async fn run_download_replay(state: Arc<AppState>, replay_id: String) -> Result<
                     == Some(target_filename.to_lowercase())
                 {
                     let path = entry.path();
-                    if crate::replay_metadata::validate_replay_file(&path).is_ok() {
+                    if crate::replay_metadata::validate_replay_file_strict(&path).is_ok() {
                         set_status(
                             &state,
                             &format!("Success: Replay {id_formatted} already exists locally"),
@@ -1214,7 +1227,7 @@ async fn run_download_replay(state: Arc<AppState>, replay_id: String) -> Result<
         set_status(&state, "Error: Downloaded file is empty");
         return Ok(());
     }
-    crate::replay_metadata::validate_replay_bytes(&bytes).map_err(|error| {
+    crate::replay_metadata::validate_replay_bytes_strict(&bytes).map_err(|error| {
         let message = format!("Downloaded replay failed validation: {error}");
         set_status(&state, &format!("Error: {message}"));
         message
@@ -1381,8 +1394,16 @@ mod tests {
 
         let mut replay = Vec::new();
         push_i32(&mut replay, header.len() as i32);
-        replay.extend_from_slice(&0_u32.to_le_bytes());
+        replay.extend_from_slice(&boxcars::crc::calc_crc(&header).to_le_bytes());
         replay.extend_from_slice(&header);
+
+        // Empty but structurally complete body: levels, keyframes, network
+        // data, debug info, tick marks, packages, objects, names, class index,
+        // and net cache.
+        let body = vec![0_u8; 40];
+        push_i32(&mut replay, body.len() as i32);
+        replay.extend_from_slice(&boxcars::crc::calc_crc(&body).to_le_bytes());
+        replay.extend_from_slice(&body);
         replay
     }
 
@@ -1477,6 +1498,41 @@ mod tests {
         assert_eq!(usize_to_u32_saturating(42), 42);
         assert_eq!(usize_to_u32_saturating(u32::MAX as usize), u32::MAX);
         assert_eq!(usize_to_u32_saturating(u32::MAX as usize + 1), u32::MAX);
+    }
+
+    #[test]
+    fn strict_replay_validation_rejects_crc_and_container_corruption() {
+        let valid = valid_replay_bytes();
+        crate::replay_metadata::validate_replay_bytes_strict(&valid).unwrap();
+
+        let mut bad_header_crc = valid.clone();
+        bad_header_crc[4] ^= 1;
+        assert!(crate::replay_metadata::validate_replay_bytes_strict(&bad_header_crc).is_err());
+
+        let header_size = u32::from_le_bytes(valid[..4].try_into().unwrap()) as usize;
+        let mut bad_body_crc = valid.clone();
+        bad_body_crc[8 + header_size + 4] ^= 1;
+        assert!(crate::replay_metadata::validate_replay_bytes_strict(&bad_body_crc).is_err());
+
+        let mut trailing_bytes = valid;
+        trailing_bytes.push(0);
+        assert!(crate::replay_metadata::validate_replay_bytes_strict(&trailing_bytes).is_err());
+    }
+
+    #[tokio::test]
+    async fn upload_rejects_invalid_replay_before_network_request() {
+        let client = wreq::Client::new();
+        let error = upload_file_to_ballchasing(
+            &client,
+            "unused-key",
+            "private",
+            "invalid.replay",
+            b"not a replay".to_vec(),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.contains("failed validation"));
     }
 
     #[tokio::test]
@@ -1574,17 +1630,17 @@ mod tests {
         let target_name = "match.replay";
         let target = root.join(target_name);
         fs::write(&target, b"truncated").unwrap();
-        assert!(crate::replay_metadata::validate_replay_file(&target).is_err());
+        assert!(crate::replay_metadata::validate_replay_file_strict(&target).is_err());
 
         let quarantined = quarantine_invalid_replay(&target).await.unwrap();
         let valid = valid_replay_bytes();
-        assert!(crate::replay_metadata::validate_replay_bytes(&valid).is_ok());
+        assert!(crate::replay_metadata::validate_replay_bytes_strict(&valid).is_ok());
         write_downloaded_replay(&root, target_name, &valid)
             .await
             .unwrap();
 
         assert_eq!(fs::read(&quarantined).unwrap(), b"truncated");
-        assert!(crate::replay_metadata::validate_replay_file(&target).is_ok());
+        assert!(crate::replay_metadata::validate_replay_file_strict(&target).is_ok());
         assert!(
             fs::read_dir(&root)
                 .unwrap()
