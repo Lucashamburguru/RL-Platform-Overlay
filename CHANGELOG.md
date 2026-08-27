@@ -6,6 +6,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+---
+
+## [0.1.47] - 2026-08-27
+
 ### Changed
 - **More Reliable Player Tracking**: Players with identical names are now kept separate, and delayed rank lookups can no longer attach to the wrong player.
 
