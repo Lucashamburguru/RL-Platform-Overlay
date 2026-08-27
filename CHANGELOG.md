@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- **Automated Dependency Audits**: Gates releases on RustSec checks and runs a scheduled audit so newly disclosed dependency issues are surfaced between releases.
+
+### Changed
+- **Reproducible Build Toolchain**: Pins Rust 1.98 with required formatting and lint components, uses the lockfile consistently, and shares one canonical check script across local development, CI, and release builds.
+- **Safer Release Automation**: Builds all platform artifacts before a single publish job creates the GitHub release, and replaces the release helper with changelog promotion, clean-tree validation, exact file staging, annotated tags, and explicit pushes.
+
+### Fixed
+- **Dependency Advisories**: Updates compatible `crossbeam-epoch` and `webbrowser` releases while documenting time-bounded exceptions for transitive `quick-xml` advisories that require a future GUI stack upgrade.
+
 ---
 
 ## [0.1.46] - 2026-08-27

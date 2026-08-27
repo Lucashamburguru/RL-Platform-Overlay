@@ -89,7 +89,7 @@ Set `LIBCLANG_PATH` to your LLVM bin folder, for example `C:\Program Files\LLVM\
 #### Build Command
 
 ```bash
-cargo build --release
+cargo build --locked --release
 ```
 
 ### Running in Debug Mode
@@ -111,7 +111,7 @@ Linux compiled binary:
 From source:
 
 ```bash
-cargo run -- --debug
+cargo run --locked -- --debug
 ```
 
 ### Debug Capture
@@ -119,7 +119,7 @@ cargo run -- --debug
 To save raw game output for parser debugging:
 
 ```bash
-cargo run --bin debug_game_output -- --seconds 30 --output rl_game_output_debug.txt
+cargo run --locked --bin debug_game_output -- --seconds 30 --output rl_game_output_debug.txt
 ```
 
 ---

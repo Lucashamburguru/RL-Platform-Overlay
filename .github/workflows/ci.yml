@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
     - name: Install dependencies
       run: |
@@ -41,19 +41,13 @@ jobs:
           libfreetype6-dev
 
     - name: Set up Rust
-      uses: dtolnay/rust-toolchain@stable
+      uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+      with:
+        toolchain: 1.98.0
+        components: clippy, rustfmt
 
-    - name: Check formatting
-      run: cargo fmt --all -- --check
-
-    - name: Clippy
-      run: cargo clippy --all-targets -- -D warnings
-
-    - name: Check Microsoft Store configuration
-      run: cargo check --all-targets --features microsoft-store
-
-    - name: Test
-      run: cargo test --all-targets
+    - name: Run canonical checks
+      run: ./check_all.sh
 
   windows:
     name: Windows and MSIX checks
@@ -61,13 +55,13 @@ jobs:
     timeout-minutes: 45
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
     - name: Set up Rust
-      uses: dtolnay/rust-toolchain@stable
+      uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
       with:
-        targets: x86_64-pc-windows-msvc
-        components: clippy
+        toolchain: 1.98.0
+        components: clippy, rustfmt
 
     - name: Configure native build tools
       shell: pwsh
@@ -95,11 +89,9 @@ jobs:
         "LIBCLANG_PATH=$llvmBin" |
           Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-    - name: Clippy Windows targets
-      run: cargo clippy --locked --all-targets --features microsoft-store -- -D warnings
-
-    - name: Test on Windows
-      run: cargo test --locked --all-targets
+    - name: Run canonical checks
+      shell: bash
+      run: ./check_all.sh
 
     - name: Build Microsoft Store executable
       run: cargo build --locked --release --target x86_64-pc-windows-msvc --features microsoft-store

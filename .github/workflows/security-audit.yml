@@ -1,0 +1,36 @@
+name: Dependency Audit
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - .github/workflows/security-audit.yml
+  pull_request:
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - .github/workflows/security-audit.yml
+  schedule:
+    - cron: "17 9 * * 1"
+  workflow_dispatch:
+
+permissions:
+  checks: write
+  contents: read
+  issues: write
+
+jobs:
+  audit:
+    name: RustSec audit
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+    # Remove these exceptions by 2026-10-01; see docs/security-advisories.md.
+    - name: Audit Rust dependencies
+      uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        ignore: RUSTSEC-2026-0194,RUSTSEC-2026-0195
