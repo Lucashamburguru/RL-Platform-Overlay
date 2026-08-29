@@ -13,6 +13,7 @@ mod overlay;
 mod replays;
 mod session;
 mod setup;
+mod support;
 
 pub(super) use boost::render_boost_settings_tab;
 pub(super) use dashboard::render_dashboard_settings_tab;
@@ -21,6 +22,7 @@ pub(super) use overlay::render_overlay_settings_tab;
 pub(super) use replays::render_replays_settings_tab;
 pub(super) use session::render_session_settings_tab;
 pub(super) use setup::render_setup_settings_tab;
+pub(super) use support::render_support_settings_tab;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ArrangeHudAction {
@@ -43,6 +45,7 @@ pub(super) fn render_settings_tabs(
         ui.selectable_value(selected, SettingsTab::Boost, "Boost & Alpha");
         ui.selectable_value(selected, SettingsTab::Replays, "Replays");
         ui.selectable_value(selected, SettingsTab::History, "History");
+        ui.selectable_value(selected, SettingsTab::Support, "Support");
         if debug_enabled {
             ui.selectable_value(selected, SettingsTab::Debug, "Debug");
         }

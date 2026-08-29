@@ -1,7 +1,10 @@
 use futures_util::StreamExt;
 use serde_json::Value;
+use std::collections::VecDeque;
 use std::io;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -10,6 +13,165 @@ use tokio_tungstenite::connect_async;
 
 pub const WS_URL: &str = "ws://127.0.0.1:49123";
 pub const TCP_ADDR: &str = "127.0.0.1:49123";
+const RECENT_LOG_WINDOW_MS: u128 = 120_000;
+const UPDATE_STATE_SAMPLE_INTERVAL_MS: u128 = 1_000;
+const RECENT_LOG_MAX_BYTES: usize = 8 * 1024 * 1024;
+
+#[derive(Clone, Debug)]
+struct RecentStatsApiEntry {
+    unix_ms: u128,
+    source: &'static str,
+    event: Arc<str>,
+    payload: Arc<str>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct RecentStatsApiSnapshot {
+    entries: Vec<RecentStatsApiEntry>,
+    detected_mode: String,
+    detected_mode_source: String,
+}
+
+impl RecentStatsApiSnapshot {
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn with_detected_mode(mut self, mode: &str, source: &str) -> Self {
+        self.detected_mode = mode.to_string();
+        self.detected_mode_source = source.to_string();
+        self
+    }
+
+    fn render(&self, generated_unix_ms: u128) -> String {
+        let mut output = String::new();
+        output.push_str("Rocket League Stats API recent issue log\n");
+        output.push_str(&format!("generated_unix_ms={generated_unix_ms}\n"));
+        output.push_str(&format!("app_version={}\n", env!("CARGO_PKG_VERSION")));
+        output.push_str("privacy=identifiable\n");
+        output.push_str(
+            "warning=May contain player names, account identifiers, and match identifiers.\n",
+        );
+        output.push_str("capture_window_seconds=120\n");
+        output.push_str("update_state_sampling_seconds=1\n");
+        output.push_str(&format!("detected_mode={}\n", self.detected_mode));
+        output.push_str(&format!(
+            "detected_mode_source={}\n",
+            self.detected_mode_source
+        ));
+        output.push_str(&format!("payload_count={}\n", self.entries.len()));
+
+        for entry in &self.entries {
+            output.push_str(&format!(
+                "\n--- payload source={} event={} unix_ms={} ---\n",
+                entry.source, entry.event, entry.unix_ms
+            ));
+            output.push_str(&entry.payload);
+            output.push('\n');
+        }
+        output
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct RecentStatsApiLog {
+    entries: VecDeque<RecentStatsApiEntry>,
+    total_bytes: usize,
+    last_update_state_unix_ms: u128,
+}
+
+impl RecentStatsApiLog {
+    pub fn record(&mut self, source: StatsApiTransport, event: &str, payload: &str, unix_ms: u128) {
+        self.remove_expired(unix_ms);
+        if event == "UpdateState"
+            && self.last_update_state_unix_ms != 0
+            && unix_ms.saturating_sub(self.last_update_state_unix_ms)
+                < UPDATE_STATE_SAMPLE_INTERVAL_MS
+        {
+            return;
+        }
+        if event == "UpdateState" {
+            self.last_update_state_unix_ms = unix_ms;
+        }
+
+        let payload_bytes = payload.len();
+        if payload_bytes > RECENT_LOG_MAX_BYTES {
+            return;
+        }
+        self.entries.push_back(RecentStatsApiEntry {
+            unix_ms,
+            source: match source {
+                StatsApiTransport::WebSocket => "websocket",
+                StatsApiTransport::Tcp => "tcp-json-object",
+                StatsApiTransport::Unknown => "unknown",
+            },
+            event: Arc::from(event),
+            payload: Arc::from(payload),
+        });
+        self.total_bytes = self.total_bytes.saturating_add(payload_bytes);
+        while self.total_bytes > RECENT_LOG_MAX_BYTES {
+            self.pop_front();
+        }
+    }
+
+    pub fn snapshot(&mut self, unix_ms: u128) -> RecentStatsApiSnapshot {
+        self.remove_expired(unix_ms);
+        RecentStatsApiSnapshot {
+            entries: self.entries.iter().cloned().collect(),
+            ..Default::default()
+        }
+    }
+
+    fn remove_expired(&mut self, unix_ms: u128) {
+        while self
+            .entries
+            .front()
+            .is_some_and(|entry| unix_ms.saturating_sub(entry.unix_ms) > RECENT_LOG_WINDOW_MS)
+        {
+            self.pop_front();
+        }
+    }
+
+    fn pop_front(&mut self) {
+        if let Some(entry) = self.entries.pop_front() {
+            self.total_bytes = self.total_bytes.saturating_sub(entry.payload.len());
+        }
+    }
+}
+
+pub fn default_recent_log_path(config_dir: &Path) -> PathBuf {
+    config_dir
+        .join("captures")
+        .join(format!("rl_stats_issue_log_{}.txt", now_ms()))
+}
+
+pub fn save_recent_stats_api_snapshot(
+    snapshot: &RecentStatsApiSnapshot,
+    output: &Path,
+) -> io::Result<()> {
+    if snapshot.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "No recent Stats API events are available yet",
+        ));
+    }
+    if let Some(parent) = output.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(output)?;
+    file.write_all(snapshot.render(now_ms()).as_bytes())
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum StatsApiTransport {
@@ -290,5 +452,93 @@ mod tests {
         let mut splitter = TcpJsonSplitter::default();
         let payloads = splitter.push(b"{\"Event\":\"UpdateState\",\"Data\":{\"Name\":\"A } B\"}}");
         assert_eq!(payloads.len(), 1);
+    }
+
+    #[test]
+    fn recent_log_samples_state_updates_and_keeps_discrete_events() {
+        let mut log = RecentStatsApiLog::default();
+        log.record(
+            StatsApiTransport::WebSocket,
+            "UpdateState",
+            r#"{"Event":"UpdateState","frame":1}"#,
+            100,
+        );
+        log.record(
+            StatsApiTransport::WebSocket,
+            "UpdateState",
+            r#"{"Event":"UpdateState","frame":2}"#,
+            500,
+        );
+        log.record(
+            StatsApiTransport::WebSocket,
+            "GoalScored",
+            r#"{"Event":"GoalScored"}"#,
+            600,
+        );
+        log.record(
+            StatsApiTransport::WebSocket,
+            "UpdateState",
+            r#"{"Event":"UpdateState","frame":3}"#,
+            1_200,
+        );
+
+        let snapshot = log.snapshot(1_200);
+        let rendered = snapshot.render(1_200);
+        assert_eq!(snapshot.len(), 3);
+        assert!(rendered.contains("frame\":1"));
+        assert!(!rendered.contains("frame\":2"));
+        assert!(rendered.contains("GoalScored"));
+        assert!(rendered.contains("frame\":3"));
+    }
+
+    #[test]
+    fn recent_log_discards_entries_outside_the_rolling_window() {
+        let mut log = RecentStatsApiLog::default();
+        log.record(
+            StatsApiTransport::Tcp,
+            "RoundStarted",
+            r#"{"Event":"RoundStarted"}"#,
+            1,
+        );
+
+        assert!(log.snapshot(RECENT_LOG_WINDOW_MS + 2).is_empty());
+    }
+
+    #[test]
+    fn recent_log_export_includes_detection_context_and_does_not_overwrite() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let output = temp_dir.path().join("issue-log.txt");
+        let mut log = RecentStatsApiLog::default();
+        log.record(
+            StatsApiTransport::WebSocket,
+            "UpdateState",
+            r#"{"Event":"UpdateState","Data":{"Playlist":"Ranked Doubles 2v2"}}"#,
+            1_000,
+        );
+        let snapshot = log
+            .snapshot(1_000)
+            .with_detected_mode("2v2", "playlist_metadata");
+
+        save_recent_stats_api_snapshot(&snapshot, &output).unwrap();
+        let contents = std::fs::read_to_string(&output).unwrap();
+        assert!(contents.contains("privacy=identifiable"));
+        assert!(contents.contains("detected_mode=2v2"));
+        assert!(contents.contains("detected_mode_source=playlist_metadata"));
+        assert!(contents.contains("Ranked Doubles 2v2"));
+        assert_eq!(
+            save_recent_stats_api_snapshot(&snapshot, &output)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::AlreadyExists
+        );
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&output).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
     }
 }

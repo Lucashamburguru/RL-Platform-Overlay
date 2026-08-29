@@ -14,7 +14,7 @@ use super::settings::{
     ArrangeHudAction, render_boost_settings_tab, render_history_settings_tab,
     render_launch_controls, render_overlay_settings_tab, render_replays_settings_tab,
     render_session_settings_tab, render_settings_tabs, render_setup_settings_tab,
-    render_update_notice,
+    render_support_settings_tab, render_update_notice,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -211,6 +211,7 @@ pub(super) enum SettingsTab {
     Boost,
     Replays,
     History,
+    Support,
     Debug,
 }
 
@@ -890,7 +891,6 @@ impl MainApp {
                     config_edit,
                     &mut changed,
                     self.is_rl_running,
-                    &self.rl_process_detection_detail,
                 ),
                 SettingsTab::Overlay => render_overlay_settings_tab(
                     ui,
@@ -933,6 +933,14 @@ impl MainApp {
                     &mut changed,
                     &mut self.confirm_modal,
                     &mut self.history_search_query,
+                ),
+                SettingsTab::Support => render_support_settings_tab(
+                    ui,
+                    &self.state,
+                    config_edit,
+                    &mut changed,
+                    self.is_rl_running,
+                    &self.rl_process_detection_detail,
                 ),
                 SettingsTab::Debug => render_debug_settings_tab(
                     ui,

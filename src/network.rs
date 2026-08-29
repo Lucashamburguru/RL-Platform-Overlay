@@ -81,8 +81,24 @@ pub async fn start_network_task_with_addr(state: Arc<AppState>, addr: &str) {
                         Ok(msg) => {
                             if let Ok(text) = msg.to_text() {
                                 match serde_json::from_str::<Value>(text) {
-                                    Ok(json) => handle_event(&state, &json),
-                                    Err(error) => update_parse_error(&state, error.to_string()),
+                                    Ok(json) => {
+                                        record_recent_api_payload(
+                                            &state,
+                                            StatsApiTransport::WebSocket,
+                                            &json,
+                                            text,
+                                        );
+                                        handle_event(&state, &json);
+                                    }
+                                    Err(error) => {
+                                        record_recent_api_payload(
+                                            &state,
+                                            StatsApiTransport::WebSocket,
+                                            &Value::Null,
+                                            text,
+                                        );
+                                        update_parse_error(&state, error.to_string());
+                                    }
                                 }
                             }
                         }
@@ -116,8 +132,22 @@ pub async fn start_network_task_with_addr(state: Arc<AppState>, addr: &str) {
                                 Ok(n) => {
                                     for json_str in splitter.push(&buffer[..n]) {
                                         match serde_json::from_str::<Value>(&json_str) {
-                                            Ok(json) => handle_event(&state, &json),
+                                            Ok(json) => {
+                                                record_recent_api_payload(
+                                                    &state,
+                                                    StatsApiTransport::Tcp,
+                                                    &json,
+                                                    &json_str,
+                                                );
+                                                handle_event(&state, &json);
+                                            }
                                             Err(error) => {
+                                                record_recent_api_payload(
+                                                    &state,
+                                                    StatsApiTransport::Tcp,
+                                                    &Value::Null,
+                                                    &json_str,
+                                                );
                                                 update_parse_error(&state, error.to_string())
                                             }
                                         }
@@ -145,6 +175,21 @@ pub async fn start_network_task_with_addr(state: Arc<AppState>, addr: &str) {
             }
         }
         tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+    }
+}
+
+fn record_recent_api_payload(
+    state: &AppState,
+    transport: StatsApiTransport,
+    json: &Value,
+    payload: &str,
+) {
+    let event = json
+        .get("Event")
+        .and_then(Value::as_str)
+        .unwrap_or("Unparseable");
+    if let Ok(mut recent_log) = state.diagnostics.recent_stats_api_log.lock() {
+        recent_log.record(transport, event, payload, crate::stats_api::now_ms());
     }
 }
 

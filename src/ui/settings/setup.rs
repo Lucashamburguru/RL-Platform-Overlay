@@ -1,4 +1,4 @@
-use crate::state::{AppState, Config};
+use crate::state::{ApiLogExportStatus, AppState, Config};
 use crate::ui::common::{
     StatusTone, debug_status_row, helper_text, setting_row, settings_section, status_color,
     status_text,
@@ -15,7 +15,6 @@ pub(crate) fn render_setup_settings_tab(
     config_edit: &mut Config,
     changed: &mut bool,
     is_rl_running: bool,
-    rl_process_detection_detail: &str,
 ) {
     settings_section(ui, "Stats API Setup", |ui| {
         setting_row(ui, "Rocket League Folder", |ui| {
@@ -224,16 +223,6 @@ pub(crate) fn render_setup_settings_tab(
             }
         }
     });
-
-    ui.add_space(10.0);
-    render_support_diagnostics_section(
-        ui,
-        state,
-        config_edit,
-        changed,
-        is_rl_running,
-        rl_process_detection_detail,
-    );
 
     ui.add_space(10.0);
     render_hotkey_settings_section(ui, ctx, state, config_edit, changed);
@@ -489,7 +478,7 @@ pub(crate) fn request_stats_api_setup_refresh(
     true
 }
 
-fn render_support_diagnostics_section(
+pub(super) fn render_support_diagnostics_section(
     ui: &mut egui::Ui,
     state: &Arc<AppState>,
     config_edit: &mut Config,
@@ -498,70 +487,327 @@ fn render_support_diagnostics_section(
     rl_process_detection_detail: &str,
 ) {
     settings_section(ui, "Support Diagnostics", |ui| {
-        ui.horizontal_wrapped(|ui| {
-            if ui
-                .checkbox(&mut config_edit.debug_logging_enabled, "Enable debug logging")
-                .on_hover_text("Records extra hotkey and overlay state events to the local diagnostics log.")
-                .changed()
-            {
-                *changed = true;
-                state
-                    .debug_logging_enabled
-                    .store(config_edit.debug_logging_enabled, Ordering::SeqCst);
-                crate::input::append_hotkey_debug_log(
-                    config_edit.debug_logging_enabled,
-                    format!(
-                        "debug_logging_enabled value={}",
-                        config_edit.debug_logging_enabled
-                    ),
-                );
-            }
+        if ui
+            .checkbox(
+                &mut config_edit.debug_logging_enabled,
+                "Enable debug logging",
+            )
+            .on_hover_text(
+                "Records extra hotkey and overlay state events to the local diagnostics log.",
+            )
+            .changed()
+        {
+            *changed = true;
+            state
+                .debug_logging_enabled
+                .store(config_edit.debug_logging_enabled, Ordering::SeqCst);
+            crate::input::append_hotkey_debug_log(
+                config_edit.debug_logging_enabled,
+                format!(
+                    "debug_logging_enabled value={}",
+                    config_edit.debug_logging_enabled
+                ),
+            );
+        }
 
-            ui.add_space(8.0);
-            if ui
-                .add_sized([178.0, 24.0], egui::Button::new("Copy Diagnostics Bundle"))
-                .on_hover_text("Copies connection, config, session, player, and recent debug log details. API keys are not included.")
-                .clicked()
-            {
-                let bundle = crate::diagnostics::support_diagnostics_bundle(
-                    state,
-                    state.flags.is_launched.load(Ordering::SeqCst),
-                    is_rl_running,
-                    rl_process_detection_detail,
+        ui.add_space(6.0);
+        let identifiable_id = ui.make_persistent_id("support_diagnostics_identifiable");
+        let mut include_identifiable = ui
+            .data(|data| data.get_temp::<bool>(identifiable_id))
+            .unwrap_or(false);
+        if ui
+            .checkbox(
+                &mut include_identifiable,
+                "Include identifiable details",
+            )
+            .on_hover_text(
+                "Includes local paths, player and account names, match and replay identifiers, filenames, and recent debug logs.",
+            )
+            .changed()
+        {
+            ui.data_mut(|data| data.insert_temp(identifiable_id, include_identifiable));
+        }
+
+        let privacy = if include_identifiable {
+            crate::diagnostics::SupportBundlePrivacy::Identifiable
+        } else {
+            crate::diagnostics::SupportBundlePrivacy::Redacted
+        };
+        if include_identifiable {
+            status_text(
+                ui,
+                StatusTone::Warning,
+                "Review the preview carefully. This version can identify accounts and local files.",
+            );
+        } else {
+            ui.label(helper_text(
+                "Paths, names, account IDs, match/replay IDs, filenames, and recent logs are redacted by default.",
+            ));
+        }
+
+        ui.add_space(6.0);
+        let preview_id = ui.make_persistent_id("support_diagnostics_preview_cache");
+        let refresh_requested = ui
+            .horizontal(|ui| {
+                ui.label(egui::RichText::new("Preview — exact clipboard contents").strong());
+                ui.button("Refresh Preview").clicked()
+            })
+            .inner;
+        ui.label(helper_text(
+            "Refresh after reproducing an issue to include the latest diagnostic state.",
+        ));
+        let cached_preview = ui.data(|data| data.get_temp::<SupportDiagnosticsPreview>(preview_id));
+        let preview =
+            if support_preview_needs_refresh(cached_preview.as_ref(), privacy, refresh_requested) {
+                let preview = SupportDiagnosticsPreview {
+                    privacy,
+                    bundle: Arc::from(build_support_diagnostics_bundle(
+                        state,
+                        is_rl_running,
+                        rl_process_detection_detail,
+                        privacy,
+                    )),
+                };
+                ui.data_mut(|data| data.insert_temp(preview_id, preview.clone()));
+                preview
+            } else {
+                cached_preview.expect("a current support preview must exist")
+            };
+        egui::ScrollArea::vertical()
+            .id_salt("support_diagnostics_preview")
+            .max_height(160.0)
+            .show(ui, |ui| {
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(preview.bundle.as_ref())
+                            .monospace()
+                            .size(10.0)
+                            .color(egui::Color32::from_gray(190)),
+                    )
+                    .selectable(true),
                 );
-                ui.ctx().copy_text(bundle);
-                ui.data_mut(|d| {
-                    d.insert_temp(ui.make_persistent_id("support_diagnostics_copied"), true)
-                });
-                crate::input::append_hotkey_debug_log(
-                    state.debug_logging_enabled.load(Ordering::SeqCst),
-                    "support_diagnostics_copied",
-                );
-            }
-        });
+            });
+
+        ui.add_space(6.0);
+        let copy_label = if include_identifiable {
+            "Copy Identifiable Diagnostics"
+        } else {
+            "Copy Redacted Diagnostics"
+        };
+        if ui
+            .add_sized([210.0, 24.0], egui::Button::new(copy_label))
+            .clicked()
+        {
+            ui.ctx().copy_text(preview.bundle.to_string());
+            ui.data_mut(|data| {
+                data.insert_temp(ui.make_persistent_id("support_diagnostics_copied"), privacy)
+            });
+            crate::input::append_hotkey_debug_log(
+                state.debug_logging_enabled.load(Ordering::SeqCst),
+                format!("support_diagnostics_copied privacy={}", privacy.label()),
+            );
+        }
 
         ui.add_space(4.0);
         ui.label(helper_text(
             "Use this when reporting connection, hotkey, player parsing, or session detection issues.",
         ));
+
+        ui.add_space(8.0);
+        ui.separator();
+        ui.add_space(6.0);
+        ui.label(egui::RichText::new("Report a Game API Issue").strong());
+        ui.label(helper_text(
+            "If the detected game mode, teams, or match state looks wrong, save the recent API log and attach the file to your report.",
+        ));
+        status_text(
+            ui,
+            StatusTone::Warning,
+            "The API log is identifiable and can contain player names, account IDs, and match IDs.",
+        );
+
+        let export_status = state.diagnostics.api_log_export_status.load();
+        if ui
+            .add_enabled(
+                !export_status.running,
+                egui::Button::new(if export_status.running {
+                    "Saving Recent Game API Log..."
+                } else {
+                    "Save Recent Game API Log"
+                }),
+            )
+            .clicked()
+        {
+            start_recent_api_log_export(state.clone());
+        }
+        if !export_status.message.is_empty() {
+            status_text(ui, StatusTone::Success, &export_status.message);
+        }
+        if !export_status.error.is_empty() {
+            status_text(ui, StatusTone::Error, &export_status.error);
+        }
+        if !export_status.last_output_path.is_empty() {
+            debug_status_row(ui, "API Log File", &export_status.last_output_path);
+            ui.label(helper_text("Attach this file to the issue report."));
+        }
+
+        ui.add_space(6.0);
         debug_status_row(
             ui,
             "Hotkey Log",
             &crate::input::hotkey_debug_log_path().display().to_string(),
         );
 
-        if ui.data(|d| {
-            d.get_temp::<bool>(ui.make_persistent_id("support_diagnostics_copied"))
-                .unwrap_or(false)
+        if let Some(copied_privacy) = ui.data(|data| {
+            data.get_temp::<crate::diagnostics::SupportBundlePrivacy>(
+                ui.make_persistent_id("support_diagnostics_copied"),
+            )
         }) {
-            status_text(ui, StatusTone::Success, "Diagnostics copied to clipboard.");
+            status_text(
+                ui,
+                StatusTone::Success,
+                format!(
+                    "{} diagnostics copied to clipboard.",
+                    copied_privacy.label()
+                ),
+            );
         }
+    });
+}
+
+#[derive(Clone)]
+struct SupportDiagnosticsPreview {
+    privacy: crate::diagnostics::SupportBundlePrivacy,
+    bundle: Arc<str>,
+}
+
+fn support_preview_needs_refresh(
+    preview: Option<&SupportDiagnosticsPreview>,
+    privacy: crate::diagnostics::SupportBundlePrivacy,
+    refresh_requested: bool,
+) -> bool {
+    refresh_requested || preview.is_none_or(|preview| preview.privacy != privacy)
+}
+
+fn build_support_diagnostics_bundle(
+    state: &AppState,
+    is_rl_running: bool,
+    rl_process_detection_detail: &str,
+    privacy: crate::diagnostics::SupportBundlePrivacy,
+) -> String {
+    let is_launched = state.flags.is_launched.load(Ordering::SeqCst);
+    if privacy == crate::diagnostics::SupportBundlePrivacy::Identifiable {
+        crate::diagnostics::support_diagnostics_bundle_with_privacy(
+            state,
+            is_launched,
+            is_rl_running,
+            rl_process_detection_detail,
+            privacy,
+        )
+    } else {
+        crate::diagnostics::support_diagnostics_bundle(
+            state,
+            is_launched,
+            is_rl_running,
+            rl_process_detection_detail,
+        )
+    }
+}
+
+fn start_recent_api_log_export(state: Arc<AppState>) {
+    let snapshot = match state.diagnostics.recent_stats_api_log.lock() {
+        Ok(mut recent_log) => recent_log.snapshot(crate::stats_api::now_ms()),
+        Err(_) => {
+            state
+                .diagnostics
+                .api_log_export_status
+                .store(Arc::new(ApiLogExportStatus {
+                    error: "Could not read the recent API log.".to_string(),
+                    ..Default::default()
+                }));
+            return;
+        }
+    };
+    if snapshot.is_empty() {
+        state
+            .diagnostics
+            .api_log_export_status
+            .store(Arc::new(ApiLogExportStatus {
+                error: "No game API events are available yet. Keep Rocket League open and try again after the issue occurs.".to_string(),
+                ..Default::default()
+            }));
+        return;
+    }
+    let session = state.game.session.load();
+    let snapshot = snapshot.with_detected_mode(
+        session.active_mode.label(),
+        session.active_mode_source.label(),
+    );
+
+    let output = crate::stats_api::default_recent_log_path(&state.paths.config_dir);
+    state
+        .diagnostics
+        .api_log_export_status
+        .store(Arc::new(ApiLogExportStatus {
+            running: true,
+            last_output_path: output.display().to_string(),
+            ..Default::default()
+        }));
+
+    std::thread::spawn(move || {
+        let event_count = snapshot.len();
+        let result = crate::stats_api::save_recent_stats_api_snapshot(&snapshot, &output);
+        let status = match result {
+            Ok(()) => ApiLogExportStatus {
+                last_output_path: output.display().to_string(),
+                message: format!("Saved {event_count} recent API events."),
+                ..Default::default()
+            },
+            Err(error) => ApiLogExportStatus {
+                last_output_path: output.display().to_string(),
+                error: format!("Could not save the API log: {error}"),
+                ..Default::default()
+            },
+        };
+        state
+            .diagnostics
+            .api_log_export_status
+            .store(Arc::new(status));
     });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn support_preview_refreshes_only_when_requested_or_privacy_changes() {
+        let preview = SupportDiagnosticsPreview {
+            privacy: crate::diagnostics::SupportBundlePrivacy::Redacted,
+            bundle: Arc::from("cached"),
+        };
+
+        assert!(support_preview_needs_refresh(
+            None,
+            crate::diagnostics::SupportBundlePrivacy::Redacted,
+            false
+        ));
+        assert!(!support_preview_needs_refresh(
+            Some(&preview),
+            crate::diagnostics::SupportBundlePrivacy::Redacted,
+            false
+        ));
+        assert!(support_preview_needs_refresh(
+            Some(&preview),
+            crate::diagnostics::SupportBundlePrivacy::Identifiable,
+            false
+        ));
+        assert!(support_preview_needs_refresh(
+            Some(&preview),
+            crate::diagnostics::SupportBundlePrivacy::Redacted,
+            true
+        ));
+    }
 
     #[test]
     fn setup_refresh_request_dedupes_while_running() {

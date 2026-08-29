@@ -122,6 +122,17 @@ To save raw game output for parser debugging:
 cargo run --locked --bin debug_game_output -- --seconds 30 --output rl_game_output_debug.txt
 ```
 
+### Reporting Stats API Detection Issues
+
+The app keeps a bounded, in-memory sample of up to the previous two minutes of Stats
+API events while connected. If the detected game mode, teams, or match state is
+wrong, open **Settings → Support** and click **Save Recent
+Game API Log**. Attach the generated `rl_stats_issue_log_*.txt` file to the issue
+report. Nothing is continuously written to disk.
+
+These reports are identifiable: raw game events can contain player names,
+account IDs, and match IDs. The app shows this warning before the save action.
+
 ---
 
 ## AI Disclosure

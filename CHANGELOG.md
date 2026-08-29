@@ -6,6 +6,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- **Dedicated Support Tab**: Copy privacy-aware diagnostics or save a bounded log of recent game API events after a detection problem occurs, including the mode and detection source the app selected.
+
+### Changed
+- **Private Support Diagnostics**: Support bundles now redact personal paths, player and account details, match and replay identifiers, filenames, and recent logs by default, with an exact preview and an explicit identifiable-details option.
+
 ### Fixed
 - **Reliable Local Rank Refreshes**: Prevents overlapping refreshes and discards results from a previous account if the local player changes while a rank lookup is running.
 - **Accurate Team Assignment**: Missing or invalid game data no longer places players on Blue; known assignments are retained across partial updates and unknown teams stay separate.

@@ -830,6 +830,14 @@ pub struct DebugCaptureStatus {
 }
 
 #[derive(Clone, Debug, Default)]
+pub struct ApiLogExportStatus {
+    pub running: bool,
+    pub last_output_path: String,
+    pub message: String,
+    pub error: String,
+}
+
+#[derive(Clone, Debug, Default)]
 pub struct ReplayUploadProgress {
     pub running: bool,
     pub paused: bool,
@@ -1071,6 +1079,8 @@ pub struct DiagnosticsState {
     pub resource_poller: Arc<std::sync::Mutex<crate::diagnostics::ResourcePoller>>,
     pub alt_tab_diagnostics_status: Arc<std::sync::Mutex<String>>,
     pub debug_capture_status: ArcSwap<DebugCaptureStatus>,
+    pub recent_stats_api_log: std::sync::Mutex<crate::stats_api::RecentStatsApiLog>,
+    pub api_log_export_status: ArcSwap<ApiLogExportStatus>,
 }
 
 pub struct ReplaysState {
@@ -1307,6 +1317,10 @@ impl AppState {
                 resource_poller,
                 alt_tab_diagnostics_status: Arc::new(std::sync::Mutex::new("Idle".to_string())),
                 debug_capture_status: ArcSwap::from_pointee(DebugCaptureStatus::default()),
+                recent_stats_api_log: std::sync::Mutex::new(
+                    crate::stats_api::RecentStatsApiLog::default(),
+                ),
+                api_log_export_status: ArcSwap::from_pointee(ApiLogExportStatus::default()),
             },
             replays: ReplaysState {
                 ballchasing_status: Arc::new(std::sync::Mutex::new("Idle".to_string())),
