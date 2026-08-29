@@ -515,6 +515,37 @@ mod tests {
     }
 
     #[test]
+    fn changing_local_account_clears_previous_mmr_and_requests_refresh() {
+        let state = AppState::new();
+        state
+            .game
+            .local_player_identity
+            .store(Arc::new(LocalPlayerIdentity {
+                name: "First".to_string(),
+                primary_id: "Steam|1|0".to_string(),
+                platform: "Steam".to_string(),
+            }));
+        state.mmr.local_mmr.store(Arc::new(LocalMmrState {
+            current: Some(crate::mmr::TrackerSnapshot::default()),
+            fetching: true,
+            last_updated_unix_ms: 123,
+            ..Default::default()
+        }));
+
+        let changed = state.update_local_player_identity(LocalPlayerIdentity {
+            name: "Second".to_string(),
+            primary_id: "Epic|2|0".to_string(),
+            platform: "Epic".to_string(),
+        });
+
+        assert!(changed);
+        let local_mmr = state.mmr.local_mmr.load();
+        assert!(!local_mmr.fetching);
+        assert!(local_mmr.current.is_none());
+        assert_eq!(local_mmr.last_updated_unix_ms, 0);
+    }
+
+    #[test]
     fn update_local_player_identity_ignores_updates_when_locked() {
         let state = AppState::new();
         let mut config = state.system.config.load().as_ref().clone();
@@ -985,6 +1016,51 @@ pub struct LocalMmrState {
     pub error: String,
 }
 
+#[derive(Debug, Default)]
+pub struct LocalMmrRefreshCoordinator {
+    generation: u64,
+    active: Option<(u64, LocalPlayerIdentity)>,
+}
+
+impl LocalMmrRefreshCoordinator {
+    pub(crate) fn is_idle(&self) -> bool {
+        self.active.is_none()
+    }
+
+    pub(crate) fn begin(&mut self, identity: &LocalPlayerIdentity) -> Option<u64> {
+        if self
+            .active
+            .as_ref()
+            .is_some_and(|(_, active)| active.same_account(identity))
+        {
+            return None;
+        }
+
+        self.generation = self.generation.wrapping_add(1).max(1);
+        self.active = Some((self.generation, identity.clone()));
+        Some(self.generation)
+    }
+
+    pub(crate) fn is_current(&self, generation: u64, identity: &LocalPlayerIdentity) -> bool {
+        self.active.as_ref().is_some_and(|(active, captured)| {
+            *active == generation && captured.same_account(identity)
+        })
+    }
+
+    pub(crate) fn finish(&mut self, generation: u64, identity: &LocalPlayerIdentity) -> bool {
+        if !self.is_current(generation, identity) {
+            return false;
+        }
+        self.active = None;
+        true
+    }
+
+    pub(crate) fn invalidate(&mut self) {
+        self.generation = self.generation.wrapping_add(1).max(1);
+        self.active = None;
+    }
+}
+
 pub const NO_TEAM: u8 = 255;
 
 pub struct DiagnosticsState {
@@ -1032,6 +1108,7 @@ pub struct MmrState {
     pub debug_scrape_status: Arc<std::sync::Mutex<String>>,
     pub debug_tracker_logs: Arc<std::sync::Mutex<VecDeque<String>>>,
     pub local_mmr: ArcSwap<LocalMmrState>,
+    pub local_mmr_refresh: std::sync::Mutex<LocalMmrRefreshCoordinator>,
 }
 
 pub struct HistoryState {
@@ -1271,6 +1348,7 @@ impl AppState {
                 debug_scrape_status: Arc::new(std::sync::Mutex::new("Idle".to_string())),
                 debug_tracker_logs: Arc::new(std::sync::Mutex::new(VecDeque::new())),
                 local_mmr: ArcSwap::from_pointee(LocalMmrState::default()),
+                local_mmr_refresh: std::sync::Mutex::new(LocalMmrRefreshCoordinator::default()),
             },
             history: HistoryState {
                 player_summaries: ArcSwap::from_pointee(HashMap::new()),
@@ -1357,6 +1435,11 @@ impl AppState {
             return false;
         }
 
+        let mut refresh = self
+            .mmr
+            .local_mmr_refresh
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let current_identity = self.game.local_player_identity.load();
         if current_identity.is_known()
             && current_identity.same_account(&identity)
@@ -1365,10 +1448,20 @@ impl AppState {
             return false;
         }
         let first_known_identity = !current_identity.is_known();
+        let account_changed =
+            current_identity.is_known() && !current_identity.same_account(&identity);
 
         self.game
             .local_player_identity
             .store(Arc::new(identity.clone()));
+
+        if account_changed {
+            refresh.invalidate();
+            self.mmr
+                .local_mmr
+                .rcu(|_| Arc::new(LocalMmrState::default()));
+        }
+        drop(refresh);
 
         self.update_config(|config| {
             if !config.cached_local_player_identity.is_known()
@@ -1379,7 +1472,7 @@ impl AppState {
             }
         });
 
-        first_known_identity
+        first_known_identity || account_changed
     }
 }
 

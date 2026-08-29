@@ -1,4 +1,4 @@
-use crate::state::{AppState, PlayerInfo, PlayerKey, PlayerMap};
+use crate::state::{AppState, LocalPlayerIdentity, PlayerInfo, PlayerKey, PlayerMap};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -563,58 +563,149 @@ fn tracker_player_from_info(info: &PlayerInfo) -> Option<(String, TrackerPlayer)
     ))
 }
 
-pub fn start_local_mmr_refresh(state: Arc<AppState>) {
-    if !state.system.config.load().show_lobby_ranks {
-        return;
+fn claim_local_mmr_refresh(state: &AppState, identity: &LocalPlayerIdentity) -> Option<u64> {
+    let mut coordinator = state
+        .mmr
+        .local_mmr_refresh
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let current_identity = state.game.local_player_identity.load();
+    if !current_identity.same_account(identity) {
+        return None;
     }
-    let current_state = state.mmr.local_mmr.load();
-    if current_state.fetching {
+
+    let generation = coordinator.begin(identity)?;
+    state.mmr.local_mmr.rcu(|current| {
+        let mut next = (**current).clone();
+        next.fetching = true;
+        next.error.clear();
+        Arc::new(next)
+    });
+    Some(generation)
+}
+
+fn publish_local_mmr_start_error(
+    state: &AppState,
+    expected_identity: Option<&LocalPlayerIdentity>,
+    message: String,
+) {
+    let coordinator = state
+        .mmr
+        .local_mmr_refresh
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let current_identity = state.game.local_player_identity.load();
+    let identity_is_current = expected_identity.map_or_else(
+        || !current_identity.is_known(),
+        |identity| current_identity.same_account(identity),
+    );
+    if !identity_is_current || !coordinator.is_idle() {
         return;
     }
 
-    let now = crate::stats_api::now_ms();
-    let cooldown_ms = 15_000;
-    if now.saturating_sub(current_state.last_updated_unix_ms) < cooldown_ms {
-        let remaining_secs =
-            (cooldown_ms - now.saturating_sub(current_state.last_updated_unix_ms)) / 1000;
-        let mut local_mmr = (**current_state).clone();
-        local_mmr.error = format!("Refresh on cooldown. Please wait {remaining_secs}s.");
-        state.mmr.local_mmr.store(Arc::new(local_mmr));
+    state.mmr.local_mmr.rcu(|current| {
+        let mut next = (**current).clone();
+        next.fetching = false;
+        next.error.clone_from(&message);
+        Arc::new(next)
+    });
+}
+
+fn complete_local_mmr_refresh(
+    state: &AppState,
+    generation: u64,
+    identity: &LocalPlayerIdentity,
+    result: Result<TrackerSnapshot, String>,
+) -> bool {
+    let mut coordinator = state
+        .mmr
+        .local_mmr_refresh
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    if !coordinator.is_current(generation, identity) {
+        return false;
+    }
+
+    let current_identity = state.game.local_player_identity.load();
+    let identity_is_current = current_identity.same_account(identity);
+    coordinator.finish(generation, identity);
+
+    state.mmr.local_mmr.rcu(|current| {
+        let mut next = (**current).clone();
+        next.fetching = false;
+        if !identity_is_current {
+            next.error = "Local player changed; discarded the previous rank refresh.".to_string();
+            return Arc::new(next);
+        }
+
+        match &result {
+            Ok(snapshot) => {
+                next.previous = next.current.take();
+                next.current = Some(snapshot.clone());
+                next.last_updated_unix_ms = crate::stats_api::now_ms();
+                next.error.clear();
+            }
+            Err(error) => next.error.clone_from(error),
+        }
+        Arc::new(next)
+    });
+    identity_is_current
+}
+
+pub fn start_local_mmr_refresh(state: Arc<AppState>) {
+    if !state.system.config.load().show_lobby_ranks {
         return;
     }
 
     let identity = (*state.game.local_player_identity.load()).clone();
     if !identity.is_known() {
-        let mut local_mmr = (**current_state).clone();
-        local_mmr.fetching = false;
-        local_mmr.error = "Waiting for local player identity from Stats API.".to_string();
-        state.mmr.local_mmr.store(Arc::new(local_mmr));
+        publish_local_mmr_start_error(
+            &state,
+            None,
+            "Waiting for local player identity from Stats API.".to_string(),
+        );
         return;
     }
 
+    let now = crate::stats_api::now_ms();
+    let cooldown_ms = 15_000;
+    let current_state = state.mmr.local_mmr.load();
+    if now.saturating_sub(current_state.last_updated_unix_ms) < cooldown_ms {
+        let remaining_secs =
+            (cooldown_ms - now.saturating_sub(current_state.last_updated_unix_ms)) / 1000;
+        publish_local_mmr_start_error(
+            &state,
+            Some(&identity),
+            format!("Refresh on cooldown. Please wait {remaining_secs}s."),
+        );
+        return;
+    }
+    drop(current_state);
+
     let Some((_, tracker_player)) = tracker_player_from_identity(&identity) else {
-        let mut local_mmr = (**current_state).clone();
-        local_mmr.fetching = false;
-        local_mmr.error = "Local player platform is not supported by Tracker.".to_string();
-        state.mmr.local_mmr.store(Arc::new(local_mmr));
+        publish_local_mmr_start_error(
+            &state,
+            Some(&identity),
+            "Local player platform is not supported by Tracker.".to_string(),
+        );
         return;
     };
 
     let runtime = match tokio::runtime::Handle::try_current() {
         Ok(runtime) => runtime,
         Err(error) => {
-            let mut local_mmr = (**current_state).clone();
-            local_mmr.fetching = false;
-            local_mmr.error = format!("Could not start local MMR refresh: {error}");
-            state.mmr.local_mmr.store(Arc::new(local_mmr));
+            publish_local_mmr_start_error(
+                &state,
+                Some(&identity),
+                format!("Could not start local MMR refresh: {error}"),
+            );
             return;
         }
     };
 
-    let mut local_mmr = (**current_state).clone();
-    local_mmr.fetching = true;
-    local_mmr.error.clear();
-    state.mmr.local_mmr.store(Arc::new(local_mmr));
+    let Some(generation) = claim_local_mmr_refresh(&state, &identity) else {
+        return;
+    };
 
     runtime.spawn(async move {
         append_tracker_log(
@@ -629,39 +720,32 @@ pub fn start_local_mmr_refresh(state: Arc<AppState>) {
             Some(&state.mmr.xuid_gamertag_cache),
             &tracker_player,
         )
-        .await;
+        .await
+        .map_err(|error| error.to_string());
 
-        let mut local_mmr = (**state.mmr.local_mmr.load()).clone();
-        local_mmr.fetching = false;
-        match result {
-            Ok(snapshot) => {
-                append_tracker_log(
-                    &state,
-                    format!(
-                        "Success: Fetched local player {} ({}). Playlists: {}",
-                        identity.name,
-                        identity.platform,
-                        snapshot.playlists.len()
-                    ),
-                );
-                local_mmr.previous = local_mmr.current.take();
-                local_mmr.current = Some(snapshot);
-                local_mmr.last_updated_unix_ms = crate::stats_api::now_ms();
-                local_mmr.error.clear();
-            }
-            Err(error) => {
-                let err_str = error.to_string();
-                append_tracker_log(
-                    &state,
-                    format!(
-                        "Error fetching local player {} ({}): {}",
-                        identity.name, identity.platform, err_str
-                    ),
-                );
-                local_mmr.error = err_str;
-            }
+        let completion_log = match &result {
+            Ok(snapshot) => format!(
+                "Success: Fetched local player {} ({}). Playlists: {}",
+                identity.name,
+                identity.platform,
+                snapshot.playlists.len()
+            ),
+            Err(error) => format!(
+                "Error fetching local player {} ({}): {}",
+                identity.name, identity.platform, error
+            ),
+        };
+        if complete_local_mmr_refresh(&state, generation, &identity, result) {
+            append_tracker_log(&state, completion_log);
+        } else {
+            append_tracker_log(
+                &state,
+                format!(
+                    "Discarded stale local player MMR result for {} ({})",
+                    identity.name, identity.platform
+                ),
+            );
         }
-        state.mmr.local_mmr.store(Arc::new(local_mmr));
     });
 }
 
@@ -705,6 +789,28 @@ mod tests {
         let key = PlayerKey::from_account(&player).expect("test player needs account identity");
         players.insert(key.clone(), player);
         key
+    }
+
+    fn local_identity(name: &str, account: &str) -> LocalPlayerIdentity {
+        LocalPlayerIdentity {
+            name: name.to_string(),
+            primary_id: format!("Steam|{account}|0"),
+            platform: "Steam".to_string(),
+        }
+    }
+
+    fn local_snapshot(rating: i32) -> TrackerSnapshot {
+        let mut snapshot = TrackerSnapshot::default();
+        snapshot.playlists.insert(
+            11,
+            TrackerPlaylistSnapshot {
+                name: "Ranked Doubles 2v2".to_string(),
+                rating,
+                matches: 0,
+                tier_name: String::new(),
+            },
+        );
+        snapshot
     }
 
     #[tokio::test]
@@ -807,6 +913,74 @@ mod tests {
                 .error
                 .starts_with("Could not start local MMR refresh:")
         );
+    }
+
+    #[test]
+    fn local_mmr_refresh_claim_is_atomic_for_the_same_account() {
+        let state = AppState::new();
+        let identity = local_identity("Me", "account-a");
+        state
+            .game
+            .local_player_identity
+            .store(Arc::new(identity.clone()));
+        let barrier = Arc::new(std::sync::Barrier::new(9));
+        let claims: Vec<_> = (0..8)
+            .map(|_| {
+                let state = state.clone();
+                let identity = identity.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    claim_local_mmr_refresh(&state, &identity)
+                })
+            })
+            .collect();
+        barrier.wait();
+
+        let claimed = claims
+            .into_iter()
+            .filter_map(|claim| claim.join().unwrap())
+            .count();
+
+        assert_eq!(claimed, 1);
+        assert!(state.mmr.local_mmr.load().fetching);
+    }
+
+    #[test]
+    fn superseded_local_mmr_result_cannot_publish_to_a_new_account() {
+        let state = AppState::new();
+        let first = local_identity("SameName", "account-a");
+        let replacement = local_identity("SameName", "account-b");
+        state
+            .game
+            .local_player_identity
+            .store(Arc::new(first.clone()));
+        let first_generation = claim_local_mmr_refresh(&state, &first).unwrap();
+
+        assert!(state.update_local_player_identity(replacement.clone()));
+        let replacement_generation = claim_local_mmr_refresh(&state, &replacement).unwrap();
+
+        assert!(!complete_local_mmr_refresh(
+            &state,
+            first_generation,
+            &first,
+            Ok(local_snapshot(1000)),
+        ));
+        assert!(state.mmr.local_mmr.load().fetching);
+        assert!(complete_local_mmr_refresh(
+            &state,
+            replacement_generation,
+            &replacement,
+            Ok(local_snapshot(1200)),
+        ));
+
+        let local_mmr = state.mmr.local_mmr.load();
+        assert!(!local_mmr.fetching);
+        assert_eq!(
+            local_mmr.current.as_ref().unwrap().playlists[&11].rating,
+            1200
+        );
+        assert!(local_mmr.previous.is_none());
     }
 
     #[test]

@@ -395,8 +395,9 @@ fn apply_local_player_update(state: &Arc<AppState>, parsed_event: &StatsApiEvent
         .game
         .local_team
         .store(local_player.team, Ordering::SeqCst);
-    let first_known_identity = state.update_local_player_identity(local_player.identity.clone());
-    if first_known_identity {
+    let identity_requires_refresh =
+        state.update_local_player_identity(local_player.identity.clone());
+    if identity_requires_refresh {
         crate::mmr::start_local_mmr_refresh(state.clone());
     }
 }

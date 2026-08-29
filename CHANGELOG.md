@@ -6,6 +6,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- **Reliable Local Rank Refreshes**: Prevents overlapping refreshes and discards results from a previous account if the local player changes while a rank lookup is running.
+
 ---
 
 ## [0.1.47] - 2026-08-27
