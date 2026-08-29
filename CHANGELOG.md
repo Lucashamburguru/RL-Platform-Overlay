@@ -6,6 +6,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+---
+
+## [0.1.48] - 2026-08-29
+
 ### Added
 - **Dedicated Support Tab**: Copy privacy-aware diagnostics and, after a mode or team detection issue, save up to two minutes of recent Game API events with the mode and detection source selected by the app.
 
