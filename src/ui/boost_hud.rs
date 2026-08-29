@@ -25,12 +25,11 @@ pub(super) fn preview_teammates(state: &Arc<AppState>) -> Vec<PlayerInfo> {
     let players = state.game.players.load();
     let local_name = state.game.local_player_name.load();
     let local_name_trimmed = local_name.trim();
-    let local_team = state.game.local_team.load(Ordering::SeqCst);
+    let local_team = crate::state::standard_team(state.game.local_team.load(Ordering::SeqCst));
     let mut teammates: Vec<_> = players
         .values()
         .filter(|p| {
-            local_team != crate::state::NO_TEAM
-                && p.team == local_team
+            local_team.is_some_and(|team| p.team == team)
                 && !p.is_local
                 // ⚡ Bolt: Use .eq_ignore_ascii_case() to prevent heap allocations in render loop
                 && (local_name_trimmed.is_empty() || !p.name.trim().eq_ignore_ascii_case(local_name_trimmed))
@@ -73,8 +72,8 @@ pub(super) fn render_teammate_boost(ctx: &egui::Context, state: &Arc<AppState>) 
     // Do not guess if not found, because a bad fallback shows the wrong team.
     let my_team = {
         let stored_team = state.game.local_team.load(Ordering::SeqCst);
-        if stored_team != crate::state::NO_TEAM {
-            Some(stored_team)
+        if let Some(team) = crate::state::standard_team(stored_team) {
+            Some(team)
         } else {
             players
                 .values()
@@ -83,7 +82,7 @@ pub(super) fn render_teammate_boost(ctx: &egui::Context, state: &Arc<AppState>) 
                         // ⚡ Bolt: Use .eq_ignore_ascii_case() to prevent heap allocations in render loop
                         || (!local_name_trimmed.is_empty() && p.name.trim().eq_ignore_ascii_case(local_name_trimmed))
                 })
-                .map(|p| p.team)
+                .and_then(|p| crate::state::standard_team(p.team))
         }
     };
     let Some(my_team) = my_team else {

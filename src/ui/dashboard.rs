@@ -147,7 +147,7 @@ pub(crate) fn render_dashboard(ui: &mut egui::Ui, state: &Arc<AppState>, config:
     }
     .or_else(|| {
         let team = state.game.local_team.load(Ordering::SeqCst);
-        (team != crate::state::NO_TEAM).then_some(team)
+        crate::state::standard_team(team)
     });
     let dashboard_players: Vec<PlayerInfo> = if snapshot_active {
         dashboard_snapshot.players.values().cloned().collect()
@@ -1785,11 +1785,15 @@ fn build_dashboard_rows(
     context: DashboardRowsContext<'_>,
 ) -> Vec<DashboardPlayerRow> {
     let playlist_player_count = players.len();
-    let inferred_local_team = context.local_team.or_else(|| {
-        players
-            .iter()
-            .find_map(|player| player.is_local.then_some(player.team))
-    });
+    let inferred_local_team = context
+        .local_team
+        .and_then(crate::state::standard_team)
+        .or_else(|| {
+            players
+                .iter()
+                .find(|player| player.is_local)
+                .and_then(|player| crate::state::standard_team(player.team))
+        });
     let mut rows: Vec<_> = players
         .into_iter()
         .filter(|player| context.config.show_bots || !player.is_bot)

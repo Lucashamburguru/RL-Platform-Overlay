@@ -43,11 +43,9 @@ pub(super) fn render_debug_settings_tab(
         let local_name = state.game.local_player_name.load();
         debug_status_row(ui, "Local Player", local_name.as_str());
         let local_team = state.game.local_team.load(Ordering::SeqCst);
-        let team_text = if local_team == crate::state::NO_TEAM {
-            "Unknown".to_string()
-        } else {
-            local_team.to_string()
-        };
+        let team_text = crate::state::standard_team(local_team)
+            .map(|team| team.to_string())
+            .unwrap_or_else(|| "Unknown".to_string());
         debug_status_row(ui, "Local Team", &team_text);
 
         let players = state.game.players.load();

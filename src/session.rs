@@ -2,6 +2,7 @@ use crate::json_utils::{
     bool_field, checked_u8, decode_json_string_value, number_field, number_field_u8,
     number_field_u32, string_field,
 };
+use crate::state::standard_team;
 use crate::stats_api_parser::{
     ResultSignature, result_from_score, result_from_winner, result_signature, team_scores,
 };
@@ -222,6 +223,7 @@ impl SessionState {
         local_team_hint: Option<u8>,
         mode_hint: SessionMode,
     ) -> bool {
+        let local_team_hint = local_team_hint.and_then(standard_team);
         if let Some(match_guid) = string_field(real_data, &["MatchGuid", "matchGuid"])
             && self.active_match_id != match_guid
         {
@@ -312,6 +314,7 @@ impl SessionState {
         mode_hint: SessionMode,
         mode_source: SessionModeSource,
     ) {
+        let local_team_hint = local_team_hint.and_then(standard_team);
         let real_data = decode_json_string_value(data);
         let has_winner = real_data
             .get("Game")
@@ -331,6 +334,7 @@ impl SessionState {
             self.active_match_id = match_guid.to_string();
             self.active_mode = SessionMode::Unknown;
             self.active_mode_source = SessionModeSource::Unknown;
+            self.local_team = None;
             self.result_recorded_for_match = false;
             self.last_result = MatchResult::Unknown;
             self.blue_team_name.clear();
@@ -438,7 +442,7 @@ impl SessionState {
             return;
         }
 
-        let Some(local_team) = self.local_team else {
+        let Some(local_team) = self.local_team.and_then(standard_team) else {
             return;
         };
 
@@ -453,6 +457,7 @@ impl SessionState {
             return;
         }
         let real_data = decode_json_string_value(data);
+        let local_team_hint = local_team_hint.and_then(standard_team);
 
         if let Some(match_guid) = string_field(&real_data, &["MatchGuid", "matchGuid"]) {
             if self.active_match_id.is_empty() {
@@ -470,7 +475,7 @@ impl SessionState {
             self.local_team = Some(team);
         }
 
-        let Some(local_team) = self.local_team else {
+        let Some(local_team) = self.local_team.and_then(standard_team) else {
             self.last_result = MatchResult::Unknown;
             return;
         };
@@ -480,6 +485,7 @@ impl SessionState {
             &["WinnerTeamNum", "winnerTeamNum", "WinnerTeam", "winnerTeam"],
         )
         .and_then(checked_u8)
+        .and_then(standard_team)
         .map(|winner_team| {
             if winner_team == local_team {
                 MatchResult::Win
@@ -550,7 +556,7 @@ impl SessionState {
             return;
         }
 
-        let Some(local_team) = self.local_team else {
+        let Some(local_team) = self.local_team.and_then(standard_team) else {
             self.last_result = MatchResult::Unknown;
             return;
         };
@@ -567,6 +573,10 @@ impl SessionState {
         if result == MatchResult::Unknown {
             return;
         }
+        let Some(local_team) = self.local_team.and_then(standard_team) else {
+            self.last_result = MatchResult::Unknown;
+            return;
+        };
 
         self.result_recorded_for_match = true;
         if !self.active_match_id.is_empty() {
@@ -574,7 +584,7 @@ impl SessionState {
         }
         self.last_recorded_result = Some(ResultSignature {
             mode: self.active_mode,
-            local_team: self.local_team.unwrap_or(255),
+            local_team,
             blue_score: self.blue_score,
             orange_score: self.orange_score,
             result,
@@ -636,7 +646,9 @@ impl SessionState {
         mode_hint: SessionMode,
     ) -> Option<ResultSignature> {
         let game = real_data.get("Game").or_else(|| real_data.get("game"))?;
-        let local_team = local_team_hint.or(self.local_team)?;
+        let local_team = local_team_hint
+            .and_then(standard_team)
+            .or_else(|| self.local_team.and_then(standard_team))?;
         let effective_mode_hint = self.effective_mode_hint(real_data, mode_hint);
         let mode = if effective_mode_hint != SessionMode::Unknown {
             effective_mode_hint
@@ -1099,7 +1111,14 @@ mod tests {
         session.handle_match_ended(
             &json!({
                 "MatchGuid": "abc",
-                "WinnerTeamNum": -1
+                "WinnerTeamNum": 0,
+                "Winner": "Blue",
+                "Game": {
+                    "Teams": [
+                        {"TeamNum": 0, "Score": 2},
+                        {"TeamNum": 1, "Score": 1}
+                    ]
+                }
             }),
             None,
         );

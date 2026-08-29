@@ -1,6 +1,6 @@
 use crate::mmr::TrackerSnapshot;
 use crate::session::SessionMode;
-use crate::state::{AppState, LocalPlayerIdentity, PlayerInfo};
+use crate::state::{AppState, LocalPlayerIdentity, PlayerInfo, standard_team};
 use eframe::egui;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -28,7 +28,7 @@ pub(super) fn preview_lobby_players(state: &Arc<AppState>) -> Vec<PlayerInfo> {
             .local_team
             .or_else(|| {
                 let team = state.game.local_team.load(Ordering::SeqCst);
-                (team != crate::state::NO_TEAM).then_some(team)
+                standard_team(team)
             })
             .unwrap_or(0);
         let opponent_team = if local_team == 0 { 1 } else { 0 };
@@ -988,7 +988,11 @@ fn team_color(team: u8) -> egui::Color32 {
 }
 
 fn team_label(team: u8) -> &'static str {
-    if team == 0 { "BLUE" } else { "ORANGE" }
+    match team {
+        0 => "BLUE",
+        1 => "ORANGE",
+        _ => "UNKNOWN TEAM",
+    }
 }
 
 fn boost_color(boost: u8) -> egui::Color32 {

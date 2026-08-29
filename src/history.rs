@@ -1,5 +1,5 @@
 use crate::session::{MatchResult, SessionMode, SessionState};
-use crate::state::{AppState, NO_TEAM, PlayerInfo, PlayerKey, config_dir};
+use crate::state::{AppState, NO_TEAM, PlayerInfo, PlayerKey, config_dir, standard_team};
 use rusqlite::{Connection, OptionalExtension, params};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -355,7 +355,7 @@ pub fn record_completed_match(state: &Arc<AppState>, session: &SessionState) {
     }
     if session.last_result == MatchResult::Unknown
         || session.active_match_id.trim().is_empty()
-        || session.local_team.is_none()
+        || session.local_team.and_then(standard_team).is_none()
     {
         return;
     }
@@ -521,7 +521,10 @@ fn insert_completed_match_on_conn<'a>(
     ended_unix_ms: i64,
 ) -> Result<bool, HistoryError> {
     let tx = conn.transaction()?;
-    let local_team = session.local_team.unwrap_or(NO_TEAM);
+    let local_team = session
+        .local_team
+        .and_then(standard_team)
+        .unwrap_or(NO_TEAM);
 
     let inserted = tx.execute(
         "INSERT OR IGNORE INTO matches
@@ -771,6 +774,8 @@ fn cleanup_local_history_rows(conn: &mut Connection) -> Result<(), HistoryError>
 fn player_role(player: &PlayerInfo, local_team: u8) -> &'static str {
     if player.is_local {
         "local"
+    } else if standard_team(player.team).is_none() || standard_team(local_team).is_none() {
+        "unknown"
     } else if player.team == local_team {
         "teammate"
     } else {
@@ -878,6 +883,22 @@ mod tests {
         assert!(player_key(&bot).is_none());
         assert!(player_key(&unknown).is_none());
         assert_eq!(player_key(&human).unwrap().as_str(), "steam:steam|abc|0");
+    }
+
+    #[test]
+    fn unknown_team_players_are_not_classified_as_opponents() {
+        let unknown_player = PlayerInfo {
+            team: NO_TEAM,
+            ..Default::default()
+        };
+        let opponent = PlayerInfo {
+            team: 1,
+            ..Default::default()
+        };
+
+        assert_eq!(player_role(&unknown_player, 0), "unknown");
+        assert_eq!(player_role(&opponent, NO_TEAM), "unknown");
+        assert_eq!(player_role(&opponent, 0), "opponent");
     }
 
     #[test]

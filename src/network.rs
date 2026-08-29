@@ -1,7 +1,7 @@
 use crate::session::SessionMode;
 use crate::state::{
     AppState, DashboardMatchSnapshot, PlayerInfo, PlayerMap, ReplayTouchOffset,
-    ReplayTouchOffsetState, TeammateBumpTouch, TouchCounterDebounce,
+    ReplayTouchOffsetState, TeammateBumpTouch, TouchCounterDebounce, standard_team,
 };
 use crate::stats_api::{StatsApiTransport, TcpJsonSplitter};
 use crate::stats_api_parser::{
@@ -187,7 +187,7 @@ fn handle_event(state: &Arc<AppState>, json: &Value) {
                 return;
             }
             let local_team = state.game.local_team.load(Ordering::SeqCst);
-            let local_team_hint = (local_team != crate::state::NO_TEAM).then_some(local_team);
+            let local_team_hint = standard_team(local_team);
             let mut session = (**state.game.session.load()).clone();
             let matches_before = session.matches_played;
             session.handle_match_ended(&parsed_event.data, local_team_hint);
@@ -268,10 +268,15 @@ fn parse_event_for_state(state: &Arc<AppState>, json: &Value) -> StatsApiEvent {
     let current_local_name = state.game.local_player_name.load();
     let cached_identity = state.game.local_player_identity.load();
     let previous_players = state.game.players.load();
-    let fallback_match_scope = format!(
-        "epoch-{}",
-        state.game.player_roster_epoch.load(Ordering::SeqCst)
-    );
+    let active_match_id = state.game.session.load().active_match_id.clone();
+    let fallback_match_scope = if active_match_id.is_empty() {
+        format!(
+            "epoch-{}",
+            state.game.player_roster_epoch.load(Ordering::SeqCst)
+        )
+    } else {
+        active_match_id
+    };
     parse_stats_api_event(
         json,
         StatsApiParseContext {
@@ -279,6 +284,7 @@ fn parse_event_for_state(state: &Arc<AppState>, json: &Value) -> StatsApiEvent {
             cached_identity: &cached_identity,
             previous_players: &previous_players,
             fallback_match_scope: &fallback_match_scope,
+            previous_match_scope: &fallback_match_scope,
         },
     )
 }
@@ -297,6 +303,18 @@ fn handle_update_state(state: &Arc<AppState>, parsed_event: &StatsApiEvent) {
         return;
     }
 
+    let active_match_id = state.game.session.load().active_match_id.clone();
+    if parsed_event
+        .match_guid
+        .as_deref()
+        .is_some_and(|match_guid| !active_match_id.is_empty() && match_guid != active_match_id)
+    {
+        state
+            .game
+            .local_team
+            .store(crate::state::NO_TEAM, Ordering::SeqCst);
+    }
+
     let has_known_local_name = !state.game.local_player_name.load().trim().is_empty();
     apply_local_player_update(state, parsed_event);
 
@@ -311,7 +329,7 @@ fn handle_update_state(state: &Arc<AppState>, parsed_event: &StatsApiEvent) {
             .store(Arc::new(target_name.clone()));
     }
 
-    if state.game.local_team.load(Ordering::SeqCst) == crate::state::NO_TEAM
+    if standard_team(state.game.local_team.load(Ordering::SeqCst)).is_none()
         && parsed_event.local_player_hint.is_none()
         && let Some(target_team) = parsed_event.target_team
     {
@@ -391,10 +409,9 @@ fn apply_local_player_update(state: &Arc<AppState>, parsed_event: &StatsApiEvent
         .game
         .local_player_name
         .store(Arc::new(local_player.name.clone()));
-    state
-        .game
-        .local_team
-        .store(local_player.team, Ordering::SeqCst);
+    if let Some(team) = standard_team(local_player.team) {
+        state.game.local_team.store(team, Ordering::SeqCst);
+    }
     let identity_requires_refresh =
         state.update_local_player_identity(local_player.identity.clone());
     if identity_requires_refresh {
@@ -651,7 +668,7 @@ fn update_session_from_event(
     roster_changed: bool,
 ) {
     let local_team = state.game.local_team.load(Ordering::SeqCst);
-    let local_team_hint = (local_team != crate::state::NO_TEAM).then_some(local_team);
+    let local_team_hint = standard_team(local_team);
     let mode_inference = parsed_event.mode.inference();
     let session_mode = mode_inference.mode;
     let current_session = state.game.session.load();
@@ -723,7 +740,7 @@ fn update_dashboard_match_snapshot(state: &Arc<AppState>, parsed_event: &StatsAp
     }
 
     let local_team = state.game.local_team.load(Ordering::SeqCst);
-    let local_team = (local_team != crate::state::NO_TEAM).then_some(local_team);
+    let local_team = standard_team(local_team);
     let session = (**current_session).clone();
     let team_bumps = state
         .game
@@ -1525,6 +1542,65 @@ mod tests {
         assert_eq!(player_named(&players, "Me").team, 1);
         assert_eq!(player_named(&players, "Mate").boost, 88);
         assert!(!player_named(&players, "Opponent").is_local);
+    }
+
+    #[test]
+    fn partial_local_player_frame_preserves_team_in_live_state() {
+        let state = AppState::new();
+        handle_update_state_payload(
+            &state,
+            &json!({
+                "MatchGuid": "guid123",
+                "Players": [
+                    {"Name": "Me", "PrimaryId": "Steam|1|0", "TeamNum": 1, "IsLocalPlayer": true}
+                ]
+            }),
+        );
+        handle_update_state_payload(
+            &state,
+            &json!({
+                "MatchGuid": "guid123",
+                "Players": [
+                    {"Name": "Me", "PrimaryId": "Steam|1|0", "IsLocalPlayer": true}
+                ]
+            }),
+        );
+
+        assert_eq!(state.game.local_team.load(Ordering::SeqCst), 1);
+        assert_eq!(player_named(&state.game.players.load(), "Me").team, 1);
+    }
+
+    #[test]
+    fn partial_new_match_frame_does_not_preserve_previous_local_team() {
+        let state = AppState::new();
+        handle_update_state_payload(
+            &state,
+            &json!({
+                "MatchGuid": "first-guid",
+                "Players": [
+                    {"Name": "Me", "PrimaryId": "Steam|1|0", "TeamNum": 1, "IsLocalPlayer": true}
+                ]
+            }),
+        );
+        handle_update_state_payload(
+            &state,
+            &json!({
+                "MatchGuid": "second-guid",
+                "Players": [
+                    {"Name": "Me", "PrimaryId": "Steam|1|0", "IsLocalPlayer": true}
+                ]
+            }),
+        );
+
+        assert_eq!(
+            state.game.local_team.load(Ordering::SeqCst),
+            crate::state::NO_TEAM
+        );
+        assert_eq!(
+            player_named(&state.game.players.load(), "Me").team,
+            crate::state::NO_TEAM
+        );
+        assert_eq!(state.game.session.load().local_team, None);
     }
 
     #[test]

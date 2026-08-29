@@ -3,7 +3,7 @@ use crate::json_utils::{
     number_field_u32, string_field,
 };
 use crate::session::{MatchResult, SessionMode, SessionModeSource};
-use crate::state::{LocalPlayerIdentity, PlayerInfo, PlayerKey, PlayerMap};
+use crate::state::{LocalPlayerIdentity, NO_TEAM, PlayerInfo, PlayerKey, PlayerMap, standard_team};
 use serde_json::Value;
 use std::collections::HashMap;
 
@@ -13,6 +13,7 @@ pub struct StatsApiParseContext<'a> {
     pub cached_identity: &'a LocalPlayerIdentity,
     pub previous_players: &'a PlayerMap,
     pub fallback_match_scope: &'a str,
+    pub previous_match_scope: &'a str,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -112,6 +113,7 @@ pub fn parse_stats_api_data(
     } else {
         &match_guid
     };
+    let preserve_previous_teams = player_scope == context.previous_match_scope;
     let hints = game.as_ref().map(extract_game_hints).unwrap_or_default();
     let target_player_name = target_player_name(&data, &hints);
     let effective_local_name = hints
@@ -130,6 +132,7 @@ pub fn parse_stats_api_data(
         context.cached_identity,
         context.previous_players,
         player_scope,
+        preserve_previous_teams,
     );
     let local_player_hint = players
         .values()
@@ -166,7 +169,8 @@ pub fn parse_stats_api_data(
         &data,
         &["WinnerTeamNum", "winnerTeamNum", "WinnerTeam", "winnerTeam"],
     )
-    .and_then(checked_u8);
+    .and_then(checked_u8)
+    .and_then(standard_team);
     let has_winner = game
         .as_ref()
         .and_then(|game| bool_field(game, &["bHasWinner", "hasWinner"]))
@@ -269,7 +273,7 @@ pub fn result_signature(
     orange_score: u32,
     winner: &str,
 ) -> Option<ResultSignature> {
-    let local_team = local_team?;
+    let local_team = standard_team(local_team?)?;
     let result = result_from_winner(winner, local_team)
         .or_else(|| result_from_score(blue_score, orange_score, local_team))?;
 
@@ -283,6 +287,7 @@ pub fn result_signature(
 }
 
 pub fn result_from_winner(winner: &str, local_team: u8) -> Option<MatchResult> {
+    let local_team = standard_team(local_team)?;
     let normalized = winner.trim().to_lowercase();
     if normalized.is_empty() {
         return None;
@@ -300,6 +305,7 @@ pub fn result_from_winner(winner: &str, local_team: u8) -> Option<MatchResult> {
 }
 
 pub fn result_from_score(blue: u32, orange: u32, local_team: u8) -> Option<MatchResult> {
+    let local_team = standard_team(local_team)?;
     if blue == orange {
         return None;
     }
@@ -355,7 +361,8 @@ fn extract_game_hints(game: &Value) -> GameHints {
     if let Some(target) = game.get("target").or_else(|| game.get("Target")) {
         hints.target_name = string_field(target, &["Name", "name"]).map(str::to_string);
         hints.target_shortcut = number_field(target, &["Shortcut", "shortcut"]);
-        hints.target_team = number_field_u8(target, &["TeamNum", "teamNum", "Team", "team"]);
+        hints.target_team = number_field_u8(target, &["TeamNum", "teamNum", "Team", "team"])
+            .and_then(standard_team);
     }
 
     hints
@@ -383,8 +390,9 @@ fn target_player_name(data: &Value, hints: &GameHints) -> Option<String> {
                 }
 
                 if let Some(target_team) = hints.target_team {
-                    let team = number_field(player, &["TeamNum", "teamNum", "Team", "team"])?;
-                    if checked_u8(team) != Some(target_team) {
+                    let team = number_field_u8(player, &["TeamNum", "teamNum", "Team", "team"])
+                        .and_then(standard_team)?;
+                    if team != target_team {
                         return None;
                     }
                 }
@@ -408,6 +416,7 @@ fn parse_players(
     cached_identity: &LocalPlayerIdentity,
     previous_players: &PlayerMap,
     match_scope: &str,
+    preserve_previous_teams: bool,
 ) -> PlayerMap {
     let Some(players) = data
         .get("Players")
@@ -429,9 +438,15 @@ fn parse_players(
         };
         let shortcut = number_field(player_payload, &["Shortcut", "shortcut"]);
         let key = PlayerKey::for_match(&player, match_scope, shortcut, roster_index);
-        player.mmr = previous_players
-            .get(&key)
-            .and_then(|previous| previous.mmr.clone());
+        if let Some(previous) = previous_players.get(&key) {
+            if preserve_previous_teams
+                && player.team == NO_TEAM
+                && let Some(previous_team) = standard_team(previous.team)
+            {
+                player.team = previous_team;
+            }
+            player.mmr.clone_from(&previous.mmr);
+        }
         parsed.insert(key, player);
     }
     parsed
@@ -537,8 +552,9 @@ fn parse_player_info(
         is_local = false;
     }
 
-    let team =
-        number_field_u8(player_payload, &["TeamNum", "teamNum", "Team", "team"]).unwrap_or(0);
+    let team = number_field_u8(player_payload, &["TeamNum", "teamNum", "Team", "team"])
+        .and_then(standard_team)
+        .unwrap_or(NO_TEAM);
 
     let boost = number_field(player_payload, &["Boost", "boost"]);
 
@@ -701,6 +717,7 @@ mod tests {
             cached_identity,
             previous_players,
             fallback_match_scope: "test-epoch",
+            previous_match_scope: "guid123",
         }
     }
 
@@ -832,19 +849,19 @@ mod tests {
                 "Event": "UpdateState",
                 "Data": {
                     "MatchGuid": "guid123",
-                    "WinnerTeamNum": -1,
+                    "WinnerTeamNum": 2,
                     "Game": {
                         "Teams": [
                             {"TeamNum": 0, "Score": -1},
                             {"TeamNum": 1, "Score": 2}
                         ],
-                        "Target": {"Name": "Me", "TeamNum": -1}
+                        "Target": {"Name": "Me", "TeamNum": 2}
                     },
                     "Players": [
                         {
                             "Name": "Me",
                             "PrimaryId": "Steam|1|0",
-                            "TeamNum": -1,
+                            "TeamNum": 2,
                             "Boost": 300,
                             "Score": -5,
                             "Goals": -1,
@@ -861,12 +878,98 @@ mod tests {
         assert_eq!(event.score.blue_score, 0);
         assert_eq!(event.score.orange_score, 2);
         assert_eq!(event.target_team, None);
-        assert_eq!(player.team, 0);
+        assert_eq!(player.team, NO_TEAM);
         assert_eq!(player.boost, 0);
         assert!(player.boost_known);
         assert_eq!(player.score, 0);
         assert_eq!(player.goals, 0);
         assert_eq!(player.touches, 0);
+    }
+
+    #[test]
+    fn partial_player_frames_preserve_known_team_by_player_key() {
+        let identity = LocalPlayerIdentity::default();
+        let previous = player_map(PlayerInfo {
+            name: "Player".to_string(),
+            primary_id: "Steam|1|0".to_string(),
+            platform: "Steam".to_string(),
+            team: 1,
+            ..Default::default()
+        });
+        let event = parse_stats_api_event(
+            &json!({
+                "Event": "UpdateState",
+                "Data": {
+                    "MatchGuid": "guid123",
+                    "Players": [
+                        {"Name": "Player", "PrimaryId": "Steam|1|0"},
+                        {"Name": "Unknown", "PrimaryId": "Epic|2|0", "TeamNum": 2}
+                    ]
+                }
+            }),
+            context(&identity, &previous),
+        );
+
+        assert_eq!(player_named(&event.players, "Player").team, 1);
+        assert_eq!(player_named(&event.players, "Unknown").team, NO_TEAM);
+    }
+
+    #[test]
+    fn previous_match_team_is_not_carried_into_a_new_match() {
+        let identity = LocalPlayerIdentity::default();
+        let previous = player_map(PlayerInfo {
+            name: "Player".to_string(),
+            primary_id: "Steam|1|0".to_string(),
+            platform: "Steam".to_string(),
+            team: 1,
+            ..Default::default()
+        });
+        let event = parse_stats_api_event(
+            &json!({
+                "Event": "UpdateState",
+                "Data": {
+                    "MatchGuid": "new-guid",
+                    "Players": [
+                        {"Name": "Player", "PrimaryId": "Steam|1|0"}
+                    ]
+                }
+            }),
+            context(&identity, &previous),
+        );
+
+        assert_eq!(player_named(&event.players, "Player").team, NO_TEAM);
+    }
+
+    #[test]
+    fn unknown_team_fallback_key_stays_stable_across_partial_frames() {
+        let identity = LocalPlayerIdentity::default();
+        let first = parse_stats_api_event(
+            &json!({
+                "Event": "UpdateState",
+                "Data": {
+                    "MatchGuid": "guid123",
+                    "Players": [
+                        {"Name": "Bot", "PrimaryId": "Unknown|0|0", "Shortcut": 7, "TeamNum": 1}
+                    ]
+                }
+            }),
+            context(&identity, &PlayerMap::new()),
+        );
+        let second = parse_stats_api_event(
+            &json!({
+                "Event": "UpdateState",
+                "Data": {
+                    "MatchGuid": "guid123",
+                    "Players": [
+                        {"Name": "Bot", "PrimaryId": "Unknown|0|0", "Shortcut": 7}
+                    ]
+                }
+            }),
+            context(&identity, &first.players),
+        );
+
+        assert_eq!(first.players.keys().next(), second.players.keys().next());
+        assert_eq!(player_named(&second.players, "Bot").team, 1);
     }
 
     #[test]

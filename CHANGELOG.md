@@ -8,6 +8,7 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 - **Reliable Local Rank Refreshes**: Prevents overlapping refreshes and discards results from a previous account if the local player changes while a rank lookup is running.
+- **Accurate Team Assignment**: Missing or invalid game data no longer places players on Blue; known assignments are retained across partial updates and unknown teams stay separate.
 
 ---
 

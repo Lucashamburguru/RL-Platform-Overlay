@@ -910,10 +910,7 @@ impl PlayerKey {
         let discriminator = shortcut
             .map(|value| format!("shortcut-{value}"))
             .unwrap_or_else(|| format!("slot-{roster_index}"));
-        Self(format!(
-            "match:{scope}:{platform}:{}:{name}:{discriminator}",
-            player.team
-        ))
+        Self(format!("match:{scope}:{platform}:{name}:{discriminator}"))
     }
 
     pub fn as_str(&self) -> &str {
@@ -1062,6 +1059,10 @@ impl LocalMmrRefreshCoordinator {
 }
 
 pub const NO_TEAM: u8 = 255;
+
+pub fn standard_team(team: u8) -> Option<u8> {
+    (team <= 1).then_some(team)
+}
 
 pub struct DiagnosticsState {
     pub frame_tracker: Arc<crate::diagnostics::SharedFrameTracker>,

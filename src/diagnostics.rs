@@ -853,11 +853,9 @@ pub fn support_diagnostics_bundle(
     ));
     lines.push(format!(
         "local_team={}",
-        if local_team == crate::state::NO_TEAM {
-            "Unknown".to_string()
-        } else {
-            local_team.to_string()
-        }
+        crate::state::standard_team(local_team)
+            .map(|team| team.to_string())
+            .unwrap_or_else(|| "Unknown".to_string())
     ));
 
     lines.push(String::new());
