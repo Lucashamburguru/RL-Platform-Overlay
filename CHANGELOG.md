@@ -7,7 +7,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
-- **Dedicated Support Tab**: Copy privacy-aware diagnostics or save a bounded log of recent game API events after a detection problem occurs, including the mode and detection source the app selected.
+- **Dedicated Support Tab**: Copy privacy-aware diagnostics and, after a mode or team detection issue, save up to two minutes of recent Game API events with the mode and detection source selected by the app.
 
 ### Changed
 - **Private Support Diagnostics**: Support bundles now redact personal paths, player and account details, match and replay identifiers, filenames, and recent logs by default, with an exact preview and an explicit identifiable-details option.
