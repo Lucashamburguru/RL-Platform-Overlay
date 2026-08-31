@@ -163,21 +163,46 @@ impl Default for RocketLeagueProcessWatcher {
 }
 
 pub(crate) fn is_rocket_league_name(name: &OsStr) -> bool {
-    let normalized = name.to_string_lossy().to_lowercase();
-    normalized == "rocketleague.exe"
-        || normalized == "rocketleague.ex"
-        || normalized == "rocketleague"
-        || normalized == "rocketleague-linux-shipping"
+    let name_str = name.to_string_lossy();
+    // ⚡ Bolt: Avoid allocating String by using eq_ignore_ascii_case
+    name_str.eq_ignore_ascii_case("rocketleague.exe")
+        || name_str.eq_ignore_ascii_case("rocketleague.ex")
+        || name_str.eq_ignore_ascii_case("rocketleague")
+        || name_str.eq_ignore_ascii_case("rocketleague-linux-shipping")
 }
 
 fn rocket_league_argument_match(argument: &OsStr) -> Option<String> {
-    let normalized = argument.to_string_lossy().to_lowercase().replace('\\', "/");
-    if normalized.contains("rocketleague.exe")
-        || normalized.contains("rocketleague_eac.exe")
-        || normalized.contains("rocketleague-linux-shipping")
-        || normalized.contains("rocketleague/binaries")
-    {
-        Some(format!("command: {}", argument.to_string_lossy()))
+    // ⚡ Bolt: Avoid allocating String in hot path by using zero-allocation byte slice search
+    let argument_str = argument.to_string_lossy();
+    let argument_bytes = argument_str.as_bytes();
+
+    let has_match = [
+        "rocketleague.exe",
+        "rocketleague_eac.exe",
+        "rocketleague-linux-shipping",
+        "rocketleague/binaries",
+    ]
+    .iter()
+    .any(|needle| {
+        let needle_len = needle.len();
+        if needle_len == 0 {
+            return false;
+        }
+        argument_bytes.windows(needle_len).any(|w| {
+            let mut matches = true;
+            for (i, &b) in w.iter().enumerate() {
+                let b_norm = if b == b'\\' { b'/' } else { b };
+                if !b_norm.eq_ignore_ascii_case(&needle.as_bytes()[i]) {
+                    matches = false;
+                    break;
+                }
+            }
+            matches
+        })
+    });
+
+    if has_match {
+        Some(format!("command: {}", argument_str))
     } else {
         None
     }
