@@ -1,5 +1,7 @@
 use crate::state::{AppState, Config};
-use crate::ui::common::{StatusTone, helper_text, setting_row, settings_section, status_text};
+use crate::ui::common::{
+    StatusTone, contains_ignore_ascii_case, helper_text, setting_row, settings_section, status_text,
+};
 use eframe::egui;
 use egui_extras::{Column, TableBuilder};
 use std::sync::Arc;
@@ -659,7 +661,6 @@ struct ReplayCacheRow {
     map: String,
     score: String,
     players: String,
-    search_text: String,
     source_label: &'static str,
     source_color: egui::Color32,
     hover: String,
@@ -677,7 +678,7 @@ fn replay_cache_rows(
         .iter()
         .map(|(filename, entry)| (filename.to_ascii_lowercase(), entry))
         .collect();
-    let query = search.trim().to_ascii_lowercase();
+    let query = search.trim();
     uploaded_replays
         .iter()
         .rev()
@@ -686,7 +687,7 @@ fn replay_cache_rows(
                 .get(&filename.to_ascii_lowercase())
                 .copied();
             let row = replay_cache_row(filename, entry);
-            if query.is_empty() || row_matches_query(&row, &query) {
+            if query.is_empty() || row_matches_query(&row, query) {
                 Some(row)
             } else {
                 None
@@ -699,7 +700,7 @@ fn replay_cache_row(
     filename: &str,
     entry: Option<&crate::replay_metadata::ReplayMetadataEntry>,
 ) -> ReplayCacheRow {
-    let mut row = match entry {
+    match entry {
         Some(entry) if entry.has_metadata() => {
             let primary = shorten_text(&entry.display_name, 36);
             let is_cloud = entry.file_size == 0;
@@ -721,7 +722,6 @@ fn replay_cache_row(
                     egui::Color32::from_rgb(100, 220, 120)
                 },
                 hover: metadata_hover(filename, entry),
-                search_text: String::new(),
             }
         }
         Some(entry) => ReplayCacheRow {
@@ -734,7 +734,6 @@ fn replay_cache_row(
             source_label: "Parse failed",
             source_color: egui::Color32::from_rgb(230, 95, 85),
             hover: format!("{}\n{}", filename, entry.error),
-            search_text: String::new(),
         },
         None => ReplayCacheRow {
             filename: filename.to_string(),
@@ -746,11 +745,8 @@ fn replay_cache_row(
             source_label: "Cache only",
             source_color: egui::Color32::from_gray(165),
             hover: format!("{filename}\nNo matching local replay file for metadata."),
-            search_text: String::new(),
         },
-    };
-    row.search_text = replay_row_search_text(&row);
-    row
+    }
 }
 
 fn display_or_dash(value: &str) -> String {
@@ -869,21 +865,13 @@ fn replay_time_label(seconds: u32) -> String {
 }
 
 fn row_matches_query(row: &ReplayCacheRow, query: &str) -> bool {
-    row.search_text.contains(query)
-}
-
-fn replay_row_search_text(row: &ReplayCacheRow) -> String {
-    [
-        row.primary.as_str(),
-        row.date.as_str(),
-        row.map.as_str(),
-        row.score.as_str(),
-        row.players.as_str(),
-        row.hover.as_str(),
-        row.source_label,
-    ]
-    .join("\n")
-    .to_ascii_lowercase()
+    contains_ignore_ascii_case(&row.primary, query)
+        || contains_ignore_ascii_case(&row.date, query)
+        || contains_ignore_ascii_case(&row.map, query)
+        || contains_ignore_ascii_case(&row.score, query)
+        || contains_ignore_ascii_case(&row.players, query)
+        || contains_ignore_ascii_case(&row.hover, query)
+        || contains_ignore_ascii_case(row.source_label, query)
 }
 
 fn shorten_text(text: &str, max_chars: usize) -> String {
