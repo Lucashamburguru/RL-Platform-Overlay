@@ -1161,8 +1161,11 @@ async fn run_download_replay(state: Arc<AppState>, replay_id: String) -> Result<
     match tokio::fs::read_dir(&replays_dir).await {
         Ok(mut entries) => {
             while let Ok(Some(entry)) = entries.next_entry().await {
-                if entry.file_name().to_str().map(|s| s.to_lowercase())
-                    == Some(target_filename.to_lowercase())
+                // Use eq_ignore_ascii_case to avoid allocating Strings per file entry
+                if entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|s| s.eq_ignore_ascii_case(&target_filename))
                 {
                     let path = entry.path();
                     if crate::replay_metadata::validate_replay_file_strict(&path).is_ok() {
