@@ -336,7 +336,7 @@ pub(super) fn draw_lobby_panel(
             if sorted_players.is_empty() {
                 ui.label(
                     egui::RichText::new("Waiting...")
-                        .size(11.0 * scale)
+                        .size(11.0_f32 * scale)
                         .italics()
                         .color(overlay_subtle_color()),
                 );
@@ -378,7 +378,7 @@ fn render_team_header(ui: &mut egui::Ui, team: u8, scale: f32) {
     ui.horizontal(|ui| {
         let (rect, _) =
             ui.allocate_exact_size(egui::vec2(18.0 * scale, 2.0 * scale), egui::Sense::hover());
-        ui.painter().rect_filled(rect, 1.0 * scale, color);
+        ui.painter().rect_filled(rect, 1.0_f32 * scale, color);
         ui.label(
             egui::RichText::new(label)
                 .size(8.5 * scale)
@@ -485,7 +485,7 @@ fn render_compact_row(
             ui.label(
                 egui::RichText::new(&player.name)
                     .color(name_color)
-                    .size(11.0 * scale)
+                    .size(11.0_f32 * scale)
                     .strong(),
             );
 

@@ -619,7 +619,7 @@ fn render_team_comparison(
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(
                     egui::RichText::new("Estimated possession uses touch share")
-                        .size(11.0)
+                        .size(11.0_f32)
                         .color(egui::Color32::from_gray(145)),
                 );
             });
@@ -763,7 +763,7 @@ fn comparison_bar(
     let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 24.0), egui::Sense::hover());
     let painter = ui.painter();
     painter.rect_filled(rect, 6.0, egui::Color32::from_rgb(28, 32, 40));
-    let blue_width = rect.width() * (blue_pct as f32 / 100.0).clamp(0.0, 1.0);
+    let blue_width = rect.width() * (blue_pct as f32 / 100.0).clamp(0.0, 1.0_f32);
     let blue_rect = egui::Rect::from_min_size(rect.min, egui::vec2(blue_width, rect.height()));
     let orange_rect =
         egui::Rect::from_min_max(egui::pos2(rect.min.x + blue_width, rect.min.y), rect.max);
@@ -801,7 +801,7 @@ fn comparison_tile(ui: &mut egui::Ui, label: &str, blue: u32, orange: u32, width
         ui.set_width(inner_width);
         ui.label(
             egui::RichText::new(label)
-                .size(11.0)
+                .size(11.0_f32)
                 .strong()
                 .color(egui::Color32::from_gray(155)),
         );
@@ -820,7 +820,11 @@ fn comparison_tile(ui: &mut egui::Ui, label: &str, blue: u32, orange: u32, width
                     .color(egui::Color32::from_rgb(245, 160, 95)),
             );
         });
-        ui.label(egui::RichText::new(edge_text).size(11.0).color(edge_color));
+        ui.label(
+            egui::RichText::new(edge_text)
+                .size(11.0_f32)
+                .color(edge_color),
+        );
     });
 }
 
@@ -853,7 +857,7 @@ fn comparison_text_tile(ui: &mut egui::Ui, label: &str, blue: String, orange: St
         ui.set_width(inner_width);
         ui.label(
             egui::RichText::new(label)
-                .size(11.0)
+                .size(11.0_f32)
                 .strong()
                 .color(egui::Color32::from_gray(155)),
         );
@@ -874,7 +878,7 @@ fn comparison_text_tile(ui: &mut egui::Ui, label: &str, blue: String, orange: St
         });
         ui.label(
             egui::RichText::new("—")
-                .size(11.0)
+                .size(11.0_f32)
                 .color(egui::Color32::from_gray(50)),
         );
     });
@@ -1111,7 +1115,7 @@ fn render_player_row(ui: &mut egui::Ui, row: &DashboardPlayerRow, config: &Confi
                 } else if config.dashboard_show_boost || config.dashboard_show_ranks {
                     2.0
                 } else {
-                    1.0
+                    1.0_f32
                 };
                 let stat_width =
                     (row_width - name_width - rank_width - boost_width - divider_width - 42.0)
@@ -1151,7 +1155,7 @@ fn render_player_row(ui: &mut egui::Ui, row: &DashboardPlayerRow, config: &Confi
 }
 
 fn vertical_divider(ui: &mut egui::Ui, height: f32) {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(1.0, height), egui::Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(1.0_f32, height), egui::Sense::hover());
     ui.painter()
         .rect_filled(rect, 0.5, egui::Color32::from_rgb(42, 49, 60));
 }
@@ -1360,7 +1364,7 @@ fn render_rank(ui: &mut egui::Ui, row: &DashboardPlayerRow) {
             if let Some(matches) = row.matches_played {
                 ui.label(
                     egui::RichText::new(format!("{matches} matches"))
-                        .size(11.0)
+                        .size(11.0_f32)
                         .color(egui::Color32::from_gray(140)),
                 );
             }
@@ -1672,7 +1676,7 @@ fn feed_row(ui: &mut egui::Ui, label: &str, detail: impl Into<String>, color: eg
         ui.vertical(|ui| {
             ui.label(
                 egui::RichText::new(label)
-                    .size(11.0)
+                    .size(11.0_f32)
                     .strong()
                     .color(egui::Color32::from_gray(160)),
             );
