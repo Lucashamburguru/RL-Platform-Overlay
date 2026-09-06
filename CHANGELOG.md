@@ -8,6 +8,27 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [0.1.49] - 2026-09-06
+
+### Added
+- **Sortable Match History**: The player history table can now be sorted by any column (games played, win rates, last seen) in ascending or descending order.
+- **Organized Replays Tab**: The Replays tab is now divided into Uploader, Replay Library, and Tools & Maintenance sections, with live Ballchasing API token verification.
+- **International Font Support**: Added system font fallbacks so player names with special characters or Asian scripts display correctly.
+- **Support & Troubleshooting Guide**: Added a dedicated guide covering Setup Readiness, connection issues, mode detection logs, and privacy.
+
+### Changed
+- **Faster, More Dependable Ranks**: Switched to a faster and more reliable rank provider, eliminating missing or delayed MMR lookups caused by web scraping.
+- **Dedicated Replay Database**: Uploaded replays are now stored in an independent database instead of the settings file, keeping preferences clean and replay scans fast as your collection grows.
+- **Responsive Settings Layout**: Settings tabs now cleanly reflow and adapt to smaller window sizes, sliders display clear percentages, and Setup Readiness is placed prominently at the top of the Setup tab.
+- **Protected Configuration**: Configuration files on Linux/macOS now enforce private owner-only permissions to protect saved API credentials.
+
+### Fixed
+- **Safer Replay Uploads**: Prevents duplicate uploads using content verification and ensures files are fully written before enqueueing.
+- **Non-Blocking History Clear**: Clearing match history now runs safely in the background with live progress without freezing the user interface.
+- **Clearer MMR Error Recovery**: The local MMR panel now provides a direct Retry action and expandable technical details when a lookup cannot be completed.
+
+---
+
 ## [0.1.48] - 2026-08-29
 
 ### Added

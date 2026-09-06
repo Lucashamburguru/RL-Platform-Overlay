@@ -2,29 +2,33 @@ use crate::state::{AppState, LocalPlayerIdentity, PlayerInfo, PlayerKey, PlayerM
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::time::sleep;
 
 const MMR_TRACKER_API_HOST: &str = "https://api.tracker.gg";
+const MMR_API_V2_HOST: &str = "https://mmr.kmdw.dev";
 const MMR_TRACKED_PLAYLIST_IDS: [i32; 11] = [0, 10, 11, 12, 13, 27, 28, 29, 30, 34, 63];
 const MMR_CACHE_TTL: Duration = Duration::from_secs(60 * 60);
 
 #[derive(Debug, Clone)]
 struct MmrCacheEntry {
-    snapshot: TrackerSnapshot,
+    snapshot: MmrSnapshot,
     fetched_at: Instant,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TrackerPlayer {
+pub struct MmrPlayer {
     pub platform: String,
     pub player_name: String,
     pub player_id: String,
+    pub primary_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TrackerPlaylistSnapshot {
+pub struct MmrPlaylistSnapshot {
     pub name: String,
     pub rating: i32,
     pub matches: i32,
@@ -32,10 +36,56 @@ pub struct TrackerPlaylistSnapshot {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct TrackerSnapshot {
-    pub playlists: HashMap<i32, TrackerPlaylistSnapshot>,
+pub struct MmrSnapshot {
+    pub playlists: HashMap<i32, MmrPlaylistSnapshot>,
     pub last_updated: Option<String>,
     pub current_season: Option<i32>,
+}
+
+// Compatibility aliases keep the existing rendering modules source-compatible while the
+// provider boundary uses provider-neutral names.
+pub type TrackerPlayer = MmrPlayer;
+pub type TrackerPlaylistSnapshot = MmrPlaylistSnapshot;
+pub type TrackerSnapshot = MmrSnapshot;
+
+type MmrProviderFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<MmrSnapshot, MmrError>> + Send + 'a>>;
+
+pub(crate) trait MmrProvider: Send + Sync {
+    fn name(&self) -> &'static str;
+
+    fn fetch<'a>(
+        &'a self,
+        client: &'a wreq::Client,
+        xuid_cache: Option<&'a std::sync::Mutex<HashMap<String, String>>>,
+        player: &'a MmrPlayer,
+    ) -> MmrProviderFuture<'a>;
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)] // Tracker remains compiled as a disabled provider for future selection/fallback.
+enum MmrProviderId {
+    MmrApiV2,
+    Tracker,
+}
+
+const DEFAULT_MMR_PROVIDER: MmrProviderId = MmrProviderId::MmrApiV2;
+
+struct MmrApiV2Provider;
+struct TrackerProvider;
+
+static MMR_API_V2_PROVIDER: MmrApiV2Provider = MmrApiV2Provider;
+static TRACKER_PROVIDER: TrackerProvider = TrackerProvider;
+
+fn mmr_provider(id: MmrProviderId) -> &'static dyn MmrProvider {
+    match id {
+        MmrProviderId::MmrApiV2 => &MMR_API_V2_PROVIDER,
+        MmrProviderId::Tracker => &TRACKER_PROVIDER,
+    }
+}
+
+fn default_mmr_provider() -> &'static dyn MmrProvider {
+    mmr_provider(DEFAULT_MMR_PROVIDER)
 }
 
 fn is_tracked_playlist(playlist_id: i32) -> bool {
@@ -82,6 +132,8 @@ pub enum MmrError {
     Json(#[from] serde_json::Error),
     #[error("Failed to extract stats")]
     ExtractStats,
+    #[error("Provider response error: {0}")]
+    ProviderResponse(String),
 }
 
 pub async fn resolve_xuid_to_gamertag(
@@ -285,6 +337,175 @@ fn extract_tracker_stats(payload: &Value) -> Option<TrackerSnapshot> {
     Some(snapshot)
 }
 
+impl MmrProvider for TrackerProvider {
+    fn name(&self) -> &'static str {
+        "Tracker Network"
+    }
+
+    fn fetch<'a>(
+        &'a self,
+        client: &'a wreq::Client,
+        xuid_cache: Option<&'a std::sync::Mutex<HashMap<String, String>>>,
+        player: &'a TrackerPlayer,
+    ) -> MmrProviderFuture<'a> {
+        Box::pin(fetch_tracker_snapshot(client, xuid_cache, player))
+    }
+}
+
+impl MmrProvider for MmrApiV2Provider {
+    fn name(&self) -> &'static str {
+        "Rocket League MMR"
+    }
+
+    fn fetch<'a>(
+        &'a self,
+        client: &'a wreq::Client,
+        _xuid_cache: Option<&'a std::sync::Mutex<HashMap<String, String>>>,
+        player: &'a TrackerPlayer,
+    ) -> MmrProviderFuture<'a> {
+        Box::pin(fetch_mmr_api_v2_snapshot(client, player))
+    }
+}
+
+pub async fn fetch_mmr_snapshot(
+    client: &wreq::Client,
+    xuid_cache: Option<&std::sync::Mutex<HashMap<String, String>>>,
+    player: &TrackerPlayer,
+) -> Result<TrackerSnapshot, MmrError> {
+    default_mmr_provider()
+        .fetch(client, xuid_cache, player)
+        .await
+}
+
+#[derive(Deserialize)]
+struct MmrApiV2Response {
+    playlists: Option<Vec<MmrApiV2Playlist>>,
+    #[serde(default)]
+    error: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct MmrApiV2Playlist {
+    id: i32,
+    mmr: i32,
+    tier: i32,
+    #[allow(dead_code)]
+    division: i32,
+}
+
+async fn fetch_mmr_api_v2_snapshot(
+    client: &wreq::Client,
+    player: &TrackerPlayer,
+) -> Result<TrackerSnapshot, MmrError> {
+    let primary_id = rocket_league_player_id(player);
+    let url = format!(
+        "{MMR_API_V2_HOST}/get-skills?playerId={}",
+        urlencoding::encode(&primary_id)
+    );
+    let response = client
+        .get(url)
+        .header("Accept", "application/json")
+        .send()
+        .await?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(MmrError::HttpStatus(status.as_u16()));
+    }
+    let text = response
+        .text()
+        .await
+        .map_err(|error| MmrError::Decode(error.to_string()))?;
+    let response: MmrApiV2Response = serde_json::from_str(&text)?;
+    mmr_api_v2_snapshot(response)
+}
+
+fn mmr_api_v2_snapshot(response: MmrApiV2Response) -> Result<TrackerSnapshot, MmrError> {
+    if let Some(error) = response.error.filter(|error| !error.trim().is_empty()) {
+        return Err(MmrError::ProviderResponse(error));
+    }
+
+    let mut snapshot = TrackerSnapshot::default();
+    for playlist in response.playlists.unwrap_or_default() {
+        if !is_tracked_playlist(playlist.id) {
+            continue;
+        }
+        snapshot.playlists.insert(
+            playlist.id,
+            TrackerPlaylistSnapshot {
+                name: playlist_name(playlist.id).to_string(),
+                rating: playlist.mmr,
+                matches: 0,
+                tier_name: tier_name(playlist.tier).to_string(),
+            },
+        );
+    }
+    Ok(snapshot)
+}
+
+fn rocket_league_player_id(player: &TrackerPlayer) -> String {
+    if player.primary_id.matches('|').count() >= 2 {
+        return player.primary_id.clone();
+    }
+    let platform = match player.platform.to_ascii_lowercase().as_str() {
+        "steam" => "Steam",
+        "ps4" | "ps5" | "psn" | "playstation" => "PS4",
+        "xbox" | "xbl" | "xboxone" | "xboxseries" => "XboxOne",
+        "switch" | "nintendo" => "Switch",
+        _ => "Epic",
+    };
+    format!("{platform}|{}|0", player.player_id)
+}
+
+fn playlist_name(playlist_id: i32) -> &'static str {
+    match playlist_id {
+        0 => "Casual",
+        10 => "Ranked Duel 1v1",
+        11 => "Ranked Doubles 2v2",
+        12 => "Solo Standard 3v3",
+        13 => "Ranked Standard 3v3",
+        27 => "Ranked Hoops",
+        28 => "Ranked Rumble",
+        29 => "Ranked Dropshot",
+        30 => "Ranked Snow Day",
+        34 => "Tournament",
+        63 => "Playlist 63",
+        _ => "Unknown Playlist",
+    }
+}
+
+fn tier_name(tier: i32) -> &'static str {
+    const TIERS: [&str; 23] = [
+        "Unranked",
+        "Bronze I",
+        "Bronze II",
+        "Bronze III",
+        "Silver I",
+        "Silver II",
+        "Silver III",
+        "Gold I",
+        "Gold II",
+        "Gold III",
+        "Platinum I",
+        "Platinum II",
+        "Platinum III",
+        "Diamond I",
+        "Diamond II",
+        "Diamond III",
+        "Champion I",
+        "Champion II",
+        "Champion III",
+        "Grand Champion I",
+        "Grand Champion II",
+        "Grand Champion III",
+        "Supersonic Legend",
+    ];
+    usize::try_from(tier)
+        .ok()
+        .and_then(|tier| TIERS.get(tier))
+        .copied()
+        .unwrap_or("Unknown Rank")
+}
+
 type CachedTrackerPlayer = Option<(PlayerKey, TrackerSnapshot)>;
 type PendingTrackerPlayer = Option<(PlayerKey, String, TrackerPlayer)>;
 
@@ -364,7 +585,7 @@ pub fn start_mmr_fetch_task(state: Arc<AppState>) {
         let mut cooldown_until = None;
 
         loop {
-            // Sleep 2 seconds between fetches to be gentler on tracker.gg rate limits
+            // Bound lookup frequency even when lobby state changes rapidly.
             sleep(Duration::from_secs(2)).await;
 
             // Clean up expired entries in failed_fetches
@@ -416,17 +637,24 @@ pub fn start_mmr_fetch_task(state: Arc<AppState>) {
 
             if let Some((player_key, cache_key, tracker_player)) = target_player {
                 let name = tracker_player.player_name.clone();
+                let provider = default_mmr_provider();
                 fetching_players.insert(cache_key.clone());
                 append_tracker_log(
                     &state,
-                    format!("Fetching MMR for {} ({})", name, tracker_player.platform),
+                    format!(
+                        "Fetching MMR for {} ({}) via {}",
+                        name,
+                        tracker_player.platform,
+                        provider.name()
+                    ),
                 );
-                match fetch_tracker_snapshot(
-                    &state.system.http_client,
-                    Some(&state.mmr.xuid_gamertag_cache),
-                    &tracker_player,
-                )
-                .await
+                match provider
+                    .fetch(
+                        &state.system.http_client,
+                        Some(&state.mmr.xuid_gamertag_cache),
+                        &tracker_player,
+                    )
+                    .await
                 {
                     Ok(snapshot) => {
                         append_tracker_log(
@@ -451,7 +679,7 @@ pub fn start_mmr_fetch_task(state: Arc<AppState>) {
                     Err(e) => {
                         match e {
                             MmrError::HttpStatus(404) => {
-                                // Profile not found or private on tracker.gg.
+                                // Cache a missing profile so the lobby does not repeatedly query it.
                                 // Cache an empty MMR snapshot so we don't query this player again.
                                 append_tracker_log(
                                     &state,
@@ -559,6 +787,7 @@ fn tracker_player_from_info(info: &PlayerInfo) -> Option<(String, TrackerPlayer)
             platform: info.platform.clone(),
             player_name: info.name.clone(),
             player_id: actual_id,
+            primary_id: info.primary_id.clone(),
         },
     ))
 }
@@ -686,7 +915,7 @@ pub fn start_local_mmr_refresh(state: Arc<AppState>) {
         publish_local_mmr_start_error(
             &state,
             Some(&identity),
-            "Local player platform is not supported by Tracker.".to_string(),
+            "Local player platform is not supported by the MMR provider.".to_string(),
         );
         return;
     };
@@ -708,20 +937,24 @@ pub fn start_local_mmr_refresh(state: Arc<AppState>) {
     };
 
     runtime.spawn(async move {
+        let provider = default_mmr_provider();
         append_tracker_log(
             &state,
             format!(
-                "Fetching local player MMR for {} ({})",
-                identity.name, identity.platform
+                "Fetching local player MMR for {} ({}) via {}",
+                identity.name,
+                identity.platform,
+                provider.name()
             ),
         );
-        let result = fetch_tracker_snapshot(
-            &state.system.http_client,
-            Some(&state.mmr.xuid_gamertag_cache),
-            &tracker_player,
-        )
-        .await
-        .map_err(|error| error.to_string());
+        let result = provider
+            .fetch(
+                &state.system.http_client,
+                Some(&state.mmr.xuid_gamertag_cache),
+                &tracker_player,
+            )
+            .await
+            .map_err(|error| error.to_string());
 
         let completion_log = match &result {
             Ok(snapshot) => format!(
@@ -813,20 +1046,78 @@ mod tests {
         snapshot
     }
 
-    #[tokio::test]
-    #[ignore = "hits live tracker.gg endpoints"]
-    async fn test_pengiwin_steam() {
+    #[test]
+    fn mmr_api_v2_is_the_default_provider() {
+        assert_eq!(DEFAULT_MMR_PROVIDER, MmrProviderId::MmrApiV2);
+        assert_eq!(default_mmr_provider().name(), "Rocket League MMR");
+        assert_eq!(
+            mmr_provider(MmrProviderId::Tracker).name(),
+            "Tracker Network"
+        );
+    }
+
+    #[test]
+    fn mmr_api_v2_response_maps_to_existing_snapshot_model() {
+        let response: MmrApiV2Response = serde_json::from_value(serde_json::json!({
+            "playlists": [
+                {"id": 11, "mmr": 1234, "tier": 16, "division": 2},
+                {"id": 27, "mmr": 987, "tier": 14, "division": 0},
+                {"id": 999, "mmr": 1, "tier": 1, "division": 0}
+            ]
+        }))
+        .unwrap();
+
+        let snapshot = mmr_api_v2_snapshot(response).unwrap();
+
+        assert_eq!(snapshot.playlists.len(), 2);
+        assert_eq!(snapshot.playlists[&11].rating, 1234);
+        assert_eq!(snapshot.playlists[&11].name, "Ranked Doubles 2v2");
+        assert_eq!(snapshot.playlists[&11].tier_name, "Champion I");
+        assert_eq!(snapshot.playlists[&27].tier_name, "Diamond II");
+    }
+
+    #[test]
+    fn mmr_api_v2_surfaces_provider_errors() {
+        let response: MmrApiV2Response = serde_json::from_value(serde_json::json!({
+            "error": "Invalid credentials"
+        }))
+        .unwrap();
+
+        assert!(matches!(
+            mmr_api_v2_snapshot(response),
+            Err(MmrError::ProviderResponse(message)) if message == "Invalid credentials"
+        ));
+    }
+
+    #[test]
+    fn mmr_api_v2_uses_primary_id_without_rewriting_it() {
         let player = TrackerPlayer {
             platform: "Steam".to_string(),
-            player_name: "PengiWin".to_string(),
-            player_id: "PengiWin".to_string(),
+            player_name: "Display Name".to_string(),
+            player_id: "76561198000000000".to_string(),
+            primary_id: "Steam|76561198000000000|0".to_string(),
         };
-        println!("Fetching MMR for Steam/PengiWin...");
+        assert_eq!(
+            rocket_league_player_id(&player),
+            "Steam|76561198000000000|0"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "hits the live default MMR provider"]
+    async fn test_mmr_api_v2_documented_player() {
+        let player = TrackerPlayer {
+            platform: "Steam".to_string(),
+            player_name: "documented example".to_string(),
+            player_id: "76561198144145654".to_string(),
+            primary_id: "Steam|76561198144145654|0".to_string(),
+        };
+        println!("Fetching MMR from the default provider...");
         let client = wreq::Client::builder()
             .emulation(wreq_util::Emulation::Chrome128)
             .build()
             .unwrap();
-        match fetch_tracker_snapshot(&client, None, &player).await {
+        match fetch_mmr_snapshot(&client, None, &player).await {
             Ok(snapshot) => {
                 println!("Got snapshot with {} playlists", snapshot.playlists.len());
                 for (id, pl) in snapshot.playlists {
@@ -840,28 +1131,32 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "hits live tracker.gg endpoints"]
-    async fn test_alfa_psn() {
+    #[ignore = "hits the disabled live Tracker provider"]
+    async fn test_disabled_tracker_provider() {
         let players = vec![
             TrackerPlayer {
                 platform: "Steam".to_string(),
                 player_name: "PengiWin".to_string(),
                 player_id: "76561198034789585".to_string(), // Example SteamID64
+                primary_id: "Steam|76561198034789585|0".to_string(),
             },
             TrackerPlayer {
                 platform: "Ps4".to_string(),
                 player_name: "alfa_699".to_string(),
                 player_id: "2695557321719975533".to_string(),
+                primary_id: "PS4|2695557321719975533|0".to_string(),
             },
             TrackerPlayer {
                 platform: "Ps4".to_string(),
                 player_name: "Cleanmolles".to_string(),
                 player_id: "8318453829852839315".to_string(),
+                primary_id: "PS4|8318453829852839315|0".to_string(),
             },
             TrackerPlayer {
                 platform: "Epic".to_string(),
                 player_name: "pengiwin".to_string(),
                 player_id: "pengiwin".to_string(),
+                primary_id: "Epic|pengiwin|0".to_string(),
             },
         ];
         let client = wreq::Client::builder()

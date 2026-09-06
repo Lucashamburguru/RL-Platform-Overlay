@@ -42,8 +42,8 @@ pub(crate) fn monitor_summary(monitors: &[MonitorInfo], index: usize) -> String 
 
     let selected = select_monitor(monitors, index);
     format!(
-        "Monitor {}: {:.0}x{:.0} at {:.0},{:.0}",
-        selected.index,
+        "Display {} — {:.0} × {:.0} (at {:.0}, {:.0})",
+        selected.index + 1,
         selected.size[0],
         selected.size[1],
         selected.position.x,

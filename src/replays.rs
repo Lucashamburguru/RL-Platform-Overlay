@@ -1,5 +1,6 @@
 use crate::json_utils::number_field_i32;
 use crate::state::{AppState, ReplayUploadProgress};
+use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -14,6 +15,29 @@ const BALLCHASING_API_BASE: &str = "https://ballchasing.com/api/";
 struct ReplayFile {
     filename: String,
     path: PathBuf,
+}
+
+fn content_lock(state: &AppState, hash: &str) -> Arc<tokio::sync::Mutex<()>> {
+    let mut coordinator = state
+        .replays
+        .upload_coordinator
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    coordinator
+        .content_locks
+        .retain(|_, lock| lock.strong_count() > 0);
+    if let Some(lock) = coordinator
+        .content_locks
+        .get(hash)
+        .and_then(std::sync::Weak::upgrade)
+    {
+        return lock;
+    }
+    let lock = Arc::new(tokio::sync::Mutex::new(()));
+    coordinator
+        .content_locks
+        .insert(hash.to_owned(), Arc::downgrade(&lock));
+    lock
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -65,8 +89,12 @@ pub async fn verify_token(client: &wreq::Client, api_key: &str) -> Result<(), St
 
 /// Helper function to spawn the asynchronous replay uploader trigger.
 pub fn trigger_replay_upload(state: Arc<AppState>, scan_all_as_uploaded: bool) {
+    let Ok(operation_guard) = state.replays.maintenance_gate.clone().try_read_owned() else {
+        return;
+    };
     // Kept inline: must clear auto_upload_running and surface status on error.
     tokio::spawn(async move {
+        let _operation_guard = operation_guard;
         if state
             .replays
             .auto_upload_running
@@ -118,14 +146,9 @@ async fn run_replay_upload(state: Arc<AppState>, scan_all_as_uploaded: bool) -> 
         let now = std::time::SystemTime::now();
         let api_key = config.ballchasing_api_key.trim().to_string();
         let visibility = config.ballchasing_visibility.clone();
-        let uploaded_set = &config.uploaded_replays;
-
         if config.ballchasing_enabled && !api_key.is_empty() {
             for replay in found_files {
-                let has_uploaded = uploaded_set
-                    .iter()
-                    .any(|x| x.eq_ignore_ascii_case(&replay.filename));
-                if has_uploaded {
+                if replay_is_known_unchanged(&state, &replay).await {
                     continue;
                 }
                 if let Ok(metadata) = tokio::fs::metadata(&replay.path).await
@@ -145,18 +168,19 @@ async fn run_replay_upload(state: Arc<AppState>, scan_all_as_uploaded: bool) -> 
                         continue;
                     };
                     match upload_file_to_ballchasing(
+                        &state,
                         &state.system.ballchasing_client,
                         &api_key,
                         &visibility,
                         &replay.filename,
                         file_bytes,
+                        replay_file_details(&replay.path)
+                            .await
+                            .map(|details| details.1),
                     )
                     .await
                     {
-                        Ok(status_code)
-                            if UploadStatus::from_status_code(status_code).is_cached_success() =>
-                        {
-                            mark_replays_uploaded(&state, std::slice::from_ref(&replay.filename));
+                        Ok(status_code) if status_code.is_cached_success() => {
                             set_status(
                                 &state,
                                 &format!("Success: Uploaded recent {}", replay.filename),
@@ -164,9 +188,7 @@ async fn run_replay_upload(state: Arc<AppState>, scan_all_as_uploaded: bool) -> 
                         }
                         Ok(status_code) => set_status(
                             &state,
-                            &format!(
-                                "Error: Recent replay upload failed with status {status_code}"
-                            ),
+                            &format!("Error: Recent replay upload failed: {status_code:?}"),
                         ),
                         Err(error) => set_status(&state, &format!("Error: {error}")),
                     }
@@ -188,13 +210,8 @@ async fn run_replay_upload(state: Arc<AppState>, scan_all_as_uploaded: bool) -> 
     }
 
     let visibility = config.ballchasing_visibility.clone();
-    let uploaded_set = &config.uploaded_replays;
-
     for replay in found_files {
-        let has_uploaded = uploaded_set
-            .iter()
-            .any(|x| x.eq_ignore_ascii_case(&replay.filename));
-        if has_uploaded {
+        if replay_is_known_unchanged(&state, &replay).await {
             continue;
         }
 
@@ -222,17 +239,21 @@ async fn run_replay_upload(state: Arc<AppState>, scan_all_as_uploaded: bool) -> 
         };
 
         match upload_file_to_ballchasing(
+            &state,
             &state.system.ballchasing_client,
             &api_key,
             &visibility,
             &replay.filename,
             file_bytes,
+            replay_file_details(&replay.path)
+                .await
+                .map(|details| details.1),
         )
         .await
         {
-            Ok(status_code) => match UploadStatus::from_status_code(status_code) {
+            Ok(status_code) => match status_code {
                 UploadStatus::Uploaded | UploadStatus::Duplicate => {
-                    let success_msg = if status_code == 201 {
+                    let success_msg = if status_code == UploadStatus::Uploaded {
                         format!("Success: Uploaded {}", replay.filename)
                     } else {
                         format!(
@@ -241,7 +262,6 @@ async fn run_replay_upload(state: Arc<AppState>, scan_all_as_uploaded: bool) -> 
                         )
                     };
                     set_status(&state, &success_msg);
-                    mark_replays_uploaded(&state, &[replay.filename]);
                 }
                 UploadStatus::InvalidApiKey => {
                     set_status(&state, "Error: Invalid API key (401/403)");
@@ -287,51 +307,93 @@ async fn replay_files_in_dir(replays_dir: &Path) -> Result<Vec<ReplayFile>, std:
 }
 
 async fn pending_replay_files(
+    state: &AppState,
     replays_dir: &Path,
-    uploaded_replays: &[String],
 ) -> Result<Vec<ReplayFile>, std::io::Error> {
-    Ok(replay_files_in_dir(replays_dir)
-        .await?
-        .into_iter()
-        .filter(|replay| {
-            !uploaded_replays
-                .iter()
-                .any(|uploaded| uploaded.eq_ignore_ascii_case(&replay.filename))
-        })
-        .collect())
+    let mut pending = Vec::new();
+    for replay in replay_files_in_dir(replays_dir).await? {
+        if !replay_is_known_unchanged(state, &replay).await {
+            pending.push(replay);
+        }
+    }
+    Ok(pending)
 }
 
 /// Uploads a single file to ballchasing.com using multipart/form-data.
 async fn upload_file_to_ballchasing(
+    state: &Arc<AppState>,
     client: &wreq::Client,
     api_key: &str,
     visibility: &str,
     filename: &str,
     file_bytes: Vec<u8>,
-) -> Result<u16, String> {
+    modified_unix_ms: Option<i64>,
+) -> Result<UploadStatus, String> {
+    upload_file_to(
+        state,
+        client,
+        (api_key, visibility, "https://ballchasing.com/api/v2/upload"),
+        filename,
+        file_bytes,
+        modified_unix_ms,
+    )
+    .await
+}
+
+async fn upload_file_to(
+    state: &Arc<AppState>,
+    client: &wreq::Client,
+    target: (&str, &str, &str),
+    filename: &str,
+    file_bytes: Vec<u8>,
+    modified_unix_ms: Option<i64>,
+) -> Result<UploadStatus, String> {
+    let (api_key, visibility, endpoint) = target;
     crate::replay_metadata::validate_replay_bytes_strict(&file_bytes)
         .map_err(|error| format!("Replay failed validation and was not uploaded: {error}"))?;
 
+    let file_size = file_bytes.len() as u64;
+    let content_hash = format!("{:x}", Sha256::digest(&file_bytes));
+    // Acquire ownership before checking persistence, and hold it until publication.
+    // A cancelled owner releases this guard; waiters then recheck the ledger.
+    let lock = content_lock(state, &content_hash);
+    let _claim = lock.lock().await;
     let part = wreq::multipart::Part::bytes(file_bytes)
         .file_name(filename.to_string())
         .mime_str("application/octet-stream")
         .map_err(|e| format!("Failed to create multipart part: {e}"))?;
+    let content_already_uploaded = {
+        let guard = state
+            .replays
+            .ledger_conn
+            .lock()
+            .map_err(|error| format!("Replay upload ledger lock failed: {error}"))?;
+        let conn = guard
+            .as_ref()
+            .ok_or_else(|| "Replay upload ledger is unavailable".to_string())?;
+        crate::replay_ledger::contains_content_hash(conn, &content_hash)
+            .map_err(|error| format!("Could not query replay upload ledger: {error}"))?
+    };
+    if content_already_uploaded {
+        record_verified_upload(state, filename, &content_hash, file_size, modified_unix_ms)?;
+        return Ok(UploadStatus::Duplicate);
+    }
 
     let form = wreq::multipart::Form::new().part("file", part);
-    let url = format!(
-        "https://ballchasing.com/api/v2/upload?visibility={}",
-        visibility
-    );
+    let url = format!("{endpoint}?visibility={visibility}");
 
-    let response = client
+    let response_result = client
         .post(&url)
         .header("Authorization", api_key)
         .multipart(form)
         .send()
-        .await
-        .map_err(|e| format!("Network request failed: {e}"))?;
-
-    Ok(response.status().as_u16())
+        .await;
+    let response = response_result.map_err(|e| format!("Network request failed: {e}"))?;
+    let status_code = response.status().as_u16();
+    if UploadStatus::from_status_code(status_code).is_cached_success() {
+        record_verified_upload(state, filename, &content_hash, file_size, modified_unix_ms)?;
+    }
+    Ok(UploadStatus::from_status_code(status_code))
 }
 
 /// Helper to set AppState's ballchasing status in a thread-safe manner.
@@ -341,43 +403,69 @@ fn set_status(state: &AppState, status: &str) {
     }
 }
 
-/// Waits for a file to stabilize by sleeping initially and checking if its size stops changing.
+/// Waits for three consecutive stable size/mtime samples before enqueueing a replay.
 async fn wait_for_file_stability(path: &Path) -> bool {
-    if tokio::fs::metadata(path).await.is_err() {
+    let Some(mut previous) = replay_file_signature(path).await else {
         return false;
-    }
-    // Sleep initially to let the game start writing the file
-    tokio::time::sleep(Duration::from_secs(5)).await;
-
-    if tokio::fs::metadata(path).await.is_err() {
-        return false;
-    }
-
-    // Check if the file size remains the same (confirm writing is complete)
-    let mut last_size = match tokio::fs::metadata(path).await {
-        Ok(m) => m.len(),
-        Err(_) => return false,
     };
-
-    for _ in 0..5 {
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    let mut stable_samples = 0;
+    for _ in 0..8 {
         tokio::time::sleep(Duration::from_millis(500)).await;
-        if tokio::fs::metadata(path).await.is_err() {
+        let Some(current) = replay_file_signature(path).await else {
             return false;
-        }
-        let current_size = match tokio::fs::metadata(path).await {
-            Ok(m) => m.len(),
-            Err(_) => return false,
         };
-        if current_size == last_size && current_size > 0 {
-            return true;
+        if current == previous && current.0 > 0 {
+            stable_samples += 1;
+            if stable_samples >= 3 {
+                return true;
+            }
+        } else {
+            stable_samples = 0;
         }
-        last_size = current_size;
+        previous = current;
     }
-
     false
 }
 
+async fn replay_file_signature(path: &Path) -> Option<(u64, Option<std::time::SystemTime>)> {
+    let metadata = tokio::fs::metadata(path).await.ok()?;
+    Some((metadata.len(), metadata.modified().ok()))
+}
+
+async fn replay_file_details(path: &Path) -> Option<(u64, i64)> {
+    let metadata = tokio::fs::metadata(path).await.ok()?;
+    let modified = metadata.modified().ok()?;
+    let modified_unix_ms = modified
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|duration| i64::try_from(duration.as_millis()).unwrap_or(i64::MAX))?;
+    Some((metadata.len(), modified_unix_ms))
+}
+
+async fn replay_is_known_unchanged(state: &AppState, replay: &ReplayFile) -> bool {
+    let Some((file_size, modified_unix_ms)) = replay_file_details(&replay.path).await else {
+        return false;
+    };
+    let guard = state
+        .replays
+        .ledger_conn
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let Some(conn) = guard.as_ref() else {
+        return false;
+    };
+    crate::replay_ledger::matches_uploaded_file(conn, &replay.filename, file_size, modified_unix_ms)
+        .unwrap_or_else(|error| {
+            log::error!("Failed to query replay upload ledger: {error}");
+            false
+        })
+}
+
 pub fn start_bulk_upload_task(state: Arc<AppState>) {
+    let Ok(operation_guard) = state.replays.maintenance_gate.clone().try_read_owned() else {
+        return;
+    };
     if state.replays.upload_running.swap(true, Ordering::SeqCst) {
         set_status(&state, "Bulk upload already running");
         return;
@@ -399,6 +487,7 @@ pub fn start_bulk_upload_task(state: Arc<AppState>) {
     // Bulk upload has its own finish/status calls inside the error path, so we use a
     // slightly customised inline spawn rather than spawn_task.
     tokio::spawn(async move {
+        let _operation_guard = operation_guard;
         let state_clone = state.clone();
         if let Err(e) = run_bulk_upload(state).await {
             log::error!("Bulk upload execution error: {}", e);
@@ -432,10 +521,9 @@ async fn run_bulk_upload(state: Arc<AppState>) -> Result<(), String> {
     }
 
     let visibility = config.ballchasing_visibility.clone();
-    let uploaded_replays = config.uploaded_replays.clone();
     drop(config);
 
-    let Ok(to_upload) = pending_replay_files(&replays_dir, &uploaded_replays).await else {
+    let Ok(to_upload) = pending_replay_files(&state, &replays_dir).await else {
         set_status(&state, "Error: Could not read directory");
         finish_bulk_upload(&state, "Could not read directory");
         return Ok(());
@@ -509,8 +597,7 @@ async fn run_bulk_upload(state: Arc<AppState>) -> Result<(), String> {
         }
     }
 
-    let final_config = state.system.config.load();
-    let current_uploaded_count = final_config.uploaded_replays.len();
+    let progress = state.replays.upload_progress.load();
     let stopped = state.replays.upload_stop_requested.load(Ordering::SeqCst);
     if stopped {
         set_status(&state, "Bulk upload stopped by user");
@@ -520,8 +607,15 @@ async fn run_bulk_upload(state: Arc<AppState>) -> Result<(), String> {
         set_status(
             &state,
             &format!(
-                "Success: Bulk upload finished. Cache holds {} uploads.",
-                current_uploaded_count
+                "{}: Bulk upload finished. {} uploaded, {} skipped, {} failed.",
+                if progress.failed == 0 {
+                    "Success"
+                } else {
+                    "Partial failure"
+                },
+                progress.uploaded,
+                progress.skipped,
+                progress.failed
             ),
         );
     }
@@ -616,11 +710,15 @@ async fn upload_bulk_replay(
     };
 
     match upload_file_to_ballchasing(
+        state,
         &state.system.ballchasing_client,
         api_key,
         visibility,
         &replay.filename,
         file_bytes,
+        replay_file_details(&replay.path)
+            .await
+            .map(|details| details.1),
     )
     .await
     {
@@ -646,14 +744,13 @@ async fn upload_bulk_replay(
 fn handle_bulk_upload_status(
     state: &Arc<AppState>,
     filename: &str,
-    status_code: u16,
+    status_code: UploadStatus,
     index: usize,
     total: usize,
 ) -> BulkReplayOutcome {
-    match UploadStatus::from_status_code(status_code) {
+    match status_code {
         UploadStatus::Uploaded | UploadStatus::Duplicate => {
-            let upload_status = UploadStatus::from_status_code(status_code);
-            mark_replays_uploaded(state, &[filename.to_string()]);
+            let upload_status = status_code;
             let status_message = if upload_status == UploadStatus::Uploaded {
                 format!("Uploaded {} ({}/{})", filename, index + 1, total)
             } else {
@@ -854,11 +951,15 @@ pub fn maybe_start_initial_replay_cache_sync(state: &Arc<AppState>) -> bool {
 }
 
 pub fn start_sync_replays_task(state: Arc<AppState>) -> bool {
+    let Ok(operation_guard) = state.replays.maintenance_gate.clone().try_read_owned() else {
+        return false;
+    };
     if state.replays.sync_running.swap(true, Ordering::SeqCst) {
         return false;
     }
 
     tokio::spawn(async move {
+        let _operation_guard = operation_guard;
         let state_clone = state.clone();
         if let Err(e) = run_sync_replays(state).await {
             set_status(&state_clone, &format!("Error: Sync failed ({e})"));
@@ -1056,7 +1157,9 @@ async fn run_sync_replays(state: Arc<AppState>) -> Result<(), String> {
         .into_iter()
         .map(|id| format!("{}.replay", id.to_lowercase()))
         .collect();
-    let added = mark_replays_uploaded(&state, &filenames);
+    let added = mark_replays_uploaded(&state, &filenames).map_err(|error| {
+        format!("Fetched {count} remote replays, but could not save upload membership: {error}")
+    })?;
 
     set_status(
         &state,
@@ -1069,6 +1172,9 @@ async fn run_sync_replays(state: Arc<AppState>) -> Result<(), String> {
 }
 
 pub fn start_download_replay_task(state: Arc<AppState>, replay_id: String) {
+    let Ok(operation_guard) = state.replays.maintenance_gate.clone().try_read_owned() else {
+        return;
+    };
     if state.replays.download_active.swap(true, Ordering::SeqCst) {
         set_status(&state, "Download already in progress");
         return;
@@ -1076,6 +1182,7 @@ pub fn start_download_replay_task(state: Arc<AppState>, replay_id: String) {
 
     // Kept inline: must clear download_active regardless of success or failure.
     tokio::spawn(async move {
+        let _operation_guard = operation_guard;
         if let Err(e) = run_download_replay(state.clone(), replay_id).await {
             log::error!("Replay download execution error: {}", e);
         }
@@ -1326,33 +1433,110 @@ async fn write_downloaded_replay(
     result
 }
 
-pub fn mark_replays_uploaded(state: &Arc<AppState>, filenames: &[String]) -> usize {
-    if filenames.is_empty() {
-        return 0;
-    }
+fn record_verified_upload(
+    state: &Arc<AppState>,
+    filename: &str,
+    content_hash: &str,
+    file_size: u64,
+    modified_unix_ms: Option<i64>,
+) -> Result<(), String> {
+    let mut guard = state
+        .replays
+        .ledger_conn
+        .lock()
+        .map_err(|error| format!("Replay upload ledger lock failed: {error}"))?;
+    let conn = guard
+        .as_mut()
+        .ok_or_else(|| "Replay upload ledger is unavailable".to_string())?;
+    crate::replay_ledger::record_uploaded(
+        conn,
+        crate::replay_ledger::UploadedReplay {
+            filename,
+            content_hash: Some(content_hash),
+            remote_replay_id: None,
+            file_size: Some(file_size),
+            modified_unix_ms,
+            status: "uploaded",
+        },
+    )
+    .map_err(|error| format!("Could not update replay upload ledger: {error}"))?;
+    refresh_upload_ledger_snapshot(state, conn);
+    Ok(())
+}
 
-    state.update_config(|config| {
-        let mut added = 0;
-        for filename in filenames {
-            if let Some(pos) = config
-                .uploaded_replays
-                .iter()
-                .position(|x| x.eq_ignore_ascii_case(filename))
-            {
-                config.uploaded_replays.remove(pos);
-                config.uploaded_replays.push(filename.clone());
-            } else {
-                config.uploaded_replays.push(filename.clone());
-                added += 1;
-            }
+fn refresh_upload_ledger_snapshot(state: &AppState, conn: &rusqlite::Connection) {
+    match crate::replay_ledger::filenames(conn) {
+        Ok(filenames) => {
+            state.replays.uploaded_replays.store(Arc::new(filenames));
+            state.replays.ledger_revision.fetch_add(1, Ordering::SeqCst);
         }
-        const MAX_UPLOADED_CACHE: usize = 10_000;
-        if config.uploaded_replays.len() > MAX_UPLOADED_CACHE {
-            let overflow = config.uploaded_replays.len() - MAX_UPLOADED_CACHE;
-            config.uploaded_replays.drain(0..overflow);
-        }
-        added
-    })
+        Err(error) => log::error!("Failed to refresh replay upload ledger: {error}"),
+    }
+}
+
+pub fn mark_replays_uploaded(
+    state: &Arc<AppState>,
+    filenames: &[String],
+) -> Result<usize, crate::replay_ledger::ReplayLedgerError> {
+    if filenames.is_empty() {
+        return Ok(0);
+    }
+    let mut guard = state
+        .replays
+        .ledger_conn
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let Some(conn) = guard.as_mut() else {
+        return Err(crate::replay_ledger::ReplayLedgerError::Io(
+            std::io::Error::other("Replay upload ledger is unavailable"),
+        ));
+    };
+    let added = crate::replay_ledger::record_remote_batch(conn, filenames)?;
+    refresh_upload_ledger_snapshot(state, conn);
+    Ok(added)
+}
+
+pub fn can_clear_upload_ledger(state: &AppState) -> bool {
+    state.replays.maintenance_gate.try_write().is_ok()
+}
+
+pub fn start_clear_upload_ledger(state: Arc<AppState>) {
+    let Ok(guard) = state.replays.maintenance_gate.clone().try_write_owned() else {
+        state
+            .replays
+            .clear_status
+            .store(Arc::new(crate::state::MaintenanceStatus::Failed(
+                "Wait for uploads, downloads and sync to finish before clearing.".into(),
+            )));
+        return;
+    };
+    state
+        .replays
+        .clear_status
+        .store(Arc::new(crate::state::MaintenanceStatus::Running));
+    tokio::task::spawn_blocking(move || {
+        let _guard = guard;
+        let result = match clear_upload_ledger(&state) {
+            Ok(()) => crate::state::MaintenanceStatus::Success("Upload cache cleared.".into()),
+            Err(error) => crate::state::MaintenanceStatus::Failed(error),
+        };
+        state.replays.clear_status.store(Arc::new(result));
+    });
+}
+
+pub fn clear_upload_ledger(state: &AppState) -> Result<(), String> {
+    let mut guard = state
+        .replays
+        .ledger_conn
+        .lock()
+        .map_err(|error| error.to_string())?;
+    let conn = guard
+        .as_mut()
+        .ok_or_else(|| "Replay upload ledger is unavailable".to_string())?;
+    crate::replay_ledger::clear(conn).map_err(|error| error.to_string())?;
+    state.replays.uploaded_replays.store(Arc::new(Vec::new()));
+    state.replays.ledger_revision.fetch_add(1, Ordering::SeqCst);
+    Ok(())
 }
 
 fn usize_to_u32_saturating(value: usize) -> u32 {
@@ -1362,6 +1546,195 @@ fn usize_to_u32_saturating(value: usize) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn content_claim_waits_for_ledger_publication_and_releases_on_cancel() {
+        let state = AppState::new();
+        let bytes = valid_replay_bytes();
+        let hash = format!("{:x}", Sha256::digest(&bytes));
+        let lock = content_lock(&state, &hash);
+        let owner = lock.lock().await;
+        let waiting_state = state.clone();
+        let waiting_bytes = bytes.clone();
+        let mut waiter = tokio::spawn(async move {
+            upload_file_to_ballchasing(
+                &waiting_state,
+                &wreq::Client::new(),
+                "unused",
+                "private",
+                "copy.replay",
+                waiting_bytes,
+                Some(2),
+            )
+            .await
+        });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(30), &mut waiter)
+                .await
+                .is_err(),
+            "an in-flight request must not report success"
+        );
+        record_verified_upload(
+            &state,
+            "original.replay",
+            &hash,
+            bytes.len() as u64,
+            Some(1),
+        )
+        .unwrap();
+        drop(owner);
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), waiter)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap(),
+            UploadStatus::Duplicate
+        );
+
+        let held = content_lock(&state, "cancelled").lock_owned().await;
+        let task = tokio::spawn(async move {
+            let _held = held;
+            std::future::pending::<()>().await;
+        });
+        let next = content_lock(&state, "cancelled");
+        assert!(next.try_lock().is_err());
+        task.abort();
+        let _ = task.await;
+        assert!(next.try_lock().is_ok());
+    }
+
+    #[tokio::test]
+    async fn failed_upload_is_not_a_duplicate_for_the_waiting_caller() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}/upload", listener.local_addr().unwrap());
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let mut started_tx = Some(started_tx);
+            let mut release_rx = Some(release_rx);
+            for code in [500, 201] {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                loop {
+                    let mut buffer = [0; 4096];
+                    let count = socket.read(&mut buffer).await.unwrap();
+                    assert!(count > 0);
+                    request.extend_from_slice(&buffer[..count]);
+                    if let Some(end) = request.windows(4).position(|part| part == b"\r\n\r\n") {
+                        let headers = String::from_utf8_lossy(&request[..end]).to_ascii_lowercase();
+                        let length: usize = headers
+                            .lines()
+                            .find_map(|line| line.strip_prefix("content-length:"))
+                            .unwrap()
+                            .trim()
+                            .parse()
+                            .unwrap();
+                        if request.len() >= end + 4 + length {
+                            break;
+                        }
+                    }
+                }
+                if let Some(tx) = started_tx.take() {
+                    tx.send(()).unwrap();
+                }
+                if let Some(rx) = release_rx.take() {
+                    rx.await.unwrap();
+                }
+                socket
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 {code} Test\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                        )
+                        .as_bytes(),
+                    )
+                    .await
+                    .unwrap();
+            }
+        });
+        let state = AppState::new();
+        let first_state = state.clone();
+        let first_endpoint = endpoint.clone();
+        let first = tokio::spawn(async move {
+            upload_file_to(
+                &first_state,
+                &wreq::Client::new(),
+                ("test", "private", &first_endpoint),
+                "one.replay",
+                valid_replay_bytes(),
+                Some(1),
+            )
+            .await
+        });
+        tokio::time::timeout(Duration::from_secs(3), started_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        let second_state = state.clone();
+        let mut second = tokio::spawn(async move {
+            upload_file_to(
+                &second_state,
+                &wreq::Client::new(),
+                ("test", "private", &endpoint),
+                "two.replay",
+                valid_replay_bytes(),
+                Some(1),
+            )
+            .await
+        });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(30), &mut second)
+                .await
+                .is_err()
+        );
+        release_tx.send(()).unwrap();
+        assert_eq!(first.await.unwrap().unwrap(), UploadStatus::Failed(500));
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(3), second)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap(),
+            UploadStatus::Uploaded
+        );
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn clearing_is_exclusive_and_database_errors_do_not_take_status_lock() {
+        let state = AppState::new();
+        let active = state.replays.maintenance_gate.clone().read_owned().await;
+        assert!(!can_clear_upload_ledger(&state));
+        start_clear_upload_ledger(state.clone());
+        assert!(matches!(
+            &**state.replays.clear_status.load(),
+            crate::state::MaintenanceStatus::Failed(_)
+        ));
+        drop(active);
+        assert!(can_clear_upload_ledger(&state));
+        state
+            .replays
+            .ledger_conn
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .execute_batch("PRAGMA query_only = ON")
+            .unwrap();
+        let status_guard = state.replays.ballchasing_status.lock().unwrap();
+        let worker_state = state.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            tx.send(mark_replays_uploaded(&worker_state, &["test.replay".into()]).is_err())
+                .unwrap();
+        });
+        assert!(rx.recv_timeout(Duration::from_secs(2)).unwrap());
+        drop(status_guard);
+        worker.join().unwrap();
+        *state.replays.ledger_conn.lock().unwrap() = None;
+        assert!(mark_replays_uploaded(&state, &["test.replay".into()]).is_err());
+    }
     use crate::state::AppState;
     use std::fs;
 
@@ -1410,53 +1783,32 @@ mod tests {
     #[test]
     fn test_mark_replays_uploaded() {
         let state = AppState::new();
-
-        // Initially config should be empty
-        {
-            let config = state.system.config.load();
-            assert!(config.uploaded_replays.is_empty());
-        }
+        assert!(state.replays.uploaded_replays.load().is_empty());
 
         // Add two replays
         let added =
-            mark_replays_uploaded(&state, &["a.replay".to_string(), "b.replay".to_string()]);
+            mark_replays_uploaded(&state, &["a.replay".to_string(), "b.replay".to_string()])
+                .unwrap();
         assert_eq!(added, 2);
 
-        {
-            let config = state.system.config.load();
-            assert_eq!(config.uploaded_replays.len(), 2);
-            assert!(config.uploaded_replays.contains(&"a.replay".to_string()));
-            assert!(config.uploaded_replays.contains(&"b.replay".to_string()));
-        }
+        let uploaded = state.replays.uploaded_replays.load();
+        assert_eq!(uploaded.len(), 2);
+        assert!(uploaded.contains(&"a.replay".to_string()));
+        assert!(uploaded.contains(&"b.replay".to_string()));
 
         // Adding duplicate replays
-        let added_dup = mark_replays_uploaded(&state, &["a.replay".to_string()]);
+        let added_dup = mark_replays_uploaded(&state, &["a.replay".to_string()]).unwrap();
         assert_eq!(added_dup, 0);
 
-        {
-            let config = state.system.config.load();
-            assert_eq!(config.uploaded_replays.len(), 2);
-        }
-
-        // Max limit of 10000 replays
-        let mut massive_list = Vec::new();
-        for i in 0..10100 {
-            massive_list.push(format!("r{i}.replay"));
-        }
-        mark_replays_uploaded(&state, &massive_list);
-
-        {
-            let config = state.system.config.load();
-            assert_eq!(config.uploaded_replays.len(), 10000);
-            // Verify newer ones exist
-            assert!(
-                config
-                    .uploaded_replays
-                    .contains(&"r10099.replay".to_string())
-            );
-            // Verify older ones were pruned
-            assert!(!config.uploaded_replays.contains(&"r0.replay".to_string()));
-        }
+        assert_eq!(state.replays.uploaded_replays.load().len(), 2);
+        assert!(
+            state
+                .system
+                .config
+                .load()
+                .legacy_uploaded_replays
+                .is_empty()
+        );
     }
 
     #[test]
@@ -1521,18 +1873,67 @@ mod tests {
 
     #[tokio::test]
     async fn upload_rejects_invalid_replay_before_network_request() {
+        let state = AppState::new();
         let client = wreq::Client::new();
         let error = upload_file_to_ballchasing(
+            &state,
             &client,
             "unused-key",
             "private",
             "invalid.replay",
             b"not a replay".to_vec(),
+            None,
         )
         .await
         .unwrap_err();
 
         assert!(error.contains("failed validation"));
+    }
+
+    #[tokio::test]
+    async fn upload_coordinator_deduplicates_known_content_before_network_request() {
+        let state = AppState::new();
+        let bytes = valid_replay_bytes();
+        let hash = format!("{:x}", Sha256::digest(&bytes));
+        record_verified_upload(
+            &state,
+            "original.replay",
+            &hash,
+            bytes.len() as u64,
+            Some(1),
+        )
+        .unwrap();
+
+        let status = upload_file_to_ballchasing(
+            &state,
+            &wreq::Client::new(),
+            "unused-key",
+            "private",
+            "renamed.replay",
+            bytes,
+            Some(2),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(status, UploadStatus::Duplicate);
+        assert!(
+            state
+                .replays
+                .uploaded_replays
+                .load()
+                .contains(&"renamed.replay".to_string())
+        );
+        assert!(
+            state
+                .replays
+                .upload_coordinator
+                .lock()
+                .unwrap()
+                .content_locks
+                .values()
+                .all(|lock| lock.strong_count() == 0)
+        );
     }
 
     #[tokio::test]
@@ -1549,6 +1950,42 @@ mod tests {
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].path, replay_path);
 
+        let state = AppState::new();
+        {
+            let mut guard = state.replays.ledger_conn.lock().unwrap();
+            let conn = guard.as_mut().unwrap();
+            crate::replay_ledger::import_legacy_filenames(conn, &["match1.replay".to_string()])
+                .unwrap();
+        }
+        assert_eq!(pending_replay_files(&state, &root).await.unwrap().len(), 1);
+
+        let (size, modified_unix_ms) = replay_file_details(&replay_path).await.unwrap();
+        {
+            let mut guard = state.replays.ledger_conn.lock().unwrap();
+            let conn = guard.as_mut().unwrap();
+            crate::replay_ledger::record_uploaded(
+                conn,
+                crate::replay_ledger::UploadedReplay {
+                    filename: "match1.replay",
+                    content_hash: Some("verified-hash"),
+                    remote_replay_id: None,
+                    file_size: Some(size),
+                    modified_unix_ms: Some(modified_unix_ms),
+                    status: "uploaded",
+                },
+            )
+            .unwrap();
+        }
+        assert!(
+            pending_replay_files(&state, &root)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        fs::write(&replay_path, b"changed-replay-data").unwrap();
+        assert_eq!(pending_replay_files(&state, &root).await.unwrap().len(), 1);
+
         let _ = fs::remove_dir_all(root);
     }
 
@@ -1562,8 +1999,8 @@ mod tests {
         let mut config = (**current).clone();
         config.replays_folder = root.to_string_lossy().to_string();
         config.ballchasing_api_key = "test-key".to_string();
-        config.uploaded_replays = vec!["already_uploaded.replay".to_string()];
         state.system.config.store(Arc::new(config));
+        mark_replays_uploaded(&state, &["already_uploaded.replay".to_string()]).unwrap();
         state.replays.upload_running.store(true, Ordering::SeqCst);
 
         run_bulk_upload(state.clone()).await.unwrap();

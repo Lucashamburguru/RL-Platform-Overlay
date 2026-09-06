@@ -67,11 +67,7 @@ pub(crate) fn render_boost_settings_tab(
 
         ui.add_space(8.0);
         setting_row(ui, "HUD Scale", |ui| {
-            if ui
-                .add_sized(
-                    [ui.available_width(), 20.0],
-                    egui::Slider::new(&mut config_edit.teammate_hud_scale, 0.5..=2.5),
-                )
+            if crate::ui::common::scale_slider(ui, &mut config_edit.teammate_hud_scale, 0.5, 2.5)
                 .on_hover_text("Adjust the sizing scale of the teammate boost HUD (0.5x to 2.5x)")
                 .changed()
             {
@@ -89,7 +85,10 @@ pub(crate) fn render_boost_settings_tab(
     });
 
     ui.add_space(10.0);
-    settings_section(ui, "Live Preview", |ui| {
+    settings_section(ui, "Preview", |ui| {
+        ui.label(helper_text(
+            "Sample layout with available teammate data • reduced to fit.",
+        ));
         let preview = preview_teammates(state);
         draw_teammate_boost_panel(
             ui,
@@ -107,7 +106,7 @@ pub(crate) fn render_boost_settings_tab(
     #[cfg(not(feature = "microsoft-store"))]
     ui.add_space(12.0);
     #[cfg(not(feature = "microsoft-store"))]
-    settings_section(ui, "Alpha Boost (Gold Rush) Swap", |ui| {
+    ui.collapsing("Advanced — Alpha Boost (Gold Rush) game files", |ui| {
         // 1. Rocket League Folder Path (Read-only)
         setting_row(ui, "Rocket League Folder", |ui| {
             ui.label(

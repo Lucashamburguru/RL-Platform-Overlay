@@ -12,145 +12,158 @@ pub(crate) fn render_session_settings_tab(
     config_edit: &mut Config,
     changed: &mut bool,
 ) {
-    settings_two_column(ui, |left, right| {
-        settings_section(left, "Session Overlay", |ui| {
-            if ui
-                .checkbox(
-                    &mut config_edit.session_overlay_enabled,
-                    "Enable Session Overlay",
-                )
-                .changed()
-            {
-                *changed = true;
-            }
-
-            ui.add_space(8.0);
-            setting_row(ui, "Hotkey", |ui| {
+    settings_two_column(ui, |column, is_right| {
+        if !is_right {
+            settings_section(column, "Session Overlay", |ui| {
                 if ui
                     .checkbox(
-                        &mut config_edit.session_overlay_follow_lobby_hotkey,
-                        "Show with lobby overlay hotkey.",
+                        &mut config_edit.session_overlay_enabled,
+                        "Enable Session Overlay",
                     )
                     .changed()
                 {
                     *changed = true;
                 }
-            });
 
-            ui.add_space(8.0);
-            setting_row(ui, "Display", |ui| {
-                egui::ComboBox::new("session_display", "")
-                    .selected_text(session_display_label(config_edit.session_overlay_display))
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(
-                            &mut config_edit.session_overlay_display,
-                            SessionOverlayDisplay::Compact,
-                            "Compact",
-                        );
-                        ui.selectable_value(
-                            &mut config_edit.session_overlay_display,
-                            SessionOverlayDisplay::Expanded,
-                            "Expanded",
-                        );
-                    });
-                if config_edit.session_overlay_display
-                    != state.system.config.load().session_overlay_display
-                {
-                    *changed = true;
-                }
-            });
-
-            ui.add_space(8.0);
-            setting_row(ui, "Scale", |ui| {
-                if ui
-                    .add_sized(
-                        [ui.available_width(), 20.0],
-                        egui::Slider::new(&mut config_edit.session_overlay_scale, 0.6..=2.5),
-                    )
-                    .on_hover_text(
-                        "Adjust the sizing scale of the session tracking HUD (0.6x to 2.5x)",
-                    )
-                    .changed()
-                {
-                    *changed = true;
-                }
-            });
-
-            ui.add_space(8.0);
-            setting_row(ui, "Opacity", |ui| {
-                if ui
-                    .add_sized(
-                        [ui.available_width(), 20.0],
-                        egui::Slider::new(&mut config_edit.session_overlay_opacity, 40..=255),
-                    )
-                    .on_hover_text("Adjust the opacity of the session panel background (40 to 255)")
-                    .changed()
-                {
-                    *changed = true;
-                }
-            });
-
-            ui.add_space(8.0);
-            setting_row(ui, "Expanded", |ui| {
-                ui.vertical(|ui| {
+                ui.add_space(8.0);
+                setting_row(ui, "Hotkey", |ui| {
                     if ui
                         .checkbox(
-                            &mut config_edit.session_expanded_show_streaks,
-                            "Streaks & Stats",
-                        )
-                        .changed()
-                    {
-                        *changed = true;
-                    }
-                    if ui
-                        .checkbox(
-                            &mut config_edit.session_expanded_show_breakdown,
-                            "Mode Breakdown",
-                        )
-                        .changed()
-                    {
-                        *changed = true;
-                    }
-                    if ui
-                        .checkbox(
-                            &mut config_edit.session_expanded_show_mmr_delta,
-                            "MMR Change",
+                            &mut config_edit.session_overlay_follow_lobby_hotkey,
+                            "Show with lobby overlay hotkey.",
                         )
                         .changed()
                     {
                         *changed = true;
                     }
                 });
-            });
 
-            if config_edit.session_manual_position.is_some() {
                 ui.add_space(8.0);
-                if ui.button("Reset Session HUD Position").clicked() {
-                    config_edit.session_manual_position = None;
-                    *changed = true;
+                setting_row(ui, "Display", |ui| {
+                    egui::ComboBox::new("session_display", "")
+                        .selected_text(session_display_label(config_edit.session_overlay_display))
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(
+                                &mut config_edit.session_overlay_display,
+                                SessionOverlayDisplay::Compact,
+                                "Compact",
+                            );
+                            ui.selectable_value(
+                                &mut config_edit.session_overlay_display,
+                                SessionOverlayDisplay::Expanded,
+                                "Expanded",
+                            );
+                        });
+                    if config_edit.session_overlay_display
+                        != state.system.config.load().session_overlay_display
+                    {
+                        *changed = true;
+                    }
+                });
+
+                ui.add_space(8.0);
+                setting_row(ui, "Scale", |ui| {
+                    if crate::ui::common::scale_slider(
+                        ui,
+                        &mut config_edit.session_overlay_scale,
+                        0.6,
+                        2.5,
+                    )
+                    .on_hover_text(
+                        "Adjust the sizing scale of the session tracking HUD (0.6x to 2.5x)",
+                    )
+                    .changed()
+                    {
+                        *changed = true;
+                    }
+                });
+
+                ui.add_space(8.0);
+                setting_row(ui, "Opacity", |ui| {
+                    if crate::ui::common::opacity_slider(
+                        ui,
+                        &mut config_edit.session_overlay_opacity,
+                        40,
+                    )
+                    .on_hover_text("Background opacity (16% to 100%)")
+                    .changed()
+                    {
+                        *changed = true;
+                    }
+                });
+
+                ui.add_space(8.0);
+                setting_row(ui, "Expanded", |ui| {
+                    ui.vertical(|ui| {
+                        if ui
+                            .checkbox(
+                                &mut config_edit.session_expanded_show_streaks,
+                                "Streaks & Stats",
+                            )
+                            .changed()
+                        {
+                            *changed = true;
+                        }
+                        if ui
+                            .checkbox(
+                                &mut config_edit.session_expanded_show_breakdown,
+                                "Mode Breakdown",
+                            )
+                            .changed()
+                        {
+                            *changed = true;
+                        }
+                        if ui
+                            .checkbox(
+                                &mut config_edit.session_expanded_show_mmr_delta,
+                                "MMR Change",
+                            )
+                            .changed()
+                        {
+                            *changed = true;
+                        }
+                    });
+                });
+
+                if config_edit.session_manual_position.is_some() {
+                    ui.add_space(8.0);
+                    if ui.button("Reset Session HUD Position").clicked() {
+                        config_edit.session_manual_position = None;
+                        *changed = true;
+                    }
                 }
-            }
-        });
-        settings_section(right, "Local MMR", |ui| {
-            render_local_mmr_panel(ui, state, config_edit, changed);
-        });
+            });
+        } else {
+            settings_section(column, "Local MMR", |ui| {
+                render_local_mmr_panel(ui, state, config_edit, changed);
+            });
+        }
     });
 
-    ui.add_space(10.0);
-    settings_section(ui, "Preview", |ui| {
-        let local_mmr = state.mmr.local_mmr.load();
-        draw_session_panel(
-            ui,
-            &state.game.session.load(),
-            &local_mmr,
-            config_edit.session_overlay_scale.min(1.4),
-            config_edit.session_overlay_display,
-            config_edit.session_overlay_opacity,
-            SessionHudOptions {
-                show_streaks: config_edit.session_expanded_show_streaks,
-                show_breakdown: config_edit.session_expanded_show_breakdown,
-                show_mmr_delta: config_edit.session_expanded_show_mmr_delta,
-            },
-        );
-    });
+    ui.add_space(8.0);
+    egui::CollapsingHeader::new("Preview")
+        .id_salt("session_settings_preview")
+        .default_open(false)
+        .show(ui, |ui| {
+            ui.label(
+                "Current session • reduced to fit; HUD placement is configured with Arrange HUD.",
+            );
+            if state.game.session.load().matches_played == 0 {
+                ui.label("No matches recorded this session.");
+            }
+            let local_mmr = state.mmr.local_mmr.load();
+            draw_session_panel(
+                ui,
+                &state.game.session.load(),
+                &local_mmr,
+                config_edit.session_overlay_scale.min(0.9),
+                config_edit.session_overlay_display,
+                config_edit.session_overlay_opacity,
+                SessionHudOptions {
+                    show_streaks: config_edit.session_expanded_show_streaks,
+                    show_breakdown: config_edit.session_expanded_show_breakdown,
+                    show_mmr_delta: config_edit.session_expanded_show_mmr_delta,
+                },
+            );
+        });
 }

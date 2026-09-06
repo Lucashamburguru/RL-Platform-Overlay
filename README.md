@@ -1,56 +1,81 @@
-# RL-Platform-Overlay
+# RL Platform Overlay
 
-RL-Platform-Overlay shows Rocket League lobby info, ranks/MMR, teammate boost, and session stats while you play.
+Keep the information you want from Rocket League close at hand. RL Platform
+Overlay shows your lobby, ranks/MMR, teammate boost, and session stats while
+you play—without making you leave the game.
 
 ![Program Preview](assets/program-preview.png)
 
-It is a separate desktop app that reads Rocket League's Stats API output and displays match information on top of the game.
+The overlay is a separate desktop app that reads Rocket League’s built-in Stats
+API and draws its own information over the game. A second-monitor dashboard is
+available when you want a larger view.
 
 > [!IMPORTANT]
-> **Anti-cheat safe**: The overlay runs outside Rocket League. It does not inject DLLs, modify game memory, or hook the renderer.
+> **Out-of-process design:** The app runs outside Rocket League. It does not
+> inject DLLs, read or modify game memory, or hook the renderer. This is an
+> intentionally conservative design, but it is not a guarantee about future
+> game or anti-cheat policy.
 
 ## Quick Start
 
-1. Download the latest build from [Releases](https://github.com/Lucashamburguru/RL-Platform-Overlay/releases).
-2. Open the app.
-3. Go to **Setup**.
-4. Click **Auto-detect** to find your Rocket League folder.
-5. Click **Enable Stats API**.
-6. Restart Rocket League if it was already running.
-7. Set your hotkeys, Drag your overlays where you want them, click **Launch Overlay**, and play.
+1. Download the latest version from [Releases](https://github.com/Lucashamburguru/RL-Platform-Overlay/releases) and open it.
+2. Open **Setup**, then click **Auto-detect** to find your Rocket League folder.
+3. Click **Enable Stats API**. If Rocket League is already open, restart it.
+4. Choose your hotkeys and use **Arrange HUD** to place the panels where you want them.
+5. Click **Launch Overlay** and start playing.
 
-If auto-detect does not work, edit `TAGame/Config/DefaultStatsAPI.ini` in your Rocket League folder and set `PacketSendRate` to a value above `0`, such as `30.0`.
+If Auto-detect cannot find the game, select your Rocket League folder manually.
+You can also edit `TAGame/Config/DefaultStatsAPI.ini` yourself and set
+`PacketSendRate` to a value above `0`, such as `30.0`.
 
 ---
 
 ## What You Get
 
-For matches:
+### While you play
 
-* **Lobby overlay**: Shows player names, platforms, ranks, and MMR without needing to Alt-Tab.
-* **Teammate boost HUD**: Optionally displays your teammate's boost with adjustable styles, size, and position.
-* **Session tracker**: Tracks your current session record, win rate, streak, and play time.
-* **Second-monitor dashboard**: Keeps lobby and session information visible on another screen.
-* **Drag layouts**: Move and resize overlay panels, then keep them click-through while playing.
-* **Hotkeys**: Toggle the overlay HUD or settings window from keyboard or controller buttons.
+* **Lobby overlay:** See player names, platforms, ranks, and MMR without
+  Alt-Tabbing.
+* **Teammate boost HUD:** Keep an eye on your teammate’s boost with adjustable
+  styles, size, and position.
+* **Session tracker:** Follow your record, win rate, streak, and play time.
+* **Second-monitor dashboard:** Put a larger lobby and session view on another
+  screen.
+* **Arrangeable panels:** Move the panels where they work best, then keep them
+  click-through while you play.
+* **Hotkeys:** Show or hide the HUD and settings from your keyboard or
+  controller.
 
-For replays and local tools:
+### Replays and local tools
 
-* **Ball chasing replay integration**: Download/Upload saves to ballchasing.com
-* **Hoops replay fixer**: Patches some broken legacy Hoops replay files and saves a backup first.
-* **Gold Rush swapper**: Applies the Gold Rush / Alpha Boost look locally.
+* **Ballchasing integration:** Upload, download, and organize replays through
+  ballchasing.com.
+* **Hoops replay fixer:** Repair supported legacy Hoops replays, with a backup
+  created first.
+* **Gold Rush swapper:** Apply the Gold Rush / Alpha Boost look locally.
 
-The app only changes local Rocket League files when you use the Gold Rush swapper or Hoops replay fixer.
+The app changes local Rocket League files only when you choose the Gold Rush
+swapper or Hoops replay fixer.
 
 ---
 
 ## Screenshots
 
-The overlay can run directly over Rocket League, or you can keep the dashboard open on another monitor.
+Use the compact overlay during a match, or keep the dashboard open on another
+monitor for a roomier view.
 
 ![Overlay Preview](assets/overlay-preview-small.png)
 
 ![Dashboard Preview](assets/dashboard-preview-small.png)
+
+---
+
+## Help and Support
+
+Something not working as expected? The [support and troubleshooting
+guide](docs/support.md) walks through Setup Readiness, connection problems,
+incorrect game-mode/team detection, privacy-aware diagnostics, and recent Game
+API logs.
 
 ---
 
@@ -63,7 +88,15 @@ If you are a developer, want to compile from source, or want to contribute:
 * **Language**: Rust
 * **UI Framework**: egui / eframe (Glow renderer)
 * **Input Hooking**: GilRs (Gamepad) & rdev (Keyboard)
-* **Data Sources**: Rocket League Stats API and tracker.gg HTML scraping.
+* **Data Sources**: Rocket League Stats API and a pluggable MMR provider.
+
+### Project Documentation
+
+* [Architecture](docs/architecture.md)
+* [Rocket League Stats API notes](docs/API/stats-api.md)
+* [Support and troubleshooting](docs/support.md)
+* [Release process](docs/releasing.md)
+* [Security advisory policy](docs/security-advisories.md)
 
 ### Build from Source
 
@@ -124,14 +157,9 @@ cargo run --locked --bin debug_game_output -- --seconds 30 --output rl_game_outp
 
 ### Reporting Stats API Detection Issues
 
-The app keeps a bounded, in-memory sample of up to the previous two minutes of Stats
-API events while connected. If the detected game mode, teams, or match state is
-wrong, open **Settings → Support** and click **Save Recent
-Game API Log**. Attach the generated `rl_stats_issue_log_*.txt` file to the issue
-report. Nothing is continuously written to disk.
-
-These reports are identifiable: raw game events can contain player names,
-account IDs, and match IDs. The app shows this warning before the save action.
+The app can save recent Game API events after a detection problem occurs, so a
+developer capture does not normally need to be started in advance. See
+[Support and troubleshooting](docs/support.md#the-game-mode-teams-or-match-state-is-wrong).
 
 ---
 

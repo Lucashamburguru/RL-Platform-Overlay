@@ -205,15 +205,27 @@ pub fn refresh_lobby_history(state: &Arc<AppState>) {
         .collect();
 
     let state_clone = state.clone();
-    let run = move || match load_summaries(&state_clone, &keys) {
-        Ok(summaries) => {
-            state_clone
-                .history
-                .player_summaries
-                .store(Arc::new(summaries));
-            set_status(&state_clone, "History ready.");
+    let revision = state.history.revision.load(Ordering::SeqCst);
+    let run = move || {
+        let result = load_summaries(&state_clone, &keys);
+        let _publication = state_clone
+            .history
+            .publication_mutex
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if revision != state_clone.history.revision.load(Ordering::SeqCst) {
+            return;
         }
-        Err(error) => set_status(&state_clone, &format!("History error: {error}")),
+        match result {
+            Ok(summaries) => {
+                state_clone
+                    .history
+                    .player_summaries
+                    .store(Arc::new(summaries));
+                set_status(&state_clone, "History ready.");
+            }
+            Err(error) => set_status(&state_clone, &format!("History error: {error}")),
+        }
     };
     if let Ok(handle) = tokio::runtime::Handle::try_current() {
         handle.spawn_blocking(run);
@@ -265,12 +277,24 @@ pub fn refresh_totals(state: &Arc<AppState>) {
     }
 
     let state_clone = state.clone();
-    let run = move || match load_totals(&state_clone) {
-        Ok(totals) => {
-            state_clone.history.totals.store(Arc::new(totals));
-            set_status(&state_clone, "History ready.");
+    let revision = state.history.revision.load(Ordering::SeqCst);
+    let run = move || {
+        let result = load_totals(&state_clone);
+        let _publication = state_clone
+            .history
+            .publication_mutex
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if revision != state_clone.history.revision.load(Ordering::SeqCst) {
+            return;
         }
-        Err(error) => set_status(&state_clone, &format!("History error: {error}")),
+        match result {
+            Ok(totals) => {
+                state_clone.history.totals.store(Arc::new(totals));
+                set_status(&state_clone, "History ready.");
+            }
+            Err(error) => set_status(&state_clone, &format!("History error: {error}")),
+        }
     };
     if let Ok(handle) = tokio::runtime::Handle::try_current() {
         handle.spawn_blocking(run);
@@ -332,10 +356,7 @@ pub fn request_all_player_history_refresh(state: &Arc<AppState>, force: bool) {
                 }
             }
         };
-        state_clone
-            .history
-            .all_players_snapshot
-            .store(Arc::new(snapshot));
+        publish_player_snapshot(&state_clone, revision, snapshot);
         state_clone
             .history
             .all_players_refresh_running
@@ -386,6 +407,17 @@ pub fn record_completed_match(state: &Arc<AppState>, session: &SessionState) {
         handle.spawn_blocking(run);
     } else {
         run();
+    }
+}
+
+fn publish_player_snapshot(state: &AppState, revision: u64, snapshot: HistoryPlayersSnapshot) {
+    let _publication = state
+        .history
+        .publication_mutex
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if revision == state.history.revision.load(Ordering::SeqCst) {
+        state.history.all_players_snapshot.store(Arc::new(snapshot));
     }
 }
 
@@ -449,14 +481,56 @@ fn load_totals_on_conn(conn: &Connection) -> Result<HistoryTotals, HistoryError>
 }
 
 pub fn clear_history(state: &AppState) -> Result<(), HistoryError> {
+    let _publication = state
+        .history
+        .publication_mutex
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     with_connection_mut(state, |conn| {
         let tx = conn.transaction()?;
         tx.execute("DELETE FROM match_players", [])?;
         tx.execute("DELETE FROM matches", [])?;
         tx.execute("DELETE FROM players", [])?;
         tx.commit()?;
+        let revision = state.history.revision.fetch_add(1, Ordering::SeqCst) + 1;
+        state
+            .history
+            .player_summaries
+            .store(Arc::new(HashMap::new()));
+        state
+            .history
+            .totals
+            .store(Arc::new(HistoryTotals::default()));
+        state
+            .history
+            .all_players_snapshot
+            .store(Arc::new(HistoryPlayersSnapshot {
+                loaded: true,
+                revision,
+                ..Default::default()
+            }));
         Ok(())
     })
+}
+
+pub fn start_clear_history(state: Arc<AppState>) {
+    if state.history.clear_running.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    state
+        .history
+        .clear_status
+        .store(Arc::new(crate::state::MaintenanceStatus::Running));
+    tokio::task::spawn_blocking(move || {
+        let result = match clear_history(&state) {
+            Ok(()) => crate::state::MaintenanceStatus::Success(
+                "History cleared. New completed matches will still be recorded.".into(),
+            ),
+            Err(error) => crate::state::MaintenanceStatus::Failed(error.to_string()),
+        };
+        state.history.clear_status.store(Arc::new(result));
+        state.history.clear_running.store(false, Ordering::SeqCst);
+    });
 }
 
 fn load_summaries(
@@ -825,6 +899,51 @@ fn set_status(state: &Arc<AppState>, message: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn clear_returns_without_waiting_for_database_and_rejects_stale_views() {
+        let state = AppState::new();
+        let old_revision = state.history.revision.load(Ordering::SeqCst);
+        {
+            let _database_busy = state.history.conn.lock().unwrap();
+            start_clear_history(state.clone());
+            start_clear_history(state.clone());
+            assert!(state.history.clear_running.load(Ordering::SeqCst));
+            assert!(matches!(
+                &**state.history.clear_status.load(),
+                crate::state::MaintenanceStatus::Running
+            ));
+        }
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while state.history.clear_running.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            state.history.revision.load(Ordering::SeqCst),
+            old_revision + 1
+        );
+        assert!(matches!(
+            &**state.history.clear_status.load(),
+            crate::state::MaintenanceStatus::Success(_)
+        ));
+        publish_player_snapshot(
+            &state,
+            old_revision,
+            HistoryPlayersSnapshot {
+                loaded: true,
+                revision: old_revision,
+                players: vec![PlayerHistorySummary {
+                    name: "stale result".into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        );
+        assert!(state.history.all_players_snapshot.load().players.is_empty());
+    }
     use crate::session::{MatchResult, SessionMode, SessionState};
     use crate::state::PlayerInfo;
     use rusqlite::OptionalExtension;

@@ -1,7 +1,7 @@
 # RL Platform Overlay — Master Review
 
 **Compiled:** 2026-08-26
-**Last updated:** 2026-08-29
+**Last updated:** 2026-09-01
 **Baseline:** `v0.1.48` release candidate, including R6, R8, and R9
 **Scope:** Consolidation of the repository's code, product, dashboard, UI/UX, Stats API, and performance reviews.
 
@@ -122,9 +122,13 @@ builds succeed.
 
 ### Priority 2 — Credentials, privacy, and concurrency correctness
 
-#### R5. Protect the Ballchasing credential — Open
+#### R5. Protect the Ballchasing credential — Partial (2026-09-01)
 
 The token remains a serialized string in `config.toml`. As an immediate hardening step, enforce owner-only permissions on Unix and repair existing file permissions. Longer term, use the OS credential store and persist only a credential reference. Keep diagnostics limited to token presence.
+
+**Progress:** Unix config files are now created with owner-only permissions and
+existing permissions are repaired to `0600` when the config is loaded. Moving
+the token into the OS credential store remains open.
 
 #### R6. Redacted support bundles by default — Complete (2026-08-29)
 
@@ -139,9 +143,15 @@ a session-only opt-in with a visible warning before identifiable details are
 included. API keys remain excluded in both modes, and regression tests cover
 the redaction boundary.
 
-#### R7. Unify replay upload coordination — Open
+#### R7. Unify replay upload coordination — Complete (2026-09-01)
 
 Bulk and automatic uploads should use one coordinator keyed by canonical replay identity. Require multiple stable size/mtime samples plus strict validation before enqueueing, and deduplicate by replay ID or content hash where available.
+
+**Resolution:** Automatic and bulk uploads now converge on one SHA-256-keyed
+coordinator. Files require three consecutive stable size/mtime samples, pass
+strict replay validation, and are deduplicated against both active work and the
+durable upload ledger. Coordinator claims are released on cancellation or
+failure, and changed files cannot be suppressed by a stale filename entry.
 
 #### R8. Make local MMR refresh atomic and identity-checked — Complete (2026-08-28)
 
@@ -173,9 +183,16 @@ unknown match results, and history classification.
 
 `UpdateState` still reconstructs and republishes several player, roster, diagnostics, and dashboard snapshots at packet rate. Record a sanitized event stream at 5/15/30/120 Hz, measure allocations and publications, then eliminate unchanged diagnostics and identity/roster publications without introducing fine-grained locking.
 
-#### P2. Separate replay membership from preferences — Open
+#### P2. Separate replay membership from preferences — Complete (2026-09-01)
 
 `uploaded_replays: Vec<String>` still lives in `Config`, combines recency and membership duties, and can make scans quadratic. Move it to a dedicated cache or SQLite table, maintain normalized set membership, batch persistence, and make unrelated settings edits independent of replay-library size.
+
+**Resolution:** Upload membership now lives in a dedicated WAL-mode
+`replays.sqlite3` ledger with normalized unique filenames, content hashes,
+remote IDs, file fingerprints, status, and timestamps. Legacy config entries
+are imported transactionally and then removed from serialized preferences. The
+UI reads a revisioned in-memory snapshot, while scan decisions compare indexed
+ledger fingerprints without cloning or rewriting `Config`.
 
 #### P3. Move process enumeration off the UI thread — Open
 
@@ -242,9 +259,17 @@ these reports into sanitized, committed reducer fixtures remains open.
 
 Split replay transport/upload/download/index/validation and network transport/event projection/reduction behind narrow interfaces. Prefer pure transition functions with I/O in coordinators.
 
-#### M3. Refresh architecture documentation — Open
+#### M3. Refresh architecture documentation — Complete (2026-08-29)
 
 Keep `docs/architecture.md` aligned with the direct Rocket League Stats API, current viewport/state model, updater verification, replay trust boundaries, and precise out-of-process safety wording. Avoid absolute anti-cheat guarantees.
+
+**Resolution:** `docs/architecture.md` now documents the direct WebSocket/raw
+TCP Stats API pipeline, parser/session ownership, shared-state synchronization,
+viewport and Windows transparency model, persistence, external services,
+signed updater boundary, Microsoft Store variant, and sensitive support data.
+Outdated BakkesMod claims and absolute anti-cheat guarantees were removed. The
+README now uses the same precise out-of-process wording, and `docs/support.md`
+documents the end-user diagnostic and privacy workflow.
 
 #### M4. Harden Tracker integration — Open
 
@@ -254,10 +279,10 @@ Add saved-response contract fixtures, explicit freshness/stale indicators, persi
 
 1. **Integrity sprint:** R1 Hoops guard and R2 strict replay validation completed 2026-08-27.
 2. **Identity sprint:** R3 stable `PlayerKey`, R8 stale-result protection, and R9 unknown-team handling.
-3. **Release/privacy sprint:** R4 advisory/release gate and R6 diagnostics redaction are complete; R5 credential permissions/storage is deferred, so continue with R7 replay upload coordination.
+3. **Release/privacy sprint:** R4, R6, R7, and the immediate R5 Unix permission hardening are complete; OS credential-store integration remains deferred.
 4. **Measured performance sprint:** benchmark packet processing, then P1–P3; handle P4 alongside download hardening.
 5. **Accessibility sprint:** U1, U3, U5, and U7 before broader settings reorganization.
-6. **Product/maintenance sprint:** U2, U4, U6, M1–M4.
+6. **Product/maintenance sprint:** U2, U4, U6, M1, M2, and M4.
 
 ## Release and validation gates
 

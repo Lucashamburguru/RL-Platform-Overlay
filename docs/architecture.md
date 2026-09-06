@@ -16,29 +16,31 @@ flowchart LR
     Session[Session and lobby state]
     UI[egui overlay and dashboard]
     History[(SQLite history)]
-    Tracker[Tracker Network]
+    MMR[MMR provider]
     Ballchasing[ballchasing.com]
     Input[Keyboard and controller input]
 
     RL --> Transport --> Parser --> Session
     Session --> UI
     Session --> History
-    Session --> Tracker
+    Session --> MMR
     Input --> Session
     Ballchasing <--> Session
 ```
 
-The overlay is “anti-cheat safe” in the practical architectural sense that it remains a separate process and uses a game-provided local API. That is not a guarantee about future game or anti-cheat policy.
+This out-of-process design avoids invasive integration with Rocket League and
+uses a game-provided local API. It is not a guarantee about future game or
+anti-cheat policy.
 
 ## Startup and runtime lifecycle
 
 [`src/main.rs`](../src/main.rs) creates the Tokio runtime and calls `run` in [`src/lib.rs`](../src/lib.rs). Startup proceeds in this order:
 
 1. Initialize application logging and create the shared [`AppState`](../src/state.rs).
-2. Load `config.toml`, start the asynchronous config writer, and initialize or recover `history.sqlite3`.
+2. Load `config.toml`, migrate legacy replay-upload membership into `replays.sqlite3`, start the asynchronous config writer, and initialize or recover `history.sqlite3`.
 3. Inspect the Rocket League installation and, when configured, enable or repair `DefaultStatsAPI.ini` through [`src/setup.rs`](../src/setup.rs).
 4. Load history totals and refresh the cached local player's rank when an identity is available.
-5. Start the Stats API network task, Tracker MMR worker, keyboard/controller listeners, release check, and initial replay scan.
+5. Start the Stats API network task, default MMR-provider worker, keyboard/controller listeners, release check, and initial replay scan.
 6. Enter the `eframe` event loop and render either the settings window, in-game overlay, second-monitor dashboard, or a combination of them.
 
 Most long-running I/O uses Tokio tasks. Global keyboard and controller listeners and the config writer use dedicated OS threads because their libraries or blocking behavior are better isolated there.
@@ -65,6 +67,9 @@ The relevant section is `TAGame.MatchStatsExporter_TA`. The app preserves an exi
 - Connection state, transport type, errors, and the most recent event name are published as diagnostics.
 - A bounded in-memory diagnostic buffer retains up to approximately two minutes of recent Stats API payloads. It is written to disk only after an explicit support action and warning because payloads can contain player and match identifiers.
 
+The end-user collection and privacy workflow is documented in
+[Support and troubleshooting](support.md).
+
 ### Parsing and state transitions
 
 [`src/stats_api_parser.rs`](../src/stats_api_parser.rs) converts loosely shaped JSON into typed parsing results and signatures. It is responsible for:
@@ -89,9 +94,9 @@ The process shares a single `Arc<AppState>` across the UI, Tokio tasks, and inpu
 | `game` | Players, local identity/team, session, match roster, touch state, and dashboard match snapshot |
 | `system` | Configuration, setup/update status, HTTP clients, and automation coordination |
 | `diagnostics` | Frame/resource/foreground tracking, captures, and recent Stats API events |
-| `mmr` | Tracker cache, local refresh coordination, and debug status |
+| `mmr` | Provider selection, MMR cache, local refresh coordination, and debug status |
 | `history` | SQLite connection, encounter summaries, totals, and refresh state |
-| `replays` | Ballchasing status, upload/sync/download coordination, and metadata caches |
+| `replays` | Ballchasing status, SQLite upload ledger, SHA-256 upload coordination, sync/download work, and metadata caches |
 | `boost` / `hoops_fixer` | Local tool status and background-work guards |
 
 The synchronization strategy matches the data shape:
@@ -142,8 +147,9 @@ On non-Windows systems, the launched primary viewport uses the platform's fullsc
 
 ### Local persistence
 
-- `config.toml` stores user settings, cached local identity, replay settings, and integration credentials.
+- `config.toml` stores user settings, cached local identity, replay settings, and integration credentials. On Unix it is created and repaired with owner-only permissions.
 - `history.sqlite3` stores optional match/player encounter history and uses versioned migrations plus corruption recovery.
+- `replays.sqlite3` stores normalized replay upload membership, content hashes, remote IDs, file fingerprints, and timestamps. Automatic and bulk uploads share a content-keyed coordinator and publish a revisioned in-memory ledger snapshot for the UI.
 - Replay files and backups remain in user-selected Rocket League/replay directories.
 - Diagnostic logs or support exports are created only by the relevant enabled or explicit user action; recent raw Stats API events are otherwise memory-only.
 
@@ -154,7 +160,7 @@ The application data directory is `%APPDATA%/RL-Platform-Overlay` on Windows and
 | Destination | Purpose | Trigger |
 | --- | --- | --- |
 | Rocket League loopback endpoint | Live match telemetry | Continuous reconnect while the app runs |
-| Tracker Network | Public rank/MMR lookup | Lobby players or explicit local refresh |
+| mmr.kmdw.dev (mmr-api-v2) | Rank/MMR lookup | Lobby players or explicit local refresh |
 | ballchasing.com | Replay upload, listing/sync, metadata, and download | User enables/configures the integration or starts an action |
 | GitHub Releases | Version metadata and release assets | Startup version check or user-approved update |
 

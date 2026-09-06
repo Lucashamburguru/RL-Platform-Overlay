@@ -14,7 +14,7 @@ pub(super) fn render_local_mmr_panel(
     let local_mmr = state.mmr.local_mmr.load();
 
     if identity.is_known() {
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label(
                 egui::RichText::new("Player")
                     .size(SETTINGS_LABEL_TEXT_SIZE)
@@ -23,7 +23,10 @@ pub(super) fn render_local_mmr_panel(
             ui.label(identity.name.as_str());
             ui.add_space(8.0);
             if ui
-                .checkbox(&mut config_edit.lock_local_player, "Lock")
+                .checkbox(&mut config_edit.lock_local_player, "Lock detected player")
+                .on_hover_text(
+                    "Keep this player identity instead of detecting account changes from the game.",
+                )
                 .changed()
             {
                 *changed = true;
@@ -36,7 +39,7 @@ pub(super) fn render_local_mmr_panel(
         );
     } else {
         ui.colored_label(
-            egui::Color32::from_rgb(220, 200, 100),
+            egui::Color32::from_gray(190),
             "Waiting for local player identity.",
         );
     }
@@ -45,7 +48,14 @@ pub(super) fn render_local_mmr_panel(
     let can_refresh = identity.is_known() && !local_mmr.fetching;
     ui.horizontal(|ui| {
         if ui
-            .add_enabled(can_refresh, egui::Button::new("Refresh"))
+            .add_enabled(
+                can_refresh,
+                egui::Button::new(if local_mmr.error.is_empty() {
+                    "Refresh"
+                } else {
+                    "Retry"
+                }),
+            )
             .clicked()
         {
             crate::mmr::start_local_mmr_refresh(state.clone());
@@ -66,8 +76,15 @@ pub(super) fn render_local_mmr_panel(
     if !local_mmr.error.is_empty() {
         ui.colored_label(
             egui::Color32::from_rgb(230, 120, 80),
-            local_mmr.error.as_str(),
+            if local_mmr.error.contains("403") {
+                "MMR request denied (403). Retry or use Support diagnostics if it persists."
+            } else {
+                "Could not refresh MMR. Retry or check Support diagnostics."
+            },
         );
+        ui.collapsing("Technical details", |ui| {
+            ui.label(local_mmr.error.as_str());
+        });
     }
 
     ui.add_space(8.0);

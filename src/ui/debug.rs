@@ -134,7 +134,7 @@ pub(super) fn render_debug_settings_tab(
 
     ui.add_space(10.0);
     ui.group(|ui| {
-        ui.heading("In-Game Tracker Logs");
+        ui.heading("In-Game MMR Provider Logs");
         ui.add_space(6.0);
 
         let logs = if let Ok(lock) = state.mmr.debug_tracker_logs.lock() {
@@ -143,7 +143,7 @@ pub(super) fn render_debug_settings_tab(
             std::collections::VecDeque::new()
         };
 
-        if ui.button("Clear Tracker Logs").clicked()
+        if ui.button("Clear MMR Logs").clicked()
             && let Ok(mut lock) = state.mmr.debug_tracker_logs.lock()
         {
             lock.clear();
@@ -151,7 +151,7 @@ pub(super) fn render_debug_settings_tab(
         ui.add_space(6.0);
 
         if logs.is_empty() {
-            ui.label("No profiles scraped yet in this session.");
+            ui.label("No MMR profiles fetched yet in this session.");
         } else {
             egui::ScrollArea::vertical()
                 .max_height(120.0)
@@ -202,7 +202,7 @@ pub(super) fn render_debug_settings_tab(
 
     ui.add_space(10.0);
     ui.group(|ui| {
-        ui.heading("Tracker Scraper Debugger");
+        ui.heading("MMR Provider Debugger");
         ui.add_space(6.0);
 
         // Platform selection persistent state
@@ -264,7 +264,7 @@ pub(super) fn render_debug_settings_tab(
         });
 
         ui.horizontal(|ui| {
-            ui.label("Name/ID:");
+            ui.label("Account ID:");
             if ui.text_edit_singleline(&mut name).changed() {
                 ui.data_mut(|d| d.insert_temp(name_id, name.clone()));
             }
@@ -281,12 +281,12 @@ pub(super) fn render_debug_settings_tab(
         let is_fetching = status == "Fetching...";
 
         ui.horizontal(|ui| {
-            let scrape_btn = ui.add_enabled(
+            let fetch_btn = ui.add_enabled(
                 !is_fetching && !name.trim().is_empty(),
-                egui::Button::new("Scrape Tracker Profile"),
+                egui::Button::new("Fetch MMR Profile"),
             );
-            if scrape_btn.clicked() {
-                run_tracker_scrape_debug(state.clone(), platform, name);
+            if fetch_btn.clicked() {
+                run_mmr_provider_debug(state.clone(), platform, name);
             }
 
             if is_fetching {
@@ -487,7 +487,7 @@ fn render_foreground_timeline(ui: &mut egui::Ui, events: &[crate::diagnostics::F
         });
 }
 
-fn run_tracker_scrape_debug(state: Arc<AppState>, platform: String, player_name_or_id: String) {
+fn run_mmr_provider_debug(state: Arc<AppState>, platform: String, player_name_or_id: String) {
     if let Ok(mut status) = state.mmr.debug_scrape_status.lock() {
         *status = "Fetching...".to_string();
     }
@@ -497,9 +497,14 @@ fn run_tracker_scrape_debug(state: Arc<AppState>, platform: String, player_name_
             platform: platform.clone(),
             player_name: player_name_or_id.clone(),
             player_id: player_name_or_id.clone(),
+            primary_id: if player_name_or_id.matches('|').count() >= 2 {
+                player_name_or_id.clone()
+            } else {
+                String::new()
+            },
         };
 
-        let result = crate::mmr::fetch_tracker_snapshot(
+        let result = crate::mmr::fetch_mmr_snapshot(
             &state.system.http_client,
             Some(&state.mmr.xuid_gamertag_cache),
             &player,

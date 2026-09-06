@@ -77,7 +77,7 @@ pub(super) fn draw_session_panel(
     let frame = overlay_panel_frame(scale, opacity);
 
     frame.show(ui, |ui| {
-        ui.set_min_width(width);
+        ui.set_width(width.min(ui.available_width()));
         match display {
             SessionOverlayDisplay::Compact => draw_compact_session(ui, session, scale),
             SessionOverlayDisplay::Expanded => {

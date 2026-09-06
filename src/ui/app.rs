@@ -70,6 +70,7 @@ pub struct MainApp {
     confirm_modal: Option<ConfirmAction>,
     tos_accepted: bool,
     history_search_query: String,
+    settings_content_overflow: bool,
 }
 
 impl MainApp {
@@ -92,6 +93,7 @@ impl MainApp {
             confirm_modal: None,
             tos_accepted: false,
             history_search_query: String::new(),
+            settings_content_overflow: false,
         }
     }
 
@@ -131,6 +133,191 @@ fn should_poll_rocket_league_process(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn settings_pages_fit_supported_sizes_and_keep_footer_visible() {
+        let state = AppState::new();
+        state.update_config(|config| {
+            config.rocket_league_path.clear();
+            config.replays_folder.clear();
+            config.ballchasing_api_key.clear();
+            config.history_enabled = true;
+            config.session_overlay_display = crate::session::SessionOverlayDisplay::Expanded;
+            config.session_overlay_scale = 2.5;
+            config.ui_scale = 2.5;
+        });
+        state.history.all_players_snapshot.store(Arc::new(
+            crate::history::HistoryPlayersSnapshot {
+                loaded: true,
+                players: vec![crate::history::PlayerHistorySummary {
+                    player_key: "sample".into(),
+                    name: "Sample player 漢字 with a long display name".into(),
+                    platform: "Steam".into(),
+                    games_with: 15,
+                    games_against: 3,
+                    wins_with: 9,
+                    losses_with: 6,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        ));
+        state
+            .history
+            .totals
+            .store(Arc::new(crate::history::HistoryTotals {
+                matches: 18,
+                players: 1,
+            }));
+        *state.history.status.lock().unwrap() = "History ready.".into();
+        state.replays.merged_metadata_cache.store(Arc::new(
+            crate::replay_metadata::ReplayMetadataSnapshot {
+                entries: std::collections::HashMap::from([(
+                    "sample.replay".into(),
+                    crate::replay_metadata::ReplayMetadataEntry {
+                        filename: "sample.replay".into(),
+                        display_name: "Sample match with a long title".into(),
+                        file_size: 1024,
+                        map_name: "Stadium_P".into(),
+                        date: "2026-09-05:12-48-00".into(),
+                        ..Default::default()
+                    },
+                )]),
+                ..Default::default()
+            },
+        ));
+        for size in [[640.0, 600.0], [760.0, 820.0], [1100.0, 900.0]] {
+            for zoom in [1.0, 1.25] {
+                let ctx = egui::Context::default();
+                if std::env::var_os("RL_OVERLAY_REVIEW_DIR").is_some() {
+                    super::super::fonts::install_fallbacks(&ctx);
+                }
+                let mut renderer = super::super::review_renderer::ReviewRenderer::default();
+                let warmup = ctx.run(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(size[0], size[1]),
+                        )),
+                        ..Default::default()
+                    },
+                    |_| {},
+                );
+                renderer.capture(&ctx, &warmup, size, None);
+                ctx.set_zoom_factor(zoom);
+                let mut app = MainApp::new(state.clone(), None);
+                for tab in [
+                    SettingsTab::Setup,
+                    SettingsTab::Overlay,
+                    SettingsTab::Dashboard,
+                    SettingsTab::Session,
+                    SettingsTab::Boost,
+                    SettingsTab::Replays,
+                    SettingsTab::History,
+                    SettingsTab::Support,
+                ] {
+                    app.settings_tab = tab;
+                    app.last_rl_check = std::time::Instant::now();
+                    for frame in 0..6 {
+                        let mut input = egui::RawInput {
+                            screen_rect: Some(egui::Rect::from_min_size(
+                                egui::Pos2::ZERO,
+                                egui::vec2(size[0], size[1]),
+                            )),
+                            ..Default::default()
+                        };
+                        input
+                            .viewports
+                            .get_mut(&egui::ViewportId::ROOT)
+                            .unwrap()
+                            .inner_rect = input.screen_rect;
+                        input
+                            .viewports
+                            .get_mut(&egui::ViewportId::ROOT)
+                            .unwrap()
+                            .native_pixels_per_point = Some(1.0);
+                        if frame == 1 {
+                            input.events.push(egui::Event::Key {
+                                key: egui::Key::Tab,
+                                physical_key: None,
+                                pressed: true,
+                                repeat: false,
+                                modifiers: egui::Modifiers::default(),
+                            });
+                        }
+                        if frame == 3 {
+                            input
+                                .events
+                                .push(egui::Event::PointerMoved(egui::pos2(400.0, 350.0)));
+                            input.events.push(egui::Event::MouseWheel {
+                                unit: egui::MouseWheelUnit::Point,
+                                delta: egui::vec2(0.0, -450.0),
+                                modifiers: egui::Modifiers::default(),
+                            });
+                        }
+                        let output = ctx.run(input, |ctx| {
+                            egui::CentralPanel::default().show(ctx, |ui| {
+                                app.render_settings_content(ui, ctx, false);
+                                assert!(
+                                    ui.min_rect().right() <= size[0] + 1.0,
+                                    "{tab:?} overflow at {size:?}, zoom {zoom}: {:?}",
+                                    ui.min_rect()
+                                );
+                                assert!(
+                                    ui.min_rect().bottom() <= size[1] + 1.0,
+                                    "{tab:?} footer overflow at {size:?}, zoom {zoom}: {:?}",
+                                    ui.min_rect()
+                                );
+                            });
+                        });
+                        if size == [760.0, 820.0] && zoom == 1.0 && frame == 0 {
+                            assert!(
+                                !app.settings_content_overflow,
+                                "{tab:?} requires scrolling at the default window size"
+                            );
+                        }
+                        let quit_shape = output.shapes.iter().find_map(|shape| {
+                            if let egui::epaint::Shape::Text(text) = &shape.shape
+                                && text.galley.text() == "Quit"
+                            {
+                                Some((shape.clip_rect, text.visual_bounding_rect()))
+                            } else {
+                                None
+                            }
+                        });
+                        let Some((quit_clip, quit_rect)) = quit_shape else {
+                            panic!("footer missing on {tab:?}");
+                        };
+                        assert!(
+                            quit_clip.intersects(quit_rect)
+                                && quit_rect.top() >= 0.0
+                                && quit_rect.bottom() <= size[1],
+                            "footer is clipped on {tab:?}: {quit_rect:?}, clip={quit_clip:?}"
+                        );
+                        if frame == 1 {
+                            assert!(
+                                ctx.memory(|memory| memory.focused().is_some()),
+                                "keyboard navigation has no focus on {tab:?}"
+                            );
+                        }
+                        let path = std::env::var_os("RL_OVERLAY_REVIEW_DIR")
+                            .filter(|_| {
+                                size == [760.0, 820.0] && zoom == 1.0 && (frame == 2 || frame == 5)
+                            })
+                            .map(|directory| {
+                                let directory = std::path::PathBuf::from(directory);
+                                std::fs::create_dir_all(&directory).unwrap();
+                                directory.join(format!(
+                                    "{tab:?}{}.png",
+                                    if frame == 5 { "_scrolled" } else { "" }
+                                ))
+                            });
+                        renderer.capture(&ctx, &output, size, path.as_deref());
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn process_polling_rechecks_after_interval_even_if_running() {
@@ -864,6 +1051,7 @@ impl MainApp {
         ctx: &egui::Context,
         is_launched: bool,
     ) {
+        crate::ui::common::settings_style(ui);
         ui.add_space(5.0);
 
         self.refresh_rocket_league_process_detection();
@@ -881,8 +1069,16 @@ impl MainApp {
             crate::history::request_all_player_history_refresh(&self.state, false);
         }
 
-        egui::ScrollArea::vertical()
-            .max_height(ui.available_height() - 40.0 * ui.ctx().pixels_per_point().min(1.2))
+        let footer_height = if ui.available_width() < 620.0 || config_edit.layout_mode {
+            82.0
+        } else {
+            50.0
+        };
+        let content_height = (ui.available_height() - footer_height).max(0.0);
+        let page = egui::ScrollArea::vertical()
+            .id_salt(("settings_page", self.settings_tab as u8))
+            .auto_shrink([false, false])
+            .max_height(content_height)
             .show(ui, |ui| match self.settings_tab {
                 SettingsTab::Setup => render_setup_settings_tab(
                     ui,
@@ -934,14 +1130,22 @@ impl MainApp {
                     &mut self.confirm_modal,
                     &mut self.history_search_query,
                 ),
-                SettingsTab::Support => render_support_settings_tab(
+                SettingsTab::Support => { render_support_settings_tab(
                     ui,
                     &self.state,
                     config_edit,
                     &mut changed,
                     self.is_rl_running,
                     &self.rl_process_detection_detail,
-                ),
+                );
+                    ui.add_space(12.0);
+                    ui.collapsing("Maintenance", |ui| {
+                        ui.label("Reset all settings, including credentials and HUD positions, to their defaults.");
+                        if ui.button("Reset Config…").clicked() {
+                            self.confirm_modal = Some(ConfirmAction::ResetConfig);
+                        }
+                    });
+                },
                 SettingsTab::Debug => render_debug_settings_tab(
                     ui,
                     &self.state,
@@ -950,6 +1154,7 @@ impl MainApp {
                     &self.rl_process_detection_detail,
                 ),
             });
+        self.settings_content_overflow = page.content_size.y > page.inner_rect.height() + 1.0;
 
         ui.add_space(8.0);
         ui.separator();
@@ -1005,16 +1210,19 @@ impl MainApp {
                 self.state.flags.is_launched.store(false, Ordering::SeqCst);
                 self.launched_by_layout_mode = false;
             }
+            let history_changed = config_edit.history_enabled != config.history_enabled
+                || config_edit.lobby_history_indicators_enabled
+                    != config.lobby_history_indicators_enabled;
             let history_enabled = config_edit.history_enabled;
             let history_indicators_enabled = config_edit.lobby_history_indicators_enabled;
             config_session.commit();
-            if history_enabled {
+            if history_changed && history_enabled {
                 crate::history::request_all_player_history_refresh(&self.state, true);
                 crate::history::refresh_totals(&self.state);
                 if history_indicators_enabled {
                     crate::history::refresh_lobby_history(&self.state);
                 }
-            } else {
+            } else if history_changed {
                 self.state
                     .history
                     .player_summaries
@@ -1126,11 +1334,7 @@ impl MainApp {
                 self.state.replace_config(default_config);
             }
             ConfirmAction::ClearUploadCache => {
-                self.state
-                    .update_config(|config| config.uploaded_replays.clear());
-                if let Ok(mut status) = self.state.replays.ballchasing_status.lock() {
-                    *status = "Upload cache cleared.".to_string();
-                }
+                crate::replays::start_clear_upload_ledger(self.state.clone());
             }
             #[cfg(not(feature = "microsoft-store"))]
             ConfirmAction::AlphaBoostApply => {
@@ -1145,31 +1349,7 @@ impl MainApp {
             ConfirmAction::DeleteBackups => {
                 crate::hoops_fixer::start_delete_backups_task(self.state.clone());
             }
-            ConfirmAction::ClearHistory => match crate::history::clear_history(&self.state) {
-                Ok(()) => {
-                    self.state.history.revision.fetch_add(1, Ordering::SeqCst);
-                    self.state
-                        .history
-                        .player_summaries
-                        .store(Arc::new(Default::default()));
-                    self.state
-                        .history
-                        .all_players_snapshot
-                        .store(Arc::new(Default::default()));
-                    self.state
-                        .history
-                        .totals
-                        .store(Arc::new(crate::history::HistoryTotals::default()));
-                    if let Ok(mut status) = self.state.history.status.lock() {
-                        *status = "History cleared.".to_string();
-                    }
-                }
-                Err(error) => {
-                    if let Ok(mut status) = self.state.history.status.lock() {
-                        *status = format!("History clear failed: {error}");
-                    }
-                }
-            },
+            ConfirmAction::ClearHistory => crate::history::start_clear_history(self.state.clone()),
         }
     }
 }

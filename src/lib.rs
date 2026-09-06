@@ -2,6 +2,7 @@ pub mod automation;
 pub mod history;
 pub mod hoops_fixer;
 pub mod json_utils;
+pub mod replay_ledger;
 pub mod replay_metadata;
 pub mod replays;
 pub mod stats_api;
@@ -58,6 +59,7 @@ pub async fn run(debug_enabled: bool) -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([760.0, 820.0])
+            .with_min_inner_size([640.0, 600.0])
             .with_transparent(true)
             .with_decorations(false)
             .with_title("RL Overlay Settings"),
@@ -84,6 +86,7 @@ pub async fn run(debug_enabled: bool) -> eframe::Result<()> {
             }
 
             egui_extras::install_image_loaders(&cc.egui_ctx);
+            ui::fonts::install_fallbacks(&cc.egui_ctx);
             cc.egui_ctx.set_visuals(egui::Visuals::dark());
             Ok(Box::new(ui::MainApp::new(state, hwnd)))
         }),

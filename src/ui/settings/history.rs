@@ -1,7 +1,7 @@
 use crate::state::{AppState, Config};
 use crate::ui::common::{
-    StatusTone, helper_text, overlay_danger_color, overlay_subtle_color, overlay_success_color,
-    overlay_text_color, overlay_title_color, setting_row, settings_section, status_text,
+    StatusTone, helper_text, overlay_danger_color, overlay_success_color, overlay_text_color,
+    overlay_title_color, setting_row, settings_section, status_text,
 };
 use eframe::egui;
 use egui_extras::{Column, TableBuilder};
@@ -125,15 +125,17 @@ pub(crate) fn render_history_settings_tab(
                         });
                     });
             });
-
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("🗑 Clear History").clicked() {
-                    *confirm_modal = Some(crate::ui::app::ConfirmAction::ClearHistory);
-                }
-            });
         });
     });
 
+    ui.add_space(10.0);
+    ui.collapsing("Maintenance", |ui| {
+        ui.label("Delete stored matches and player encounters. New completed matches will still be recorded.");
+        if ui.add_enabled(!state.history.clear_running.load(std::sync::atomic::Ordering::SeqCst), egui::Button::new("Clear History…")).clicked() {
+            *confirm_modal = Some(crate::ui::app::ConfirmAction::ClearHistory);
+        }
+        crate::ui::common::maintenance_status(ui, &state.history.clear_status.load());
+    });
     ui.add_space(10.0);
     settings_section(ui, "Players", |ui| {
         if !config_edit.history_enabled {
@@ -171,7 +173,7 @@ pub(crate) fn render_history_settings_tab(
             let _response = ui.add(
                 egui::TextEdit::singleline(search_query)
                     .hint_text("Search by name or platform...")
-                    .desired_width(220.0),
+                    .desired_width((ui.available_width() - 80.0).max(120.0)),
             );
             if !search_query.is_empty() && ui.button("Clear").clicked() {
                 search_query.clear();
@@ -180,7 +182,7 @@ pub(crate) fn render_history_settings_tab(
         ui.add_space(8.0);
 
         let query = search_query.to_ascii_lowercase().trim().to_string();
-        let filtered_players: Vec<&crate::history::PlayerHistorySummary> = if query.is_empty() {
+        let mut filtered_players: Vec<&crate::history::PlayerHistorySummary> = if query.is_empty() {
             snapshot.players.iter().collect()
         } else {
             snapshot
@@ -195,7 +197,51 @@ pub(crate) fn render_history_settings_tab(
         if filtered_players.is_empty() {
             ui.label(helper_text("No players match your search."));
         } else {
-            render_player_table(ui, &filtered_players);
+            let sort_id = ui.id().with("history_sort");
+            let (mut sort, mut descending) = ui
+                .data(|d| d.get_temp::<(usize, bool)>(sort_id))
+                .unwrap_or((7, true));
+            ui.horizontal_wrapped(|ui| {
+                ui.label("Sort by:");
+                egui::ComboBox::from_id_salt("history_sort_column")
+                    .selected_text(HISTORY_COLUMNS[sort])
+                    .show_ui(ui, |ui| {
+                        for (index, label) in HISTORY_COLUMNS.iter().enumerate() {
+                            ui.selectable_value(&mut sort, index, *label);
+                        }
+                    });
+                ui.checkbox(&mut descending, "Descending");
+            });
+            filtered_players.sort_by(|a, b| {
+                let order = match sort {
+                    0 => a.name_normalized.cmp(&b.name_normalized),
+                    1 => a.platform_normalized.cmp(&b.platform_normalized),
+                    2 => a.total_games().cmp(&b.total_games()),
+                    3 => a.games_with.cmp(&b.games_with),
+                    4 => a.games_against.cmp(&b.games_against),
+                    5 => rounded_percent_u64(
+                        u64::from(a.wins_with),
+                        u64::from(a.wins_with) + u64::from(a.losses_with),
+                    )
+                    .cmp(&rounded_percent_u64(
+                        u64::from(b.wins_with),
+                        u64::from(b.wins_with) + u64::from(b.losses_with),
+                    )),
+                    6 => rounded_percent_u64(
+                        u64::from(a.wins_against),
+                        u64::from(a.wins_against) + u64::from(a.losses_against),
+                    )
+                    .cmp(&rounded_percent_u64(
+                        u64::from(b.wins_against),
+                        u64::from(b.wins_against) + u64::from(b.losses_against),
+                    )),
+                    _ => a.last_seen_unix_ms.cmp(&b.last_seen_unix_ms),
+                };
+                (if descending { order.reverse() } else { order })
+                    .then_with(|| a.player_key.cmp(&b.player_key))
+            });
+            render_player_table(ui, &filtered_players, &mut sort, &mut descending);
+            ui.data_mut(|d| d.insert_temp(sort_id, (sort, descending)));
         }
     });
 }
@@ -281,17 +327,63 @@ fn render_platform_label(ui: &mut egui::Ui, platform: &str) {
 
 fn history_muted_text(text: impl Into<String>) -> egui::RichText {
     egui::RichText::new(text.into())
-        .size(10.0)
-        .color(overlay_subtle_color())
+        .size(12.0)
+        .color(egui::Color32::from_gray(190))
 }
 
 fn history_value_text(text: impl Into<String>) -> egui::RichText {
     egui::RichText::new(text.into())
-        .size(11.0)
+        .size(13.0)
         .color(overlay_text_color())
 }
 
-fn render_player_table(ui: &mut egui::Ui, players: &[&crate::history::PlayerHistorySummary]) {
+const HISTORY_COLUMNS: [&str; 8] = [
+    "Player",
+    "Platform",
+    "Encounters",
+    "Teammate",
+    "Opponent",
+    "Win % together",
+    "Win % against",
+    "Last seen",
+];
+
+fn render_player_table(
+    ui: &mut egui::Ui,
+    players: &[&crate::history::PlayerHistorySummary],
+    sort: &mut usize,
+    descending: &mut bool,
+) {
+    if ui.available_width() < 900.0 {
+        for player in players {
+            ui.push_id(&player.player_key, |ui| {
+                ui.collapsing(
+                    format!(
+                        "{} · {} · {} encounters",
+                        player.name,
+                        formatted_platform(&player.platform),
+                        player.total_games()
+                    ),
+                    |ui| {
+                        ui.label(format!("As teammate: {} games", player.games_with));
+                        ui.label(format!("As opponent: {} games", player.games_against));
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label("Record together:");
+                            render_record(ui, player.wins_with, player.losses_with);
+                        });
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label("Record against:");
+                            render_record(ui, player.wins_against, player.losses_against);
+                        });
+                        if ui.button("Copy player name").clicked() {
+                            ui.ctx().copy_text(player.name.clone());
+                        }
+                    },
+                );
+            });
+        }
+        return;
+    }
     let table_height = (players.len() as f32 * 24.0 + 28.0).min(420.0);
     TableBuilder::new(ui)
         .striped(true)
@@ -306,27 +398,18 @@ fn render_player_table(ui: &mut egui::Ui, players: &[&crate::history::PlayerHist
         .column(Column::auto().at_least(76.0))
         .column(Column::auto().at_least(76.0))
         .header(22.0, |mut header| {
-            header.col(|ui| {
-                ui.label(history_muted_text("Player"));
-            });
-            header.col(|ui| {
-                ui.label(history_muted_text("Platform"));
-            });
-            header.col(|ui| {
-                ui.label(history_muted_text("Seen"));
-            });
-            header.col(|ui| {
-                ui.label(history_muted_text("With"));
-            });
-            header.col(|ui| {
-                ui.label(history_muted_text("Vs"));
-            });
-            header.col(|ui| {
-                ui.label(history_muted_text("W/L With"));
-            });
-            header.col(|ui| {
-                ui.label(history_muted_text("W/L Vs"));
-            });
+            for (index, label) in HISTORY_COLUMNS.iter().take(7).enumerate() {
+                header.col(|ui| {
+                    if ui.selectable_label(*sort == index, *label).clicked() {
+                        if *sort == index {
+                            *descending = !*descending;
+                        } else {
+                            *sort = index;
+                            *descending = false;
+                        }
+                    }
+                });
+            }
         })
         .body(|body| {
             body.rows(24.0, players.len(), |mut row| {

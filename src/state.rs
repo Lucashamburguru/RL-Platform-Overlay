@@ -102,7 +102,12 @@ pub struct Config {
     pub ballchasing_api_key: String,
     pub ballchasing_visibility: String,
     pub replays_folder: String,
-    pub uploaded_replays: Vec<String>,
+    #[serde(
+        default,
+        rename = "uploaded_replays",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub legacy_uploaded_replays: Vec<String>,
     pub auto_gg: bool,
     pub auto_gg_sequence: String,
     pub auto_freeplay: bool,
@@ -270,7 +275,7 @@ impl Default for Config {
             ballchasing_api_key: "".to_string(),
             ballchasing_visibility: "public".to_string(),
             replays_folder: detect_replays_path().unwrap_or_default(),
-            uploaded_replays: Vec::new(),
+            legacy_uploaded_replays: Vec::new(),
             auto_gg: false,
             auto_gg_sequence: "T,G,G,Enter".to_string(),
             auto_freeplay: false,
@@ -332,9 +337,14 @@ fn atomic_write_config(path: &Path, content: &[u8]) -> Result<(), String> {
     ));
 
     let result = (|| {
-        let mut file = fs::OpenOptions::new()
-            .create_new(true)
-            .write(true)
+        let mut options = fs::OpenOptions::new();
+        options.create_new(true).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options
             .open(&temp_path)
             .map_err(|error| format!("Could not create temporary config: {error}"))?;
         file.write_all(content)
@@ -351,9 +361,27 @@ fn atomic_write_config(path: &Path, content: &[u8]) -> Result<(), String> {
 }
 
 fn load_config_file(path: &PathBuf) -> Result<Config, String> {
+    secure_config_permissions(path)?;
     let content =
         fs::read_to_string(path).map_err(|error| format!("Could not read config: {error}"))?;
     toml::from_str(&content).map_err(|error| format!("Could not parse config: {error}"))
+}
+
+#[cfg(unix)]
+fn secure_config_permissions(path: &Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    let metadata = fs::metadata(path)
+        .map_err(|error| format!("Could not inspect config permissions: {error}"))?;
+    if metadata.permissions().mode() & 0o777 != 0o600 {
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+            .map_err(|error| format!("Could not secure config permissions: {error}"))?;
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn secure_config_permissions(_path: &Path) -> Result<(), String> {
+    Ok(())
 }
 
 fn config_path() -> PathBuf {
@@ -588,6 +616,10 @@ mod tests {
             second.paths.config_dir.join("history.sqlite3")
         );
         assert_ne!(
+            first.paths.config_dir.join("replays.sqlite3"),
+            second.paths.config_dir.join("replays.sqlite3")
+        );
+        assert_ne!(
             first.paths.config_dir.join("update"),
             second.paths.config_dir.join("update")
         );
@@ -654,6 +686,39 @@ mod tests {
             DashboardPlayerLayout::Cards
         );
         assert!(decoded.estimate_teammate_bumps);
+    }
+
+    #[test]
+    fn legacy_upload_cache_is_read_but_omitted_after_migration() {
+        let decoded: Config =
+            toml::from_str(r#"uploaded_replays = ["one.replay", "two.replay"]"#).unwrap();
+        assert_eq!(decoded.legacy_uploaded_replays.len(), 2);
+
+        let mut migrated = decoded;
+        migrated.legacy_uploaded_replays.clear();
+        let encoded = toml::to_string(&migrated).unwrap();
+        assert!(!encoded.contains("uploaded_replays"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn config_files_are_created_and_repaired_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("config.toml");
+        Config::default().save_to_path(&path).unwrap();
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        Config::load_from_path(path.clone());
+        assert_eq!(
+            fs::metadata(path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
     }
 
     #[test]
@@ -1084,6 +1149,8 @@ pub struct DiagnosticsState {
 }
 
 pub struct ReplaysState {
+    pub maintenance_gate: Arc<tokio::sync::RwLock<()>>,
+    pub clear_status: ArcSwap<MaintenanceStatus>,
     pub ballchasing_status: Arc<std::sync::Mutex<String>>,
     pub ballchasing_cloud_count: std::sync::atomic::AtomicU32,
     pub upload_progress: ArcSwap<ReplayUploadProgress>,
@@ -1100,6 +1167,24 @@ pub struct ReplaysState {
     pub auto_upload_running: AtomicBool,
     pub sync_running: AtomicBool,
     pub initial_cache_sync_started: AtomicBool,
+    pub ledger_conn: std::sync::Mutex<Option<rusqlite::Connection>>,
+    pub uploaded_replays: ArcSwap<Vec<String>>,
+    pub ledger_revision: AtomicU64,
+    pub upload_coordinator: std::sync::Mutex<ReplayUploadCoordinator>,
+}
+
+#[derive(Default)]
+pub struct ReplayUploadCoordinator {
+    pub content_locks: HashMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub enum MaintenanceStatus {
+    #[default]
+    Idle,
+    Running,
+    Success(String),
+    Failed(String),
 }
 
 pub struct BoostState {
@@ -1123,6 +1208,9 @@ pub struct MmrState {
 }
 
 pub struct HistoryState {
+    pub clear_status: ArcSwap<MaintenanceStatus>,
+    pub clear_running: AtomicBool,
+    pub publication_mutex: std::sync::Mutex<()>,
     pub player_summaries: ArcSwap<HashMap<String, crate::history::PlayerHistorySummary>>,
     pub all_players_snapshot: ArcSwap<crate::history::HistoryPlayersSnapshot>,
     pub all_players_refresh_running: AtomicBool,
@@ -1213,8 +1301,64 @@ impl AppState {
 
     pub fn new_with_debug(debug_enabled: bool) -> Arc<Self> {
         let paths = AppPaths::resolve();
-        let (config, config_status) = Config::load_from_path(paths.config_path.clone());
+        let (mut config, config_status) = Config::load_from_path(paths.config_path.clone());
         let config_status = Arc::new(ArcSwap::from_pointee(config_status));
+        let (replay_ledger_conn, uploaded_replays, replay_ledger_status, ledger_migration_ok) =
+            match crate::replay_ledger::initialize_database_at_with_recovery(
+                paths.config_dir.clone(),
+            ) {
+                Ok((mut conn, recovery_message)) => {
+                    let migration = crate::replay_ledger::import_legacy_filenames(
+                        &mut conn,
+                        &config.legacy_uploaded_replays,
+                    );
+                    match migration {
+                        Ok(imported) => {
+                            if imported > 0 {
+                                log::info!(
+                                    "Migrated {imported} replay upload cache entries to SQLite"
+                                );
+                            }
+                            let filenames =
+                                crate::replay_ledger::filenames(&conn).unwrap_or_else(|error| {
+                                    log::error!("Failed to load replay upload ledger: {error}");
+                                    Vec::new()
+                                });
+                            (
+                                Some(conn),
+                                filenames,
+                                recovery_message
+                                    .unwrap_or_else(|| "Upload ledger ready.".to_string()),
+                                true,
+                            )
+                        }
+                        Err(error) => {
+                            log::error!("Failed to migrate replay upload cache: {error}");
+                            (
+                                Some(conn),
+                                config.legacy_uploaded_replays.clone(),
+                                format!("Upload ledger migration failed: {error}"),
+                                false,
+                            )
+                        }
+                    }
+                }
+                Err(error) => {
+                    log::error!("Failed to initialize replay upload ledger: {error}");
+                    (
+                        None,
+                        config.legacy_uploaded_replays.clone(),
+                        format!("Upload ledger unavailable: {error}"),
+                        false,
+                    )
+                }
+            };
+        if ledger_migration_ok && !config.legacy_uploaded_replays.is_empty() {
+            config.legacy_uploaded_replays.clear();
+            if let Err(error) = config.save_to_path(&paths.config_path) {
+                log::error!("Failed to remove migrated replay cache from config: {error}");
+            }
+        }
         let config_writer = ConfigWriter::start(paths.config_path.clone(), config_status.clone());
         let cached_local_player_identity = config.cached_local_player_identity.clone();
         let debug_logging_enabled = config.debug_logging_enabled;
@@ -1323,7 +1467,7 @@ impl AppState {
                 api_log_export_status: ArcSwap::from_pointee(ApiLogExportStatus::default()),
             },
             replays: ReplaysState {
-                ballchasing_status: Arc::new(std::sync::Mutex::new("Idle".to_string())),
+                ballchasing_status: Arc::new(std::sync::Mutex::new(replay_ledger_status)),
                 ballchasing_cloud_count: std::sync::atomic::AtomicU32::new(0),
                 upload_progress: ArcSwap::from_pointee(ReplayUploadProgress::default()),
                 upload_paused: AtomicBool::new(false),
@@ -1345,6 +1489,12 @@ impl AppState {
                 auto_upload_running: AtomicBool::new(false),
                 sync_running: AtomicBool::new(false),
                 initial_cache_sync_started: AtomicBool::new(false),
+                ledger_conn: std::sync::Mutex::new(replay_ledger_conn),
+                uploaded_replays: ArcSwap::from_pointee(uploaded_replays),
+                ledger_revision: AtomicU64::new(0),
+                upload_coordinator: std::sync::Mutex::new(ReplayUploadCoordinator::default()),
+                maintenance_gate: Arc::new(tokio::sync::RwLock::new(())),
+                clear_status: ArcSwap::from_pointee(MaintenanceStatus::Idle),
             },
             boost: BoostState {
                 boost_swap_status: Arc::new(std::sync::Mutex::new("Idle".to_string())),
@@ -1366,6 +1516,9 @@ impl AppState {
                 local_mmr_refresh: std::sync::Mutex::new(LocalMmrRefreshCoordinator::default()),
             },
             history: HistoryState {
+                clear_status: ArcSwap::from_pointee(MaintenanceStatus::Idle),
+                clear_running: AtomicBool::new(false),
+                publication_mutex: std::sync::Mutex::new(()),
                 player_summaries: ArcSwap::from_pointee(HashMap::new()),
                 all_players_snapshot: ArcSwap::from_pointee(
                     crate::history::HistoryPlayersSnapshot::default(),
@@ -1416,11 +1569,6 @@ impl AppState {
 
     pub fn flush_config(&self) -> Result<(), String> {
         self.config_writer.flush()
-    }
-
-    pub(crate) fn config_revision(&self) -> u64 {
-        self.config_revision
-            .load(std::sync::atomic::Ordering::SeqCst)
     }
 
     fn publish_config(&self, config: Config) {

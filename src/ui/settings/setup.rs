@@ -16,10 +16,12 @@ pub(crate) fn render_setup_settings_tab(
     changed: &mut bool,
     is_rl_running: bool,
 ) {
+    render_setup_readiness(ui, state, is_rl_running);
+    ui.add_space(12.0);
     settings_section(ui, "Stats API Setup", |ui| {
         setting_row(ui, "Rocket League Folder", |ui| {
             ui.horizontal(|ui| {
-                let input_width = (ui.available_width() - 96.0).max(160.0);
+                let input_width = (ui.available_width() - 120.0).max(80.0);
                 if ui
                     .add_sized(
                         [input_width, 22.0],
@@ -75,23 +77,25 @@ pub(crate) fn render_setup_settings_tab(
             request_stats_api_setup_refresh(state, config_edit.rocket_league_path.clone(), false);
         }
         ui.add_space(8.0);
-        debug_status_row(ui, "Config File", &status.ini_path);
-        debug_status_row(
-            ui,
-            "PacketSendRate",
-            &status
-                .packet_send_rate
-                .map(|rate| rate.to_string())
-                .unwrap_or_else(|| "missing".to_string()),
-        );
-        debug_status_row(
-            ui,
-            "Port",
-            &status
-                .port
-                .map(|port| port.to_string())
-                .unwrap_or_else(|| "49123 default".to_string()),
-        );
+        ui.collapsing("Technical connection details", |ui| {
+            debug_status_row(ui, "Config File", &status.ini_path);
+            debug_status_row(
+                ui,
+                "PacketSendRate",
+                &status
+                    .packet_send_rate
+                    .map(|rate| rate.to_string())
+                    .unwrap_or_else(|| "missing".to_string()),
+            );
+            debug_status_row(
+                ui,
+                "Port",
+                &status
+                    .port
+                    .map(|port| port.to_string())
+                    .unwrap_or_else(|| "49123 default".to_string()),
+            );
+        });
 
         if status.configured {
             status_text(ui, StatusTone::Success, &status.message);
@@ -226,9 +230,6 @@ pub(crate) fn render_setup_settings_tab(
 
     ui.add_space(10.0);
     render_hotkey_settings_section(ui, ctx, state, config_edit, changed);
-
-    ui.add_space(10.0);
-    render_setup_readiness(ui, state, is_rl_running);
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -263,7 +264,7 @@ fn setup_readiness_items(
             detail: if setup.installation_found {
                 "Installation folder found.".to_string()
             } else {
-                "Select or auto-detect the Rocket League folder above.".to_string()
+                "Select or auto-detect the Rocket League folder below.".to_string()
             },
             state: if setup.installation_found {
                 ReadinessState::Complete
@@ -362,8 +363,8 @@ fn render_setup_readiness(ui: &mut egui::Ui, state: &Arc<AppState>, is_rl_runnin
         .count();
 
     settings_section(ui, "Setup Readiness", |ui| {
+        let ready = completed == items.len();
         ui.horizontal_wrapped(|ui| {
-            let ready = completed == items.len();
             ui.label(
                 egui::RichText::new(if ready {
                     "Ready for live matches"
@@ -379,9 +380,10 @@ fn render_setup_readiness(ui: &mut egui::Ui, state: &Arc<AppState>, is_rl_runnin
             );
             ui.weak(format!("{completed}/{} checks complete", items.len()));
         });
-        ui.add_space(6.0);
-
-        for item in items {
+        if let Some(item) = items
+            .iter()
+            .find(|item| item.state != ReadinessState::Complete)
+        {
             let (icon, tone) = match item.state {
                 ReadinessState::Complete => ("✓", StatusTone::Success),
                 ReadinessState::ActionNeeded => ("!", StatusTone::Warning),
@@ -390,9 +392,23 @@ fn render_setup_readiness(ui: &mut egui::Ui, state: &Arc<AppState>, is_rl_runnin
             ui.horizontal_wrapped(|ui| {
                 ui.label(egui::RichText::new(icon).strong().color(status_color(tone)));
                 ui.label(egui::RichText::new(item.label).strong());
-                ui.label(helper_text(item.detail));
+                ui.label(helper_text(&item.detail));
             });
         }
+        ui.collapsing(format!("All checks ({completed}/{})", items.len()), |ui| {
+            for item in &items {
+                let (icon, tone) = match item.state {
+                    ReadinessState::Complete => ("✓", StatusTone::Success),
+                    ReadinessState::ActionNeeded => ("!", StatusTone::Warning),
+                    ReadinessState::Waiting => ("○", StatusTone::Neutral),
+                };
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(egui::RichText::new(icon).strong().color(status_color(tone)));
+                    ui.label(egui::RichText::new(item.label).strong());
+                    ui.label(helper_text(&item.detail));
+                });
+            }
+        });
     });
 }
 
@@ -573,20 +589,22 @@ pub(super) fn render_support_diagnostics_section(
             } else {
                 cached_preview.expect("a current support preview must exist")
             };
-        egui::ScrollArea::vertical()
-            .id_salt("support_diagnostics_preview")
-            .max_height(160.0)
-            .show(ui, |ui| {
-                ui.add(
-                    egui::Label::new(
-                        egui::RichText::new(preview.bundle.as_ref())
-                            .monospace()
-                            .size(10.0)
-                            .color(egui::Color32::from_gray(190)),
-                    )
-                    .selectable(true),
-                );
-            });
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            egui::ScrollArea::vertical()
+                .id_salt("support_diagnostics_preview")
+                .max_height(160.0)
+                .show(ui, |ui| {
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(preview.bundle.as_ref())
+                                .monospace()
+                                .size(12.0)
+                                .color(egui::Color32::from_gray(190)),
+                        )
+                        .selectable(true),
+                    );
+                });
+        });
 
         ui.add_space(6.0);
         let copy_label = if include_identifiable {
@@ -657,6 +675,17 @@ pub(super) fn render_support_diagnostics_section(
             "Hotkey Log",
             &crate::input::hotkey_debug_log_path().display().to_string(),
         );
+        if ui.button("Copy Log Path").clicked() {
+            ui.ctx()
+                .copy_text(crate::input::hotkey_debug_log_path().display().to_string());
+            ui.data_mut(|data| data.insert_temp(ui.id().with("log_path_copied"), true));
+        }
+        if ui.data(|data| {
+            data.get_temp::<bool>(ui.id().with("log_path_copied"))
+                .unwrap_or(false)
+        }) {
+            ui.label("Log path copied.");
+        }
 
         if let Some(copied_privacy) = ui.data(|data| {
             data.get_temp::<crate::diagnostics::SupportBundlePrivacy>(

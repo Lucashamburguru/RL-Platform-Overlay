@@ -145,10 +145,10 @@ pub(super) fn render_launch_controls(
     is_launched: bool,
     config_edit: &mut crate::state::Config,
     changed: &mut bool,
-    confirm_modal: &mut Option<super::app::ConfirmAction>,
+    _confirm_modal: &mut Option<super::app::ConfirmAction>,
 ) -> Option<ArrangeHudAction> {
     let mut arrange_action = None;
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         ui.set_width(ui.available_width());
         let btn_text = if is_launched {
             "Stop Overlay"
@@ -158,7 +158,8 @@ pub(super) fn render_launch_controls(
         if ui
             .add_sized(
                 [124.0, 26.0],
-                egui::Button::new(egui::RichText::new(btn_text).strong()),
+                egui::Button::new(egui::RichText::new(btn_text).strong())
+                    .fill(egui::Color32::from_rgb(0, 92, 120)),
             )
             .clicked()
         {
@@ -185,7 +186,7 @@ pub(super) fn render_launch_controls(
         ui.horizontal(|ui| {
             ui.label("HUD:");
             if !is_launched {
-                ui.colored_label(status_color(StatusTone::Error), "STOPPED");
+                ui.colored_label(status_color(StatusTone::Neutral), "Stopped");
             } else if !is_visible {
                 ui.colored_label(status_color(StatusTone::Warning), "HIDDEN");
             } else {
@@ -233,25 +234,17 @@ pub(super) fn render_launch_controls(
             arrange_action = Some(ArrangeHudAction::Start);
         }
 
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui
-                .add_sized([70.0, 24.0], egui::Button::new("Quit"))
-                .clicked()
-            {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            }
-            if ui
-                .add_sized([96.0, 24.0], egui::Button::new("Reset Config"))
-                .clicked()
-            {
-                *confirm_modal = Some(super::app::ConfirmAction::ResetConfig);
-            }
-            ui.label(
-                egui::RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
-                    .size(9.0)
-                    .color(egui::Color32::from_gray(100)),
-            );
-        });
+        if ui
+            .add_sized([70.0, 24.0], egui::Button::new("Quit"))
+            .clicked()
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+        ui.label(
+            egui::RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
+                .size(12.0)
+                .color(egui::Color32::from_gray(178)),
+        );
     });
     arrange_action
 }

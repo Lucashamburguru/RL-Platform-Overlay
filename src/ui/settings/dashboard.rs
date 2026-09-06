@@ -13,199 +13,232 @@ pub(crate) fn render_dashboard_settings_tab(
     changed: &mut bool,
 ) {
     settings_section(ui, "Second Screen Dashboard", |ui| {
-        settings_two_column(ui, |left, right| {
-            setting_row(left, "Dashboard", |ui| {
-                if ui
-                    .checkbox(&mut config_edit.dashboard_enabled, "Enable Dashboard")
-                    .changed()
-                {
-                    *changed = true;
-                }
-            });
-
-            left.add_space(8.0);
-            setting_row(left, "Launch", |ui| {
-                if ui
-                    .checkbox(
-                        &mut config_edit.dashboard_open_with_overlay,
-                        "Open with Overlay",
-                    )
-                    .changed()
-                {
-                    *changed = true;
-                }
-            });
-
-            left.add_space(8.0);
-            setting_row(left, "Overlay", |ui| {
-                if ui
-                    .checkbox(
-                        &mut config_edit.dashboard_keep_overlay_enabled,
-                        "Keep Overlay Enabled",
-                    )
-                    .changed()
-                {
-                    *changed = true;
-                }
-            });
-
-            left.add_space(8.0);
-            setting_row(left, "Display", |ui| {
-                ui.vertical(|ui| {
+        settings_two_column(ui, |column, is_right| {
+            if !is_right {
+                let left = column;
+                left.heading("Displayed content");
+                setting_row(left, "Dashboard", |ui| {
                     if ui
-                        .checkbox(&mut config_edit.dashboard_show_boost, "Show Boost")
+                        .checkbox(&mut config_edit.dashboard_enabled, "Enable Dashboard")
                         .changed()
                     {
                         *changed = true;
                     }
-                    if ui
-                        .checkbox(&mut config_edit.dashboard_show_ranks, "Show Ranks")
-                        .changed()
-                    {
-                        *changed = true;
-                    }
+                });
+
+                left.add_space(8.0);
+                setting_row(left, "Launch", |ui| {
                     if ui
                         .checkbox(
-                            &mut config_edit.dashboard_show_team_comparison,
-                            "Team Comparison",
-                        )
-                        .changed()
-                    {
-                        *changed = true;
-                    }
-                    if ui
-                        .checkbox(
-                            &mut config_edit.dashboard_show_event_feed,
-                            "Match Highlights",
-                        )
-                        .changed()
-                    {
-                        *changed = true;
-                    }
-                    if ui
-                        .checkbox(
-                            &mut config_edit.dashboard_show_replay_upload,
-                            "Replay Upload",
+                            &mut config_edit.dashboard_open_with_overlay,
+                            "Open with Overlay",
                         )
                         .changed()
                     {
                         *changed = true;
                     }
                 });
-            });
 
-            left.add_space(8.0);
-            setting_row(left, "Player Layout", |ui| {
-                if ui
-                    .radio_value(
-                        &mut config_edit.dashboard_player_layout,
-                        DashboardPlayerLayout::Cards,
-                        "Cards",
-                    )
-                    .changed()
-                {
-                    *changed = true;
-                }
-                if ui
-                    .radio_value(
-                        &mut config_edit.dashboard_player_layout,
-                        DashboardPlayerLayout::Table,
-                        "Table",
-                    )
-                    .changed()
-                {
-                    *changed = true;
-                }
-            });
-
-            left.add_space(8.0);
-            setting_row(left, "Touch Counters", |ui| {
-                let debounce_changed = ui
-                    .checkbox(
-                        &mut config_edit.debounce_touch_counters,
-                        "Debounce duplicate touches",
-                    )
-                    .on_hover_text(
-                        "Filters rapid duplicate touch increments before they appear in overlays, dashboard, and history. Ball touches use 200ms; car touches use 450ms.",
-                    )
-                    .changed();
-                if debounce_changed {
-                    if !config_edit.debounce_touch_counters {
-                        config_edit.estimate_teammate_bumps = false;
-                    }
-                    *changed = true;
-                }
-                ui.add_enabled_ui(config_edit.debounce_touch_counters, |ui| {
+                left.add_space(8.0);
+                setting_row(left, "Overlay", |ui| {
                     if ui
                         .checkbox(
-                            &mut config_edit.estimate_teammate_bumps,
-                            "Estimate teammate bumps",
-                        )
-                        .on_hover_text(
-                            "Adds an estimated Team Bumps comparison when two same-team players receive debounced car touches within 450ms and no opponent does.",
+                            &mut config_edit.dashboard_keep_overlay_enabled,
+                            "Keep Overlay Enabled",
                         )
                         .changed()
                     {
                         *changed = true;
                     }
                 });
-                if !config_edit.debounce_touch_counters {
-                    config_edit.estimate_teammate_bumps = false;
-                }
-            });
 
-            setting_row(right, "Window", |ui| {
-                if ui
-                    .checkbox(&mut config_edit.dashboard_fullscreen, "Fullscreen")
-                    .changed()
-                {
-                    *changed = true;
-                }
-            });
+                left.add_space(8.0);
+                setting_row(left, "Display", |ui| {
+                    ui.vertical(|ui| {
+                        if ui
+                            .checkbox(&mut config_edit.dashboard_show_boost, "Show Boost")
+                            .changed()
+                        {
+                            *changed = true;
+                        }
+                        if ui
+                            .checkbox(&mut config_edit.dashboard_show_ranks, "Show Ranks")
+                            .changed()
+                        {
+                            *changed = true;
+                        }
+                        if ui
+                            .checkbox(
+                                &mut config_edit.dashboard_show_team_comparison,
+                                "Team Comparison",
+                            )
+                            .changed()
+                        {
+                            *changed = true;
+                        }
+                        if ui
+                            .checkbox(
+                                &mut config_edit.dashboard_show_event_feed,
+                                "Match Highlights",
+                            )
+                            .changed()
+                        {
+                            *changed = true;
+                        }
+                        if ui
+                            .checkbox(
+                                &mut config_edit.dashboard_show_replay_upload,
+                                "Replay Upload",
+                            )
+                            .changed()
+                        {
+                            *changed = true;
+                        }
+                    });
+                });
 
-            right.add_space(8.0);
-            let monitors = crate::ui::monitor::available_monitors(ctx);
-            setting_row(right, "Monitor", |ui| {
-                if monitors.is_empty() {
+                left.add_space(8.0);
+                setting_row(left, "Player Layout", |ui| {
                     if ui
-                        .add(
-                            egui::DragValue::new(&mut config_edit.dashboard_monitor_index)
-                                .range(0..=16),
+                        .radio_value(
+                            &mut config_edit.dashboard_player_layout,
+                            DashboardPlayerLayout::Cards,
+                            "Cards",
                         )
                         .changed()
                     {
                         *changed = true;
                     }
-                } else {
-                    egui::ComboBox::new("dashboard_monitor_index", "")
-                        .selected_text(config_edit.dashboard_monitor_index.to_string())
-                        .show_ui(ui, |ui| {
-                            for monitor in &monitors {
-                                if ui
-                                    .selectable_value(
-                                        &mut config_edit.dashboard_monitor_index,
-                                        monitor.index,
-                                        monitor.index.to_string(),
-                                    )
-                                    .changed()
-                                {
-                                    *changed = true;
-                                }
+                    if ui
+                        .radio_value(
+                            &mut config_edit.dashboard_player_layout,
+                            DashboardPlayerLayout::Table,
+                            "Table",
+                        )
+                        .changed()
+                    {
+                        *changed = true;
+                    }
+                });
+
+                left.add_space(8.0);
+                setting_row(left, "Touch Counters", |ui| {
+                    ui.vertical(|ui| {
+                        let debounce_changed = ui
+                            .checkbox(
+                                &mut config_edit.debounce_touch_counters,
+                                "Filter duplicate touches",
+                            )
+                            .on_hover_text(
+                                "Filters rapid duplicate touch increments before they appear in overlays, dashboard, and history. Ball touches use 200ms; car touches use 450ms.",
+                            )
+                            .changed();
+                        if debounce_changed {
+                            if !config_edit.debounce_touch_counters {
+                                config_edit.estimate_teammate_bumps = false;
+                            }
+                            *changed = true;
+                        }
+                        ui.add_enabled_ui(config_edit.debounce_touch_counters, |ui| {
+                            if ui
+                                .checkbox(
+                                    &mut config_edit.estimate_teammate_bumps,
+                                    "Estimate teammate bumps",
+                                )
+                                .on_hover_text(
+                                    "Adds an estimated Team Bumps comparison when two same-team players receive debounced car touches within 450ms and no opponent does.",
+                                )
+                                .changed()
+                            {
+                                *changed = true;
                             }
                         });
-                }
-            });
-
-            right.add_space(4.0);
-            right.label(helper_text(crate::ui::monitor::monitor_summary(
-                &monitors,
-                config_edit.dashboard_monitor_index,
-            )));
-            right.label(helper_text(if cfg!(target_os = "windows") {
-                "Monitor indices are enumerated from Windows display geometry."
+                        if !config_edit.debounce_touch_counters {
+                            config_edit.estimate_teammate_bumps = false;
+                        }
+                    });
+                });
             } else {
-                "Monitor index targeting is best-effort on this platform."
-            }));
+                let right = column;
+                right.heading("Window placement");
+                setting_row(right, "Window", |ui| {
+                    if ui
+                        .checkbox(&mut config_edit.dashboard_fullscreen, "Fullscreen")
+                        .changed()
+                    {
+                        *changed = true;
+                    }
+                });
+
+                right.add_space(8.0);
+                let monitors = crate::ui::monitor::available_monitors(ctx);
+                setting_row(right, "Monitor", |ui| {
+                    if monitors.is_empty() {
+                        if ui
+                            .add(
+                                egui::DragValue::new(&mut config_edit.dashboard_monitor_index)
+                                    .range(0..=16),
+                            )
+                            .changed()
+                        {
+                            *changed = true;
+                        }
+                    } else {
+                        egui::ComboBox::new("dashboard_monitor_index", "")
+                            .selected_text(
+                                monitors
+                                    .iter()
+                                    .find(|monitor| {
+                                        monitor.index == config_edit.dashboard_monitor_index
+                                    })
+                                    .map(|monitor| {
+                                        format!(
+                                            "Display {} — {:.0} × {:.0}",
+                                            monitor.index + 1,
+                                            monitor.size[0],
+                                            monitor.size[1]
+                                        )
+                                    })
+                                    .unwrap_or_else(|| {
+                                        format!(
+                                            "Display {}",
+                                            config_edit.dashboard_monitor_index + 1
+                                        )
+                                    }),
+                            )
+                            .show_ui(ui, |ui| {
+                                for monitor in &monitors {
+                                    if ui
+                                        .selectable_value(
+                                            &mut config_edit.dashboard_monitor_index,
+                                            monitor.index,
+                                            format!(
+                                                "Display {} — {:.0} × {:.0}",
+                                                monitor.index + 1,
+                                                monitor.size[0],
+                                                monitor.size[1]
+                                            ),
+                                        )
+                                        .changed()
+                                    {
+                                        *changed = true;
+                                    }
+                                }
+                            });
+                    }
+                });
+
+                right.add_space(4.0);
+                right.label(helper_text(crate::ui::monitor::monitor_summary(
+                    &monitors,
+                    config_edit.dashboard_monitor_index,
+                )));
+                right.label(helper_text(if cfg!(target_os = "windows") {
+                    "Monitor indices are enumerated from Windows display geometry."
+                } else {
+                    "Monitor index targeting is best-effort on this platform."
+                }));
+            }
         });
     });
 
