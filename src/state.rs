@@ -448,34 +448,62 @@ fn release_signing_public_key() -> String {
 pub struct AppPaths {
     pub config_dir: PathBuf,
     pub config_path: PathBuf,
+    #[cfg(test)]
+    test_temp_dir: Arc<tempfile::TempDir>,
 }
 
 impl AppPaths {
     pub fn resolve() -> Self {
+        #[cfg(test)]
+        {
+            let test_temp_dir = Arc::new(
+                tempfile::Builder::new()
+                    .prefix("rl_platform_overlay_state_")
+                    .tempdir()
+                    .expect("failed to create isolated test state directory"),
+            );
+            let config_dir = test_temp_dir.path().to_path_buf();
+            let config_path = config_dir.join("config.toml");
+            Self {
+                config_dir,
+                config_path,
+                test_temp_dir,
+            }
+        }
+
+        #[cfg(not(test))]
         let config_dir = app_config_dir().unwrap_or_else(|| PathBuf::from("."));
+        #[cfg(not(test))]
         let config_path = config_dir.join("config.toml");
+        #[cfg(not(test))]
         Self {
             config_dir,
             config_path,
         }
     }
+
+    fn temp_dir_guard(&self) -> TestTempDirGuard {
+        #[cfg(test)]
+        {
+            TestTempDirGuard(self.test_temp_dir.clone())
+        }
+
+        #[cfg(not(test))]
+        {
+            TestTempDirGuard
+        }
+    }
 }
 
+#[cfg(not(test))]
 fn app_config_dir() -> Option<PathBuf> {
-    #[cfg(test)]
-    {
-        let temp_dir = tempfile::Builder::new()
-            .prefix("rl_platform_overlay_state_")
-            .tempdir()
-            .ok()?;
-        Some(temp_dir.keep())
-    }
-
-    #[cfg(not(test))]
-    {
-        config_dir()
-    }
+    config_dir()
 }
+
+#[cfg(test)]
+struct TestTempDirGuard(#[allow(dead_code)] Arc<tempfile::TempDir>);
+#[cfg(not(test))]
+struct TestTempDirGuard;
 
 #[cfg(test)]
 mod tests {
@@ -608,6 +636,8 @@ mod tests {
     fn app_state_uses_isolated_test_paths() {
         let first = AppState::new();
         let second = AppState::new();
+        let first_config_dir = first.paths.config_dir.clone();
+        let second_config_dir = second.paths.config_dir.clone();
 
         assert_ne!(first.paths.config_dir, second.paths.config_dir);
         assert_ne!(first.paths.config_path, second.paths.config_path);
@@ -623,6 +653,11 @@ mod tests {
             first.paths.config_dir.join("update"),
             second.paths.config_dir.join("update")
         );
+
+        drop(first);
+        drop(second);
+        assert!(!first_config_dir.exists());
+        assert!(!second_config_dir.exists());
     }
 
     #[test]
@@ -773,18 +808,31 @@ enum ConfigWriterMessage {
 }
 
 struct ConfigWriter {
-    sender: std::sync::mpsc::Sender<ConfigWriterMessage>,
+    sender: Option<std::sync::mpsc::Sender<ConfigWriterMessage>>,
+    worker: Option<std::thread::JoinHandle<()>>,
 }
 
 impl ConfigWriter {
-    fn start(path: PathBuf, status: Arc<ArcSwap<ConfigStatus>>) -> Self {
+    fn start(
+        path: PathBuf,
+        status: Arc<ArcSwap<ConfigStatus>>,
+        temp_dir_guard: TestTempDirGuard,
+    ) -> Self {
         let (sender, receiver) = std::sync::mpsc::channel();
-        std::thread::spawn(move || config_writer_loop(receiver, path, status));
-        Self { sender }
+        let worker = std::thread::spawn(move || {
+            let _temp_dir_guard = temp_dir_guard;
+            config_writer_loop(receiver, path, status);
+        });
+        Self {
+            sender: Some(sender),
+            worker: Some(worker),
+        }
     }
 
     fn persist(&self, revision: u64, config: Config) -> Result<(), String> {
         self.sender
+            .as_ref()
+            .ok_or_else(|| "Config writer is unavailable.".to_string())?
             .send(ConfigWriterMessage::Persist {
                 revision,
                 config: Box::new(config),
@@ -795,11 +843,22 @@ impl ConfigWriter {
     fn flush(&self) -> Result<(), String> {
         let (sender, receiver) = std::sync::mpsc::sync_channel(0);
         self.sender
+            .as_ref()
+            .ok_or_else(|| "Config writer is unavailable.".to_string())?
             .send(ConfigWriterMessage::Flush(sender))
             .map_err(|_| "Config writer is unavailable.".to_string())?;
         receiver
             .recv()
             .map_err(|_| "Config writer stopped before flushing.".to_string())?
+    }
+}
+
+impl Drop for ConfigWriter {
+    fn drop(&mut self) {
+        self.sender.take();
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
     }
 }
 
@@ -1359,7 +1418,11 @@ impl AppState {
                 log::error!("Failed to remove migrated replay cache from config: {error}");
             }
         }
-        let config_writer = ConfigWriter::start(paths.config_path.clone(), config_status.clone());
+        let config_writer = ConfigWriter::start(
+            paths.config_path.clone(),
+            config_status.clone(),
+            paths.temp_dir_guard(),
+        );
         let cached_local_player_identity = config.cached_local_player_identity.clone();
         let debug_logging_enabled = config.debug_logging_enabled;
 

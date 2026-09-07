@@ -319,6 +319,62 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn floating_settings_do_not_grow_to_monitor_height() {
+        let state = AppState::new();
+        for (size, zoom, arranging) in [
+            ([640.0, 600.0], 1.0, false),
+            ([760.0, 720.0], 1.0, false),
+            ([760.0, 720.0], 1.25, false),
+            ([640.0, 600.0], 1.0, true),
+        ] {
+            state.update_config(|config| config.layout_mode = arranging);
+            for tab in [
+                SettingsTab::Setup,
+                SettingsTab::Overlay,
+                SettingsTab::Session,
+                SettingsTab::Dashboard,
+                SettingsTab::Boost,
+                SettingsTab::Replays,
+                SettingsTab::History,
+                SettingsTab::Support,
+            ] {
+                let ctx = egui::Context::default();
+                ctx.set_zoom_factor(zoom);
+                let mut app = MainApp::new(state.clone(), None);
+                app.settings_tab = tab;
+                app.last_rl_check = std::time::Instant::now();
+                let mut settled_height = None;
+                for frame in 0..120 {
+                    let _ = ctx.run(egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO, egui::vec2(2560.0, 1440.0))),
+                        ..Default::default()
+                    }, |ctx| {
+                        let window = egui::Window::new("RL Overlay Settings")
+                            .default_pos([16.0, 16.0])
+                            .default_size(size)
+                            .min_width(640.0)
+                            .min_height(520.0)
+                            .constrain_to(ctx.screen_rect().shrink(8.0))
+                            .show(ctx, |ui| app.render_settings_content(ui, ctx, true))
+                            .unwrap();
+                        let height = window.response.rect.height();
+                        if frame == 5 {
+                            settled_height = Some(height);
+                        }
+                        if frame > 5 {
+                            assert!(height <= settled_height.unwrap() + 1.0,
+                                "{tab:?} at {size:?} grew on frame {frame}: {height} vs {settled_height:?}");
+                        }
+                        assert!(height < size[1] + 100.0,
+                            "{tab:?} settings exceed intended height: {height}");
+                    });
+                }
+            }
+        }
+    }
+
     #[test]
     fn process_polling_rechecks_after_interval_even_if_running() {
         let now = std::time::Instant::now();
@@ -539,7 +595,7 @@ impl eframe::App for MainApp {
                 if is_launched != is_layered {
                     set_window_transparency(hwnd, is_launched);
                 }
-                enforce_borderless_style(hwnd);
+                enforce_borderless_style(hwnd, !is_launched);
             }
         }
 
@@ -554,7 +610,16 @@ impl eframe::App for MainApp {
         if self.last_viewport_state != Some(viewport_state) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(fullscreen));
             ctx.send_viewport_cmd(egui::ViewportCommand::MousePassthrough(mouse_passthrough));
-            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(target_size.into()));
+            if self
+                .last_viewport_state
+                .is_none_or(|previous| previous.0 != is_launched)
+                || (is_launched
+                    && self
+                        .last_viewport_state
+                        .is_some_and(|previous| previous.5 != target_size))
+            {
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(target_size.into()));
+            }
             if let Some(pos) = target_pos {
                 ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(pos));
             }
@@ -756,8 +821,11 @@ impl eframe::App for MainApp {
                                     button_style(ui, "🗙", egui::Color32::from_rgb(200, 50, 50));
                                 let min_resp =
                                     button_style(ui, "🗕", egui::Color32::from_rgb(60, 60, 70));
+                                let max_resp =
+                                    button_style(ui, "□", egui::Color32::from_rgb(60, 60, 70))
+                                        .on_hover_text("Maximize / Restore");
 
-                                (close_resp, min_resp)
+                                (close_resp, min_resp, max_resp)
                             })
                             .inner;
 
@@ -775,22 +843,58 @@ impl eframe::App for MainApp {
                             ui.ctx()
                                 .send_viewport_cmd(egui::ViewportCommand::Minimized(true));
                         }
+                        if button_rects.2.clicked() {
+                            let maximized =
+                                ctx.input(|input| input.viewport().maximized.unwrap_or(false));
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
+                        }
 
                         // Drag region covers everything except the buttons
                         let title_bar_rect = ui.max_rect();
-                        let buttons_left_x = button_rects.1.rect.left();
+                        let buttons_left_x = button_rects.2.rect.left();
                         let drag_rect = egui::Rect::from_min_max(
                             title_bar_rect.left_top(),
                             egui::pos2(buttons_left_x - 4.0, title_bar_rect.bottom()),
                         );
 
                         let drag_id = ui.id().with("title_bar_drag");
-                        let drag_response = ui.interact(drag_rect, drag_id, egui::Sense::drag());
-                        if drag_response.is_pointer_button_down_on() {
+                        let drag_response =
+                            ui.interact(drag_rect, drag_id, egui::Sense::click_and_drag());
+                        if drag_response.double_clicked() {
+                            let maximized =
+                                ctx.input(|input| input.viewport().maximized.unwrap_or(false));
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
+                        } else if drag_response.drag_started() {
                             ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
                         }
                     });
                 });
+
+            if !ctx.input(|input| input.viewport().maximized.unwrap_or(false)) {
+                egui::Area::new(egui::Id::new("settings_resize_grip"))
+                    .order(egui::Order::Foreground)
+                    .anchor(egui::Align2::RIGHT_BOTTOM, [-2.0, -2.0])
+                    .movable(false)
+                    .show(ctx, |ui| {
+                        let (rect, response) =
+                            ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::drag());
+                        let response = response.on_hover_cursor(egui::CursorIcon::ResizeNwSe);
+                        for offset in [4.0, 9.0, 14.0] {
+                            ui.painter().line_segment(
+                                [
+                                    rect.right_bottom() - egui::vec2(offset, 0.0),
+                                    rect.right_bottom() - egui::vec2(0.0, offset),
+                                ],
+                                egui::Stroke::new(1.0_f32, egui::Color32::from_gray(150)),
+                            );
+                        }
+                        if response.drag_started() {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::BeginResize(
+                                egui::ResizeDirection::SouthEast,
+                            ));
+                        }
+                    });
+            }
 
             if show_settings {
                 egui::CentralPanel::default()
@@ -1005,8 +1109,8 @@ fn set_window_transparency(hwnd: isize, transparent: bool) {
     }
 }
 
-/// Enforces a borderless style on Windows by stripping decorations, title captions, resize borders,
-/// and native system menu caption buttons.
+/// Keeps the custom title bar on Windows, while allowing native resize and
+/// maximize behavior when the overlay is stopped. The launched HUD has no frame.
 ///
 /// This is called on every frame update on Windows because window management updates inside `winit`'s
 /// event loop (like resizing or repositioning) can asynchronously reset window styles and re-apply
@@ -1016,7 +1120,7 @@ fn set_window_transparency(hwnd: isize, transparent: bool) {
 /// `WS_MINIMIZEBOX`, `WS_MAXIMIZEBOX`) are set, strips them if present via `SetWindowLongW`,
 /// and issues `SetWindowPos` with `SWP_FRAMECHANGED` to force Windows to re-evaluate the frame.
 #[cfg(target_os = "windows")]
-fn enforce_borderless_style(hwnd: isize) {
+fn enforce_borderless_style(hwnd: isize, resizable: bool) {
     use winapi::shared::windef::HWND;
     use winapi::um::winuser::{
         GWL_STYLE, GetWindowLongW, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
@@ -1027,8 +1131,11 @@ fn enforce_borderless_style(hwnd: isize) {
     let hwnd = hwnd as HWND;
     unsafe {
         let style = GetWindowLongW(hwnd, GWL_STYLE);
-        let target_style = style
+        let mut target_style = style
             & !(WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX) as i32;
+        if resizable {
+            target_style |= (WS_THICKFRAME | WS_MAXIMIZEBOX | WS_MINIMIZEBOX) as i32;
+        }
         if style != target_style {
             SetWindowLongW(hwnd, GWL_STYLE, target_style);
             SetWindowPos(
@@ -1069,12 +1176,34 @@ impl MainApp {
             crate::history::request_all_player_history_refresh(&self.state, false);
         }
 
-        let footer_height = if ui.available_width() < 620.0 || config_edit.layout_mode {
-            82.0
-        } else {
-            50.0
-        };
-        let content_height = (ui.available_height() - footer_height).max(0.0);
+        // Lay out the footer from the bottom first, then give the page exactly
+        // the space left above it. Estimating the footer height can cause a
+        // floating Window to grow every frame when controls wrap or scale.
+        let mut footer_bounds = ui.available_rect_before_wrap();
+        // Leave a small inset for Window's frame/resize rounding, including
+        // fractional display scaling, so rounding cannot accumulate each frame.
+        footer_bounds.max.y -= 2.0;
+        let mut footer_ui = ui.new_child(
+            egui::UiBuilder::new()
+                .id_salt("settings_footer")
+                .max_rect(footer_bounds)
+                .layout(egui::Layout::bottom_up(egui::Align::Min)),
+        );
+        let arrange_action = render_launch_controls(
+            &mut footer_ui,
+            ctx,
+            &self.state,
+            is_launched,
+            config_edit,
+            &mut changed,
+            &mut self.confirm_modal,
+        );
+        footer_ui.add_space(4.0);
+        footer_ui.separator();
+        footer_ui.add_space(8.0);
+        let footer_rect = footer_ui.min_rect();
+        let content_height =
+            (footer_rect.top() - ui.cursor().top() - ui.spacing().item_spacing.y).max(0.0);
         let page = egui::ScrollArea::vertical()
             .id_salt(("settings_page", self.settings_tab as u8))
             .auto_shrink([false, false])
@@ -1156,18 +1285,7 @@ impl MainApp {
             });
         self.settings_content_overflow = page.content_size.y > page.inner_rect.height() + 1.0;
 
-        ui.add_space(8.0);
-        ui.separator();
-        ui.add_space(4.0);
-        let arrange_action = render_launch_controls(
-            ui,
-            ctx,
-            &self.state,
-            is_launched,
-            config_edit,
-            &mut changed,
-            &mut self.confirm_modal,
-        );
+        ui.advance_cursor_after_rect(footer_rect);
 
         match arrange_action {
             Some(ArrangeHudAction::Start) => {

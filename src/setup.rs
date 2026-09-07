@@ -320,6 +320,16 @@ mod tests {
     use super::*;
     use std::sync::{Mutex, OnceLock};
 
+    struct TestConfigDirCleanup;
+
+    impl Drop for TestConfigDirCleanup {
+        fn drop(&mut self) {
+            if let Some(path) = crate::state::config_dir() {
+                let _ = fs::remove_dir_all(path);
+            }
+        }
+    }
+
     fn backup_lock() -> std::sync::MutexGuard<'static, ()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
@@ -351,6 +361,7 @@ mod tests {
     #[test]
     fn updates_packet_send_rate_and_preserves_port() {
         let _guard = backup_lock();
+        let _config_dir_cleanup = TestConfigDirCleanup;
         let root = temp_root("update");
         let ini = stats_ini_path(&root.to_string_lossy());
         fs::write(
@@ -372,6 +383,7 @@ mod tests {
     #[test]
     fn overwrites_single_app_config_backup() {
         let _guard = backup_lock();
+        let _config_dir_cleanup = TestConfigDirCleanup;
         let root = temp_root("single_backup");
         let ini = stats_ini_path(&root.to_string_lossy());
         fs::write(

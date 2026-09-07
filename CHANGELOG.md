@@ -8,6 +8,17 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [0.1.50] - 2026-09-06
+
+### Added
+- **Window Controls & Maximizing**: Added title bar minimize, maximize/restore, and close buttons, plus double-click to maximize or restore the settings window.
+- **Resizable Settings Window**: The settings window can now be freely resized, with a bottom-right resize grip and native edge resizing.
+
+### Fixed
+- **Settings Footer Stability**: Fixed layout measurements so the bottom action controls stay cleanly anchored without causing window size drift or unwanted page clipping.
+
+---
+
 ## [0.1.49] - 2026-09-06
 
 ### Added

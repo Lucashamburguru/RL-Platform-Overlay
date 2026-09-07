@@ -60,6 +60,7 @@ pub async fn run(debug_enabled: bool) -> eframe::Result<()> {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([760.0, 820.0])
             .with_min_inner_size([640.0, 600.0])
+            .with_resizable(true)
             .with_transparent(true)
             .with_decorations(false)
             .with_title("RL Overlay Settings"),
