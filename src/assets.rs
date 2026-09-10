@@ -163,24 +163,48 @@ impl Default for RocketLeagueProcessWatcher {
 }
 
 pub(crate) fn is_rocket_league_name(name: &OsStr) -> bool {
-    let normalized = name.to_string_lossy().to_lowercase();
-    normalized == "rocketleague.exe"
-        || normalized == "rocketleague.ex"
-        || normalized == "rocketleague"
-        || normalized == "rocketleague-linux-shipping"
+    // Use zero-allocation equality check instead of allocating a new lowercase string
+    let name_str = name.to_string_lossy();
+    name_str.eq_ignore_ascii_case("rocketleague.exe")
+        || name_str.eq_ignore_ascii_case("rocketleague.ex")
+        || name_str.eq_ignore_ascii_case("rocketleague")
+        || name_str.eq_ignore_ascii_case("rocketleague-linux-shipping")
 }
 
 fn rocket_league_argument_match(argument: &OsStr) -> Option<String> {
-    let normalized = argument.to_string_lossy().to_lowercase().replace('\\', "/");
-    if normalized.contains("rocketleague.exe")
-        || normalized.contains("rocketleague_eac.exe")
-        || normalized.contains("rocketleague-linux-shipping")
-        || normalized.contains("rocketleague/binaries")
-    {
-        Some(format!("command: {}", argument.to_string_lossy()))
-    } else {
-        None
+    // Avoid heap allocation by not converting the entire string to lowercase
+    // and replacing backslashes. Instead, use zero-allocation substring matching.
+    let arg_str = argument.to_string_lossy();
+    let arg_bytes = arg_str.as_bytes();
+
+    let matches = [
+        "rocketleague.exe",
+        "rocketleague_eac.exe",
+        "rocketleague-linux-shipping",
+        "rocketleague/binaries",
+    ];
+
+    for needle in matches {
+        let needle_bytes = needle.as_bytes();
+        if needle_bytes.is_empty() || arg_bytes.len() < needle_bytes.len() {
+            continue;
+        }
+
+        if arg_bytes.windows(needle_bytes.len()).any(|window| {
+            window.iter().zip(needle_bytes.iter()).all(|(&h, &n)| {
+                // Normalize on the fly
+                let norm_h = if h == b'\\' {
+                    b'/'
+                } else {
+                    h.to_ascii_lowercase()
+                };
+                norm_h == n
+            })
+        }) {
+            return Some(format!("command: {}", arg_str));
+        }
     }
+    None
 }
 
 #[allow(dead_code)]
