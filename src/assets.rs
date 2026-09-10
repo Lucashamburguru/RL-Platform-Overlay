@@ -162,25 +162,41 @@ impl Default for RocketLeagueProcessWatcher {
     }
 }
 
+// Bolt: Avoid allocating a new String with to_lowercase() during process scanning
 pub(crate) fn is_rocket_league_name(name: &OsStr) -> bool {
-    let normalized = name.to_string_lossy().to_lowercase();
-    normalized == "rocketleague.exe"
-        || normalized == "rocketleague.ex"
-        || normalized == "rocketleague"
-        || normalized == "rocketleague-linux-shipping"
+    let name_str = name.to_string_lossy();
+    name_str.eq_ignore_ascii_case("rocketleague.exe")
+        || name_str.eq_ignore_ascii_case("rocketleague.ex")
+        || name_str.eq_ignore_ascii_case("rocketleague")
+        || name_str.eq_ignore_ascii_case("rocketleague-linux-shipping")
 }
 
 fn rocket_league_argument_match(argument: &OsStr) -> Option<String> {
-    let normalized = argument.to_string_lossy().to_lowercase().replace('\\', "/");
-    if normalized.contains("rocketleague.exe")
-        || normalized.contains("rocketleague_eac.exe")
-        || normalized.contains("rocketleague-linux-shipping")
-        || normalized.contains("rocketleague/binaries")
-    {
-        Some(format!("command: {}", argument.to_string_lossy()))
-    } else {
-        None
+    let arg_str = argument.to_string_lossy();
+    let arg_bytes = arg_str.as_bytes();
+
+    let targets = [
+        "rocketleague.exe",
+        "rocketleague_eac.exe",
+        "rocketleague-linux-shipping",
+        "rocketleague/binaries",
+    ];
+
+    for target in targets {
+        let target_bytes = target.as_bytes();
+        if arg_bytes.len() >= target_bytes.len() {
+            let found = arg_bytes.windows(target_bytes.len()).any(|window| {
+                window.iter().zip(target_bytes.iter()).all(|(&w, &t)| {
+                    let normalized_w = if w == b'\\' { b'/' } else { w };
+                    normalized_w.eq_ignore_ascii_case(&t)
+                })
+            });
+            if found {
+                return Some(format!("command: {}", arg_str));
+            }
+        }
     }
+    None
 }
 
 #[allow(dead_code)]

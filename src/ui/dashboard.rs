@@ -1151,7 +1151,7 @@ fn render_player_row(ui: &mut egui::Ui, row: &DashboardPlayerRow, config: &Confi
 }
 
 fn vertical_divider(ui: &mut egui::Ui, height: f32) {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(1.0, height), egui::Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(1.0_f32, height), egui::Sense::hover());
     ui.painter()
         .rect_filled(rect, 0.5, egui::Color32::from_rgb(42, 49, 60));
 }
