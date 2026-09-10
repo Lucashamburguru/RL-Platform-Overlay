@@ -121,7 +121,7 @@ pub(super) fn render_update_notice(ui: &mut egui::Ui, state: &Arc<AppState>) {
             });
         } else if !auto_update_status.error.is_empty() {
             ui.colored_label(
-                egui::Color32::from_rgb(230, 120, 80),
+                egui::Color32::from_rgb(230, 100, 80),
                 auto_update_status.error.as_str(),
             );
         } else if cfg!(target_os = "windows")
@@ -130,7 +130,7 @@ pub(super) fn render_update_notice(ui: &mut egui::Ui, state: &Arc<AppState>) {
                 || version_check.windows_signature_url.is_empty())
         {
             ui.colored_label(
-                egui::Color32::from_rgb(230, 120, 80),
+                egui::Color32::from_rgb(230, 100, 80),
                 "Automatic update is unavailable for this release. Use the release link.",
             );
         }
