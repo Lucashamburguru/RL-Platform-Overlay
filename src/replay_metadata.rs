@@ -505,6 +505,7 @@ impl<'a> HeaderParser<'a> {
                 .checked_mul(-2)
                 .ok_or_else(|| format!("{section} length overflowed"))?;
             let bytes = self.take(byte_len as usize, section)?;
+            #[allow(unknown_lints)]
             let code_units: Vec<u16> = bytes
                 .as_chunks::<2>()
                 .0
