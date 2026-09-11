@@ -163,11 +163,12 @@ impl Default for RocketLeagueProcessWatcher {
 }
 
 pub(crate) fn is_rocket_league_name(name: &OsStr) -> bool {
-    let normalized = name.to_string_lossy().to_lowercase();
-    normalized == "rocketleague.exe"
-        || normalized == "rocketleague.ex"
-        || normalized == "rocketleague"
-        || normalized == "rocketleague-linux-shipping"
+    let name_str = name.to_string_lossy();
+    // Bolt: Avoid String allocation for equality checks
+    name_str.eq_ignore_ascii_case("rocketleague.exe")
+        || name_str.eq_ignore_ascii_case("rocketleague.ex")
+        || name_str.eq_ignore_ascii_case("rocketleague")
+        || name_str.eq_ignore_ascii_case("rocketleague-linux-shipping")
 }
 
 fn rocket_league_argument_match(argument: &OsStr) -> Option<String> {
