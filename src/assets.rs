@@ -163,21 +163,41 @@ impl Default for RocketLeagueProcessWatcher {
 }
 
 pub(crate) fn is_rocket_league_name(name: &OsStr) -> bool {
-    let normalized = name.to_string_lossy().to_lowercase();
-    normalized == "rocketleague.exe"
-        || normalized == "rocketleague.ex"
-        || normalized == "rocketleague"
-        || normalized == "rocketleague-linux-shipping"
+    let lossy = name.to_string_lossy();
+    lossy.eq_ignore_ascii_case("rocketleague.exe")
+        || lossy.eq_ignore_ascii_case("rocketleague.ex")
+        || lossy.eq_ignore_ascii_case("rocketleague")
+        || lossy.eq_ignore_ascii_case("rocketleague-linux-shipping")
 }
 
 fn rocket_league_argument_match(argument: &OsStr) -> Option<String> {
-    let normalized = argument.to_string_lossy().to_lowercase().replace('\\', "/");
-    if normalized.contains("rocketleague.exe")
-        || normalized.contains("rocketleague_eac.exe")
-        || normalized.contains("rocketleague-linux-shipping")
-        || normalized.contains("rocketleague/binaries")
+    let arg_str = argument.to_string_lossy();
+    let bytes = arg_str.as_bytes();
+
+    // Zero-allocation substring match that handles both case-insensitivity and Windows path slashes
+    let contains_ignore_case_and_slash = |needle: &str| {
+        let n_bytes = needle.as_bytes();
+        if n_bytes.is_empty() {
+            return true;
+        }
+        bytes.windows(n_bytes.len()).any(|w| {
+            w.iter().zip(n_bytes).all(|(&c, &n)| {
+                let c_norm = if c == b'\\' {
+                    b'/'
+                } else {
+                    c.to_ascii_lowercase()
+                };
+                c_norm == n
+            })
+        })
+    };
+
+    if contains_ignore_case_and_slash("rocketleague.exe")
+        || contains_ignore_case_and_slash("rocketleague_eac.exe")
+        || contains_ignore_case_and_slash("rocketleague-linux-shipping")
+        || contains_ignore_case_and_slash("rocketleague/binaries")
     {
-        Some(format!("command: {}", argument.to_string_lossy()))
+        Some(format!("command: {}", arg_str))
     } else {
         None
     }
