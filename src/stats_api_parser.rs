@@ -286,15 +286,16 @@ pub fn result_signature(
     })
 }
 
+// Optimize: Avoid allocating string via to_lowercase by using zero-allocation equality
 pub fn result_from_winner(winner: &str, local_team: u8) -> Option<MatchResult> {
     let local_team = standard_team(local_team)?;
-    let normalized = winner.trim().to_lowercase();
-    if normalized.is_empty() {
+    let trimmed = winner.trim();
+    if trimmed.is_empty() {
         return None;
     }
-    let winner_team = match normalized.as_str() {
-        "blue" => Some(0),
-        "orange" => Some(1),
+    let winner_team = match trimmed {
+        w if w.eq_ignore_ascii_case("blue") => Some(0),
+        w if w.eq_ignore_ascii_case("orange") => Some(1),
         _ => None,
     }?;
     Some(if winner_team == local_team {
