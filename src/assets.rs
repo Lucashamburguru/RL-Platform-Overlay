@@ -162,22 +162,43 @@ impl Default for RocketLeagueProcessWatcher {
     }
 }
 
+// ⚡ Bolt optimization: Avoid string allocations by using eq_ignore_ascii_case
 pub(crate) fn is_rocket_league_name(name: &OsStr) -> bool {
-    let normalized = name.to_string_lossy().to_lowercase();
-    normalized == "rocketleague.exe"
-        || normalized == "rocketleague.ex"
-        || normalized == "rocketleague"
-        || normalized == "rocketleague-linux-shipping"
+    let lossy = name.to_string_lossy();
+    lossy.eq_ignore_ascii_case("rocketleague.exe")
+        || lossy.eq_ignore_ascii_case("rocketleague.ex")
+        || lossy.eq_ignore_ascii_case("rocketleague")
+        || lossy.eq_ignore_ascii_case("rocketleague-linux-shipping")
 }
 
+// ⚡ Bolt optimization: Zero-allocation case-insensitive path substring matching
 fn rocket_league_argument_match(argument: &OsStr) -> Option<String> {
-    let normalized = argument.to_string_lossy().to_lowercase().replace('\\', "/");
-    if normalized.contains("rocketleague.exe")
-        || normalized.contains("rocketleague_eac.exe")
-        || normalized.contains("rocketleague-linux-shipping")
-        || normalized.contains("rocketleague/binaries")
+    let lossy = argument.to_string_lossy();
+    let bytes = lossy.as_bytes();
+
+    let contains_ignore_case = |needle: &str| -> bool {
+        if needle.is_empty() {
+            return true;
+        }
+        let needle_len = needle.len();
+        bytes.windows(needle_len).any(|window| {
+            window.iter().zip(needle.as_bytes().iter()).all(|(&c, &n)| {
+                let c_norm = if c == b'\\' {
+                    b'/'
+                } else {
+                    c.to_ascii_lowercase()
+                };
+                c_norm == n.to_ascii_lowercase()
+            })
+        })
+    };
+
+    if contains_ignore_case("rocketleague.exe")
+        || contains_ignore_case("rocketleague_eac.exe")
+        || contains_ignore_case("rocketleague-linux-shipping")
+        || contains_ignore_case("rocketleague/binaries")
     {
-        Some(format!("command: {}", argument.to_string_lossy()))
+        Some(format!("command: {}", lossy))
     } else {
         None
     }
