@@ -1191,9 +1191,22 @@ pub fn start_download_replay_task(state: Arc<AppState>, replay_id: String) {
 }
 
 pub fn format_uuid_with_dashes(s: &str) -> Option<String> {
-    let clean: String = s.chars().filter(|c| c.is_ascii_hexdigit()).collect();
-    if clean.len() == 32 {
-        let clean = clean.to_lowercase();
+    // Bolt: Avoid intermediate String allocation by iterating directly
+    let mut clean_bytes = [0u8; 32];
+    let mut idx = 0;
+
+    for b in s.bytes() {
+        if b.is_ascii_hexdigit() {
+            if idx >= 32 {
+                return None; // too many hex digits
+            }
+            clean_bytes[idx] = b.to_ascii_lowercase();
+            idx += 1;
+        }
+    }
+
+    if idx == 32 {
+        let clean = std::str::from_utf8(&clean_bytes).unwrap();
         Some(format!(
             "{}-{}-{}-{}-{}",
             &clean[0..8],
@@ -1202,8 +1215,11 @@ pub fn format_uuid_with_dashes(s: &str) -> Option<String> {
             &clean[16..20],
             &clean[20..32]
         ))
-    } else if clean.len() == 36 && s.contains('-') {
-        Some(s.to_lowercase())
+    } else if s.len() == 36
+        && s.contains('-')
+        && s.bytes().all(|c| c.is_ascii_hexdigit() || c == b'-')
+    {
+        Some(s.to_ascii_lowercase())
     } else {
         None
     }
@@ -1268,8 +1284,11 @@ async fn run_download_replay(state: Arc<AppState>, replay_id: String) -> Result<
     match tokio::fs::read_dir(&replays_dir).await {
         Ok(mut entries) => {
             while let Ok(Some(entry)) = entries.next_entry().await {
-                if entry.file_name().to_str().map(|s| s.to_lowercase())
-                    == Some(target_filename.to_lowercase())
+                // Bolt: Avoid allocations during case-insensitive directory scan
+                if entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|s| s.eq_ignore_ascii_case(&target_filename))
                 {
                     let path = entry.path();
                     if crate::replay_metadata::validate_replay_file_strict(&path).is_ok() {

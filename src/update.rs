@@ -384,7 +384,6 @@ fn parse_version(version: &str) -> Option<Version> {
 #[cfg(any(target_os = "windows", test))]
 fn parse_checksum(content: &str, asset_name: &str) -> Option<String> {
     let content = content.trim_start_matches('\u{feff}');
-    let asset_lower = asset_name.to_lowercase();
 
     // First, try to find a line containing the asset name and a 64-char hex hash
     if let Some(hash) = content.lines().find_map(|line| {
@@ -392,8 +391,20 @@ fn parse_checksum(content: &str, asset_name: &str) -> Option<String> {
         if trimmed.is_empty() {
             return None;
         }
-        let line_lower = trimmed.to_lowercase();
-        if !line_lower.contains(&asset_lower) {
+
+        // Bolt: Zero-allocation case-insensitive substring search
+        let asset_bytes = asset_name.as_bytes();
+        let contains_asset = if asset_bytes.is_empty() {
+            true
+        } else {
+            trimmed.as_bytes().windows(asset_bytes.len()).any(|w| {
+                w.iter()
+                    .zip(asset_bytes)
+                    .all(|(&c, &n)| c.to_ascii_lowercase() == n.to_ascii_lowercase())
+            })
+        };
+
+        if !contains_asset {
             return None;
         }
         trimmed
@@ -419,11 +430,23 @@ fn parse_checksum(content: &str, asset_name: &str) -> Option<String> {
 #[cfg(any(target_os = "windows", test))]
 fn parse_signature(content: &str, asset_name: &str) -> Option<Vec<u8>> {
     let content = content.trim_start_matches('\u{feff}');
-    let asset_lower = asset_name.to_lowercase();
 
     if let Some(signature) = content.lines().find_map(|line| {
         let trimmed = line.trim();
-        if trimmed.is_empty() || !trimmed.to_lowercase().contains(&asset_lower) {
+
+        // Bolt: Zero-allocation case-insensitive substring search
+        let asset_bytes = asset_name.as_bytes();
+        let contains_asset = if asset_bytes.is_empty() {
+            true
+        } else {
+            trimmed.as_bytes().windows(asset_bytes.len()).any(|w| {
+                w.iter()
+                    .zip(asset_bytes)
+                    .all(|(&c, &n)| c.to_ascii_lowercase() == n.to_ascii_lowercase())
+            })
+        };
+
+        if trimmed.is_empty() || !contains_asset {
             return None;
         }
         trimmed.split_whitespace().find_map(decode_signature_token)

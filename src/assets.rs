@@ -163,21 +163,44 @@ impl Default for RocketLeagueProcessWatcher {
 }
 
 pub(crate) fn is_rocket_league_name(name: &OsStr) -> bool {
-    let normalized = name.to_string_lossy().to_lowercase();
-    normalized == "rocketleague.exe"
-        || normalized == "rocketleague.ex"
-        || normalized == "rocketleague"
-        || normalized == "rocketleague-linux-shipping"
+    // Bolt: Avoid String allocation for filename comparison
+    let n = name.to_string_lossy();
+    n.eq_ignore_ascii_case("rocketleague.exe")
+        || n.eq_ignore_ascii_case("rocketleague.ex")
+        || n.eq_ignore_ascii_case("rocketleague")
+        || n.eq_ignore_ascii_case("rocketleague-linux-shipping")
 }
 
 fn rocket_league_argument_match(argument: &OsStr) -> Option<String> {
-    let normalized = argument.to_string_lossy().to_lowercase().replace('\\', "/");
-    if normalized.contains("rocketleague.exe")
-        || normalized.contains("rocketleague_eac.exe")
-        || normalized.contains("rocketleague-linux-shipping")
-        || normalized.contains("rocketleague/binaries")
-    {
-        Some(format!("command: {}", argument.to_string_lossy()))
+    let arg_lossy = argument.to_string_lossy();
+
+    // Bolt: Zero-allocation case-insensitive substring matching with path normalization
+    let is_match = [
+        "rocketleague.exe",
+        "rocketleague_eac.exe",
+        "rocketleague-linux-shipping",
+        "rocketleague/binaries",
+    ]
+    .iter()
+    .any(|needle| {
+        let needle_bytes = needle.as_bytes();
+        if needle_bytes.is_empty() {
+            return false;
+        }
+        arg_lossy.as_bytes().windows(needle_bytes.len()).any(|w| {
+            w.iter().zip(needle_bytes).all(|(&c, &n)| {
+                let c_norm = if c == b'\\' {
+                    b'/'
+                } else {
+                    c.to_ascii_lowercase()
+                };
+                c_norm == n
+            })
+        })
+    });
+
+    if is_match {
+        Some(format!("command: {}", arg_lossy))
     } else {
         None
     }
