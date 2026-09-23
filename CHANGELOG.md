@@ -8,6 +8,18 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [0.1.51] - 2026-09-23
+
+### Added
+- **Item Swapper**: Browse and search the Rocket League item catalog (bodies, wheels, boosts, trails, goal explosions, toppers, antennas, and paint finishes) and swap appearances locally. Swaps are dynamically generated from installed game files with individual pristine backups for easy restoration.
+- **Dynamic Gold Rush Generation**: Alpha Boost visuals are now dynamically built directly from your installed UPKs and up-to-date package keys, automatically adapting to game updates while preserving verified backups.
+
+### Changed
+- **Resilient Rank & MMR Lookups**: Added automatic fallback to Tracker Network when the primary MMR provider encounters temporary PsyNet access denials, with intelligent cooldown handling to keep rank displays active.
+- **Modularized Architecture**: Refactored network telemetry transport, touch tracking, and Ballchasing cloud sync/download services into dedicated modules for improved maintainability.
+
+---
+
 ## [0.1.50] - 2026-09-06
 
 ### Added

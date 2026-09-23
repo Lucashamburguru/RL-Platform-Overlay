@@ -11,6 +11,8 @@ pub mod stats_api_parser;
 mod assets;
 mod diagnostics;
 mod input;
+#[cfg(not(feature = "microsoft-store"))]
+mod item_swapper;
 mod mmr;
 pub mod network;
 pub mod session;
@@ -19,6 +21,7 @@ pub mod state;
 mod ui;
 #[cfg(not(feature = "microsoft-store"))]
 pub mod update;
+mod upk_swap;
 
 use eframe::egui;
 use state::AppState;

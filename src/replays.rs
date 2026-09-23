@@ -1,15 +1,17 @@
-use crate::json_utils::number_field_i32;
 use crate::state::{AppState, ReplayUploadProgress};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 use std::time::Duration;
-use tokio::io::AsyncWriteExt;
-use url::Url;
+
+mod cloud_sync;
+mod download;
+
+pub use cloud_sync::{maybe_start_initial_replay_cache_sync, start_sync_replays_task};
+pub use download::{format_uuid_with_dashes, start_download_replay_task};
 
 const BULK_UPLOAD_DELAY_SECS: u64 = 30;
-const BALLCHASING_API_BASE: &str = "https://ballchasing.com/api/";
 
 #[derive(Clone)]
 struct ReplayFile {
@@ -927,512 +929,6 @@ fn push_event(progress: &mut ReplayUploadProgress, event: String) {
     }
 }
 
-pub fn maybe_start_initial_replay_cache_sync(state: &Arc<AppState>) -> bool {
-    if state
-        .system
-        .config
-        .load()
-        .ballchasing_api_key
-        .trim()
-        .is_empty()
-    {
-        return false;
-    }
-
-    if state
-        .replays
-        .initial_cache_sync_started
-        .swap(true, Ordering::SeqCst)
-    {
-        return false;
-    }
-
-    start_sync_replays_task(state.clone())
-}
-
-pub fn start_sync_replays_task(state: Arc<AppState>) -> bool {
-    let Ok(operation_guard) = state.replays.maintenance_gate.clone().try_read_owned() else {
-        return false;
-    };
-    if state.replays.sync_running.swap(true, Ordering::SeqCst) {
-        return false;
-    }
-
-    tokio::spawn(async move {
-        let _operation_guard = operation_guard;
-        let state_clone = state.clone();
-        if let Err(e) = run_sync_replays(state).await {
-            set_status(&state_clone, &format!("Error: Sync failed ({e})"));
-            log::error!("Sync replays execution error: {e}");
-        }
-        state_clone
-            .replays
-            .sync_running
-            .store(false, Ordering::SeqCst);
-    });
-    true
-}
-
-fn parse_cloud_metadata(
-    item: &serde_json::Value,
-) -> Option<crate::replay_metadata::ReplayMetadataEntry> {
-    let id = item["id"].as_str()?;
-    let filename = format!("{}.replay", id.to_lowercase());
-
-    let display_name = item["replay_title"]
-        .as_str()
-        .or_else(|| item["title"].as_str())
-        .filter(|s| !s.trim().is_empty())
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| id.to_string());
-
-    let date = item["date"]
-        .as_str()
-        .or_else(|| item["match_date"].as_str())
-        .or_else(|| item["created"].as_str())
-        .unwrap_or("")
-        .to_string();
-
-    let map_name = item["map_name"]
-        .as_str()
-        .or_else(|| item["map_code"].as_str())
-        .unwrap_or("")
-        .to_string();
-
-    let team0_score = number_field_i32(&item["blue"], &["score"]);
-    let team1_score = number_field_i32(&item["orange"], &["score"]);
-
-    let mut player_names = Vec::new();
-    if let Some(players) = item["blue"]["players"].as_array() {
-        for p in players {
-            if let Some(name) = p["name"].as_str() {
-                player_names.push(name.to_string());
-            }
-        }
-    }
-    if let Some(players) = item["orange"]["players"].as_array() {
-        for p in players {
-            if let Some(name) = p["name"].as_str() {
-                player_names.push(name.to_string());
-            }
-        }
-    }
-
-    let match_type = item["playlist_name"]
-        .as_str()
-        .or_else(|| item["playlist_id"].as_str())
-        .unwrap_or("")
-        .to_string();
-
-    let player_name = item["uploader"]["name"].as_str().unwrap_or("").to_string();
-
-    Some(crate::replay_metadata::ReplayMetadataEntry {
-        filename,
-        display_name,
-        date,
-        map_name,
-        team0_score,
-        team1_score,
-        player_names,
-        players: Vec::new(),
-        goals: Vec::new(),
-        replay_id: id.to_string(),
-        duration_seconds: None,
-        frame_count: None,
-        file_size: 0, // Mark as cloud entry
-        modified_unix_secs: None,
-        error: String::new(),
-        player_name,
-        match_type,
-    })
-}
-
-fn validated_ballchasing_api_url(raw: &str) -> Result<Url, String> {
-    let base = Url::parse(BALLCHASING_API_BASE)
-        .map_err(|error| format!("Ballchasing API base URL is invalid: {error}"))?;
-    let url = base
-        .join(raw)
-        .map_err(|error| format!("Invalid Ballchasing pagination URL: {error}"))?;
-    let valid_path = url.path() == "/api" || url.path().starts_with("/api/");
-    if url.scheme() != "https"
-        || url.host_str() != Some("ballchasing.com")
-        || url.port_or_known_default() != Some(443)
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || url.fragment().is_some()
-        || !valid_path
-    {
-        return Err(format!(
-            "Rejected untrusted Ballchasing pagination URL: {url}"
-        ));
-    }
-    Ok(url)
-}
-
-async fn run_sync_replays(state: Arc<AppState>) -> Result<(), String> {
-    let config = state.system.config.load();
-    let api_key = config.ballchasing_api_key.trim().to_string();
-    if api_key.is_empty() {
-        set_status(&state, "Error: API key is empty");
-        return Ok(());
-    }
-
-    set_status(&state, "Syncing from ballchasing.com...");
-
-    let client = &state.system.ballchasing_client;
-
-    let mut next_url = Some(validated_ballchasing_api_url(
-        "replays?uploader=me&count=200",
-    )?);
-    let mut fetched_ids = Vec::new();
-    let mut cloud_entries = Vec::new();
-    let mut pages_fetched = 0;
-
-    // Fetch up to 500 replays (capping at 3 pages max to prevent infinite loops)
-    while let Some(url) = next_url.take() {
-        if pages_fetched >= 3 {
-            break;
-        }
-
-        let response = client
-            .get(url.as_str())
-            .header("Authorization", &api_key)
-            .send()
-            .await
-            .map_err(|e| format!("Network request failed: {e}"))?;
-
-        let status = response.status();
-        if !status.is_success() {
-            set_status(&state, &format!("Error: Sync failed (HTTP {})", status));
-            return Ok(());
-        }
-
-        let body = response
-            .text()
-            .await
-            .map_err(|e| format!("Failed to read body: {e}"))?;
-        let json: serde_json::Value = serde_json::from_str(&body)
-            .map_err(|e| format!("Failed to parse response JSON: {e}"))?;
-
-        if let Some(list) = json["list"].as_array() {
-            for item in list {
-                if let Some(id) = item["id"].as_str() {
-                    fetched_ids.push(id.to_string());
-                }
-                if let Some(entry) = parse_cloud_metadata(item) {
-                    cloud_entries.push(entry);
-                }
-            }
-        }
-
-        next_url = json["next"]
-            .as_str()
-            .map(validated_ballchasing_api_url)
-            .transpose()?;
-        pages_fetched += 1;
-
-        if next_url.is_some() {
-            tokio::time::sleep(Duration::from_millis(500)).await;
-        }
-    }
-
-    let count = fetched_ids.len();
-    state
-        .replays
-        .ballchasing_cloud_count
-        .store(usize_to_u32_saturating(count), Ordering::SeqCst);
-
-    let cloud_entries = cloud_entries
-        .into_iter()
-        .map(|entry| (entry.filename.clone(), entry))
-        .collect();
-    state
-        .replays
-        .cloud_metadata_cache
-        .store(Arc::new(cloud_entries));
-    crate::replay_metadata::refresh_merged_metadata_cache(&state);
-
-    // Update config cache with these formatted filenames
-    let filenames: Vec<String> = fetched_ids
-        .into_iter()
-        .map(|id| format!("{}.replay", id.to_lowercase()))
-        .collect();
-    let added = mark_replays_uploaded(&state, &filenames).map_err(|error| {
-        format!("Fetched {count} remote replays, but could not save upload membership: {error}")
-    })?;
-
-    set_status(
-        &state,
-        &format!(
-            "Success: Synced {} replays (added {} new to local cache)",
-            count, added
-        ),
-    );
-    Ok(())
-}
-
-pub fn start_download_replay_task(state: Arc<AppState>, replay_id: String) {
-    let Ok(operation_guard) = state.replays.maintenance_gate.clone().try_read_owned() else {
-        return;
-    };
-    if state.replays.download_active.swap(true, Ordering::SeqCst) {
-        set_status(&state, "Download already in progress");
-        return;
-    }
-
-    // Kept inline: must clear download_active regardless of success or failure.
-    tokio::spawn(async move {
-        let _operation_guard = operation_guard;
-        if let Err(e) = run_download_replay(state.clone(), replay_id).await {
-            log::error!("Replay download execution error: {}", e);
-        }
-        state.replays.download_active.store(false, Ordering::SeqCst);
-    });
-}
-
-pub fn format_uuid_with_dashes(s: &str) -> Option<String> {
-    let clean: String = s.chars().filter(|c| c.is_ascii_hexdigit()).collect();
-    if clean.len() == 32 {
-        let clean = clean.to_lowercase();
-        Some(format!(
-            "{}-{}-{}-{}-{}",
-            &clean[0..8],
-            &clean[8..12],
-            &clean[12..16],
-            &clean[16..20],
-            &clean[20..32]
-        ))
-    } else if clean.len() == 36 && s.contains('-') {
-        Some(s.to_lowercase())
-    } else {
-        None
-    }
-}
-
-async fn run_download_replay(state: Arc<AppState>, replay_id: String) -> Result<(), String> {
-    let raw_id = replay_id.trim();
-    if raw_id.is_empty() {
-        set_status(&state, "Error: Replay ID is empty");
-        return Ok(());
-    }
-
-    let config = state.system.config.load();
-    let folder_str = config.replays_folder.trim().to_string();
-    let api_key = config.ballchasing_api_key.trim().to_string();
-    drop(config);
-
-    if folder_str.is_empty() {
-        set_status(&state, "Error: Replays folder unconfigured");
-        return Ok(());
-    }
-
-    let replays_dir = PathBuf::from(&folder_str);
-    if !replays_dir.exists() || !replays_dir.is_dir() {
-        set_status(&state, "Error: Replays folder does not exist");
-        return Ok(());
-    }
-
-    if api_key.is_empty() {
-        set_status(&state, "Error: API key is empty");
-        return Ok(());
-    }
-
-    let id_formatted = match format_uuid_with_dashes(raw_id) {
-        Some(formatted) => formatted,
-        None => {
-            set_status(
-                &state,
-                "Error: Invalid Replay ID format (expected 32 hex chars or UUID with dashes)",
-            );
-            return Ok(());
-        }
-    };
-
-    // 1. Check if the file already exists locally
-    let target_filename = format!("{}.replay", id_formatted);
-    let target_path = replays_dir.join(&target_filename);
-    let mut invalid_existing_path = None;
-
-    if tokio::fs::metadata(&target_path).await.is_ok() {
-        if crate::replay_metadata::validate_replay_file_strict(&target_path).is_ok() {
-            set_status(
-                &state,
-                &format!("Success: Replay {id_formatted} already exists locally"),
-            );
-            return Ok(());
-        }
-        invalid_existing_path = Some(target_path.clone());
-    }
-
-    // Also scan directory case-insensitively just to be nice
-    match tokio::fs::read_dir(&replays_dir).await {
-        Ok(mut entries) => {
-            while let Ok(Some(entry)) = entries.next_entry().await {
-                if entry.file_name().to_str().map(|s| s.to_lowercase())
-                    == Some(target_filename.to_lowercase())
-                {
-                    let path = entry.path();
-                    if crate::replay_metadata::validate_replay_file_strict(&path).is_ok() {
-                        set_status(
-                            &state,
-                            &format!("Success: Replay {id_formatted} already exists locally"),
-                        );
-                        return Ok(());
-                    }
-                    invalid_existing_path.get_or_insert(path);
-                }
-            }
-        }
-        Err(e) => {
-            log::warn!(
-                "Could not read replays directory for duplicate check ({}): {}",
-                replays_dir.display(),
-                e
-            );
-        }
-    }
-
-    set_status(&state, &format!("Downloading replay {}...", id_formatted));
-
-    let client = &state.system.ballchasing_client;
-    let url = format!("https://ballchasing.com/api/replays/{}/file", id_formatted);
-
-    let response = client
-        .get(&url)
-        .header("Authorization", &api_key)
-        .send()
-        .await
-        .map_err(|e| {
-            let err_msg = format!("Network request failed: {e}");
-            set_status(&state, &format!("Error: {}", err_msg));
-            err_msg
-        })?;
-
-    let status = response.status();
-    if status.as_u16() == 429 {
-        set_status(&state, "Error: Download rate limit hit (429)");
-        return Ok(());
-    } else if status.as_u16() == 401 || status.as_u16() == 403 {
-        set_status(&state, "Error: Invalid API key (401/403)");
-        return Ok(());
-    } else if status.as_u16() == 404 {
-        set_status(&state, "Error: Replay not found on Ballchasing (404)");
-        return Ok(());
-    } else if !status.is_success() {
-        let err_msg = format!("Error: Download failed (HTTP {})", status);
-        set_status(&state, &err_msg);
-        return Ok(());
-    }
-
-    let bytes = response.bytes().await.map_err(|e| {
-        let err_msg = format!("Failed to read response bytes: {e}");
-        set_status(&state, &format!("Error: {}", err_msg));
-        err_msg
-    })?;
-
-    if bytes.is_empty() {
-        set_status(&state, "Error: Downloaded file is empty");
-        return Ok(());
-    }
-    crate::replay_metadata::validate_replay_bytes_strict(&bytes).map_err(|error| {
-        let message = format!("Downloaded replay failed validation: {error}");
-        set_status(&state, &format!("Error: {message}"));
-        message
-    })?;
-
-    if let Some(invalid_path) = invalid_existing_path {
-        let quarantined = quarantine_invalid_replay(&invalid_path)
-            .await
-            .map_err(|error| {
-                let message = format!("Could not quarantine invalid replay: {error}");
-                set_status(&state, &format!("Error: {message}"));
-                message
-            })?;
-        log::warn!(
-            "Moved invalid replay {} to {} before downloading replacement.",
-            invalid_path.display(),
-            quarantined.display()
-        );
-    }
-
-    if let Err(e) = write_downloaded_replay(&replays_dir, &target_filename, &bytes).await {
-        let err_msg = format!("Failed to write file to disk: {e}");
-        set_status(&state, &format!("Error: {}", err_msg));
-        return Err(err_msg);
-    }
-
-    set_status(&state, &format!("Success: Downloaded {}", target_filename));
-
-    // Force refresh metadata scan so it registers immediately
-    crate::replay_metadata::start_metadata_scan(state.clone(), folder_str);
-
-    Ok(())
-}
-
-async fn quarantine_invalid_replay(path: &Path) -> Result<PathBuf, String> {
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("invalid.replay");
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let timestamp = crate::stats_api::now_ms();
-    for attempt in 0..100_u8 {
-        let suffix = if attempt == 0 {
-            format!("{file_name}.invalid-{timestamp}")
-        } else {
-            format!("{file_name}.invalid-{timestamp}-{attempt}")
-        };
-        let quarantine_path = parent.join(suffix);
-        if tokio::fs::metadata(&quarantine_path).await.is_ok() {
-            continue;
-        }
-        tokio::fs::rename(path, &quarantine_path)
-            .await
-            .map_err(|error| error.to_string())?;
-        return Ok(quarantine_path);
-    }
-    Err("Could not allocate a unique quarantine filename.".to_string())
-}
-
-async fn write_downloaded_replay(
-    replays_dir: &Path,
-    target_filename: &str,
-    bytes: &[u8],
-) -> Result<PathBuf, String> {
-    static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-    let target_path = replays_dir.join(target_filename);
-    let temp_path = replays_dir.join(format!(
-        ".{target_filename}.download-{}-{}",
-        std::process::id(),
-        TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
-    ));
-    let result = async {
-        let mut file = tokio::fs::OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&temp_path)
-            .await
-            .map_err(|error| error.to_string())?;
-        file.write_all(bytes)
-            .await
-            .map_err(|error| error.to_string())?;
-        file.flush().await.map_err(|error| error.to_string())?;
-        file.sync_all().await.map_err(|error| error.to_string())?;
-        drop(file);
-        tokio::fs::rename(&temp_path, &target_path)
-            .await
-            .map_err(|error| error.to_string())?;
-        Ok(target_path.clone())
-    }
-    .await;
-
-    if result.is_err() {
-        let _ = tokio::fs::remove_file(&temp_path).await;
-    }
-    result
-}
-
 fn record_verified_upload(
     state: &Arc<AppState>,
     filename: &str,
@@ -1541,6 +1037,39 @@ pub fn clear_upload_ledger(state: &AppState) -> Result<(), String> {
 
 fn usize_to_u32_saturating(value: usize) -> u32 {
     u32::try_from(value).unwrap_or(u32::MAX)
+}
+
+#[cfg(test)]
+fn valid_replay_bytes() -> Vec<u8> {
+    fn push_i32(bytes: &mut Vec<u8>, value: i32) {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    fn push_str(bytes: &mut Vec<u8>, value: &str) {
+        push_i32(bytes, value.len() as i32 + 1);
+        bytes.extend_from_slice(value.as_bytes());
+        bytes.push(0);
+    }
+
+    let mut header = Vec::new();
+    push_i32(&mut header, 868);
+    push_i32(&mut header, 22);
+    push_i32(&mut header, 10);
+    push_str(&mut header, "TAGame.Replay");
+    push_str(&mut header, "None");
+
+    let mut replay = Vec::new();
+    push_i32(&mut replay, header.len() as i32);
+    replay.extend_from_slice(&boxcars::crc::calc_crc(&header).to_le_bytes());
+    replay.extend_from_slice(&header);
+
+    // Empty but structurally complete body: levels, keyframes, network
+    // data, debug info, tick marks, packages, objects, names, class index,
+    // and net cache.
+    let body = vec![0_u8; 40];
+    push_i32(&mut replay, body.len() as i32);
+    replay.extend_from_slice(&boxcars::crc::calc_crc(&body).to_le_bytes());
+    replay.extend_from_slice(&body);
+    replay
 }
 
 #[cfg(test)]
@@ -1748,38 +1277,6 @@ mod tests {
         root
     }
 
-    fn valid_replay_bytes() -> Vec<u8> {
-        fn push_i32(bytes: &mut Vec<u8>, value: i32) {
-            bytes.extend_from_slice(&value.to_le_bytes());
-        }
-        fn push_str(bytes: &mut Vec<u8>, value: &str) {
-            push_i32(bytes, value.len() as i32 + 1);
-            bytes.extend_from_slice(value.as_bytes());
-            bytes.push(0);
-        }
-
-        let mut header = Vec::new();
-        push_i32(&mut header, 868);
-        push_i32(&mut header, 22);
-        push_i32(&mut header, 10);
-        push_str(&mut header, "TAGame.Replay");
-        push_str(&mut header, "None");
-
-        let mut replay = Vec::new();
-        push_i32(&mut replay, header.len() as i32);
-        replay.extend_from_slice(&boxcars::crc::calc_crc(&header).to_le_bytes());
-        replay.extend_from_slice(&header);
-
-        // Empty but structurally complete body: levels, keyframes, network
-        // data, debug info, tick marks, packages, objects, names, class index,
-        // and net cache.
-        let body = vec![0_u8; 40];
-        push_i32(&mut replay, body.len() as i32);
-        replay.extend_from_slice(&boxcars::crc::calc_crc(&body).to_le_bytes());
-        replay.extend_from_slice(&body);
-        replay
-    }
-
     #[test]
     fn test_mark_replays_uploaded() {
         let state = AppState::new();
@@ -1809,40 +1306,6 @@ mod tests {
                 .legacy_uploaded_replays
                 .is_empty()
         );
-    }
-
-    #[test]
-    fn parse_cloud_metadata_ignores_scores_that_do_not_fit_i32() {
-        let normal = parse_cloud_metadata(&serde_json::json!({
-            "id": "ABC123",
-            "blue": {
-                "score": 3,
-                "players": [{"name": "Blue"}]
-            },
-            "orange": {
-                "score": 2,
-                "players": [{"name": "Orange"}]
-            }
-        }))
-        .expect("cloud metadata should parse");
-
-        assert_eq!(normal.team0_score, Some(3));
-        assert_eq!(normal.team1_score, Some(2));
-        assert_eq!(normal.player_names, vec!["Blue", "Orange"]);
-
-        let oversized = parse_cloud_metadata(&serde_json::json!({
-            "id": "DEF456",
-            "blue": {
-                "score": i32::MAX as i64 + 1
-            },
-            "orange": {
-                "score": i32::MIN as i64 - 1
-            }
-        }))
-        .expect("cloud metadata should parse without score fields");
-
-        assert_eq!(oversized.team0_score, None);
-        assert_eq!(oversized.team1_score, None);
     }
 
     #[test]
@@ -2007,83 +1470,6 @@ mod tests {
 
         assert!(!state.replays.upload_running.load(Ordering::SeqCst));
 
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn test_format_uuid_with_dashes() {
-        assert_eq!(
-            format_uuid_with_dashes("38D82A9C4F817B27C17409AC772861F4"),
-            Some("38d82a9c-4f81-7b27-c174-09ac772861f4".to_string())
-        );
-        assert_eq!(
-            format_uuid_with_dashes("38d82a9c-4f81-7b27-c174-09ac772861f4"),
-            Some("38d82a9c-4f81-7b27-c174-09ac772861f4".to_string())
-        );
-        assert_eq!(
-            format_uuid_with_dashes("38D82A9C-4F81-7B27-C174-09AC772861F4"),
-            Some("38d82a9c-4f81-7b27-c174-09ac772861f4".to_string())
-        );
-        assert_eq!(format_uuid_with_dashes("invalid-uuid"), None);
-        assert_eq!(
-            format_uuid_with_dashes("38D82A9C4F817B27C17409AC772861F"),
-            None
-        );
-    }
-
-    #[test]
-    fn pagination_url_validation_stays_on_ballchasing_api() {
-        assert_eq!(
-            validated_ballchasing_api_url("replays?after=cursor")
-                .unwrap()
-                .as_str(),
-            "https://ballchasing.com/api/replays?after=cursor"
-        );
-        assert!(
-            validated_ballchasing_api_url("https://ballchasing.com/api/replays?after=cursor")
-                .is_ok()
-        );
-
-        for untrusted in [
-            "http://ballchasing.com/api/replays",
-            "https://evil.example/api/replays",
-            "https://api.ballchasing.com/api/replays",
-            "https://user:password@ballchasing.com/api/replays",
-            "https://ballchasing.com:444/api/replays",
-            "//evil.example/api/replays",
-            "https://ballchasing.com/upload",
-            "https://ballchasing.com/api/replays#fragment",
-        ] {
-            assert!(
-                validated_ballchasing_api_url(untrusted).is_err(),
-                "accepted {untrusted}"
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn invalid_existing_download_is_quarantined_before_atomic_replace() {
-        let root = temp_dir("atomic-download");
-        let target_name = "match.replay";
-        let target = root.join(target_name);
-        fs::write(&target, b"truncated").unwrap();
-        assert!(crate::replay_metadata::validate_replay_file_strict(&target).is_err());
-
-        let quarantined = quarantine_invalid_replay(&target).await.unwrap();
-        let valid = valid_replay_bytes();
-        assert!(crate::replay_metadata::validate_replay_bytes_strict(&valid).is_ok());
-        write_downloaded_replay(&root, target_name, &valid)
-            .await
-            .unwrap();
-
-        assert_eq!(fs::read(&quarantined).unwrap(), b"truncated");
-        assert!(crate::replay_metadata::validate_replay_file_strict(&target).is_ok());
-        assert!(
-            fs::read_dir(&root)
-                .unwrap()
-                .flatten()
-                .all(|entry| !entry.file_name().to_string_lossy().contains(".download-"))
-        );
         let _ = fs::remove_dir_all(root);
     }
 }

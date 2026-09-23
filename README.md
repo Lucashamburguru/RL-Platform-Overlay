@@ -52,10 +52,17 @@ You can also edit `TAGame/Config/DefaultStatsAPI.ini` yourself and set
   ballchasing.com.
 * **Hoops replay fixer:** Repair supported legacy Hoops replays, with a backup
   created first.
-* **Gold Rush swapper:** Apply the Gold Rush / Alpha Boost look locally.
+* **Gold Rush swapper:** Build the visual swap from the installed Alpha Boost
+  and Standard Boost UPKs, then apply the separate boost audio swap. It fetches
+  current package keys and keeps verified backups so the visual package is
+  rebuilt after game updates.
+* **Item Swapper:** Search the installed body, wheel, boost, trail, goal
+  explosion, topper, antenna, and paint-finish catalog and make one cosmetic
+  package appear in place of another. Swaps are generated from the current
+  game files and can be restored individually.
 
 The app changes local Rocket League files only when you choose the Gold Rush
-swapper or Hoops replay fixer.
+preset, Item Swapper, or Hoops replay fixer.
 
 ---
 
@@ -127,7 +134,7 @@ cargo build --locked --release
 
 ### Running in Debug Mode
 
-You can run the application with the `--debug` command-line flag to expose a dedicated **Debug** tab inside the settings interface (useful for inspecting raw packet data, process logs, and network state).
+You can run the application with the `--debug` command-line flag to expose a dedicated **Debug** tab inside the settings interface (useful for inspecting raw packet data, provider details, and network state).
 
 Windows compiled binary:
 

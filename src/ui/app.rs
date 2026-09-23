@@ -16,6 +16,8 @@ use super::settings::{
     render_session_settings_tab, render_settings_tabs, render_setup_settings_tab,
     render_support_settings_tab, render_update_notice,
 };
+#[cfg(not(feature = "microsoft-store"))]
+use super::settings::{ItemSwapperAction, ItemSwapperUiState, render_item_swapper_settings_tab};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct HudPositionSnapshot {
@@ -48,6 +50,8 @@ pub enum ConfirmAction {
     AlphaBoostApply,
     #[cfg(not(feature = "microsoft-store"))]
     AlphaBoostRestore,
+    #[cfg(not(feature = "microsoft-store"))]
+    ItemSwapApply,
     DeleteBackups,
     ClearHistory,
 }
@@ -70,6 +74,12 @@ pub struct MainApp {
     confirm_modal: Option<ConfirmAction>,
     tos_accepted: bool,
     history_search_query: String,
+    #[cfg(not(feature = "microsoft-store"))]
+    item_swapper_ui: ItemSwapperUiState,
+    #[cfg(not(feature = "microsoft-store"))]
+    pending_item_swap: Option<(String, String)>,
+    #[cfg(not(feature = "microsoft-store"))]
+    item_swap_risk_accepted: bool,
     settings_content_overflow: bool,
 }
 
@@ -93,6 +103,12 @@ impl MainApp {
             confirm_modal: None,
             tos_accepted: false,
             history_search_query: String::new(),
+            #[cfg(not(feature = "microsoft-store"))]
+            item_swapper_ui: ItemSwapperUiState::default(),
+            #[cfg(not(feature = "microsoft-store"))]
+            pending_item_swap: None,
+            #[cfg(not(feature = "microsoft-store"))]
+            item_swap_risk_accepted: false,
             settings_content_overflow: false,
         }
     }
@@ -212,6 +228,8 @@ mod tests {
                     SettingsTab::Dashboard,
                     SettingsTab::Session,
                     SettingsTab::Boost,
+                    #[cfg(not(feature = "microsoft-store"))]
+                    SettingsTab::ItemSwapper,
                     SettingsTab::Replays,
                     SettingsTab::History,
                     SettingsTab::Support,
@@ -335,6 +353,8 @@ mod tests {
                 SettingsTab::Session,
                 SettingsTab::Dashboard,
                 SettingsTab::Boost,
+                #[cfg(not(feature = "microsoft-store"))]
+                SettingsTab::ItemSwapper,
                 SettingsTab::Replays,
                 SettingsTab::History,
                 SettingsTab::Support,
@@ -452,6 +472,8 @@ pub(super) enum SettingsTab {
     Dashboard,
     Session,
     Boost,
+    #[cfg(not(feature = "microsoft-store"))]
+    ItemSwapper,
     Replays,
     History,
     Support,
@@ -470,8 +492,6 @@ impl eframe::App for MainApp {
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         ctx.set_zoom_factor(1.0);
-        self.state.diagnostics.frame_tracker.record_frame();
-        self.state.diagnostics.foreground_tracker.record_sample();
 
         if self.state.flags.should_exit.load(Ordering::SeqCst) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -1244,6 +1264,32 @@ impl MainApp {
                     self.is_rl_running,
                     &mut self.confirm_modal,
                 ),
+                #[cfg(not(feature = "microsoft-store"))]
+                SettingsTab::ItemSwapper => {
+                    if let Some(ItemSwapperAction::Apply { donor, target }) =
+                        render_item_swapper_settings_tab(
+                            ui,
+                            &self.state,
+                            &mut self.item_swapper_ui,
+                            &config_edit.rocket_league_path,
+                            self.is_rl_running,
+                        )
+                    {
+                        self.pending_item_swap = Some((donor, target));
+                        if self.item_swap_risk_accepted {
+                            if let Some((donor, target)) = self.pending_item_swap.take() {
+                                crate::item_swapper::start_apply(
+                                    self.state.clone(),
+                                    config_edit.rocket_league_path.clone(),
+                                    donor,
+                                    target,
+                                );
+                            }
+                        } else {
+                            self.confirm_modal = Some(ConfirmAction::ItemSwapApply);
+                        }
+                    }
+                }
                 SettingsTab::Replays => render_replays_settings_tab(
                     ui,
                     &self.state,
@@ -1372,7 +1418,9 @@ impl MainApp {
                 ui.horizontal(|ui| {
                     let confirm_enabled = match action {
                         #[cfg(not(feature = "microsoft-store"))]
-                        ConfirmAction::AlphaBoostApply => self.tos_accepted,
+                        ConfirmAction::AlphaBoostApply | ConfirmAction::ItemSwapApply => {
+                            self.tos_accepted
+                        }
                         _ => true,
                     };
 
@@ -1392,6 +1440,10 @@ impl MainApp {
         if !open || close_modal {
             self.confirm_modal = None;
             self.tos_accepted = false;
+            #[cfg(not(feature = "microsoft-store"))]
+            if !proceed && action == ConfirmAction::ItemSwapApply {
+                self.pending_item_swap = None;
+            }
         }
 
         if proceed {
@@ -1429,6 +1481,15 @@ impl MainApp {
                 ui.label("Are you sure you want to restore original Rocket League boost files?");
                 ui.label("This will revert any local file modifications made by Alpha Boost.");
             }
+            #[cfg(not(feature = "microsoft-store"))]
+            ConfirmAction::ItemSwapApply => {
+                ui.heading("⚠️ Terms of Service Acknowledgment");
+                ui.label("Applying an item swap edits local Rocket League game files and can carry a risk of account suspension.");
+                ui.checkbox(
+                    &mut self.tos_accepted,
+                    "I read, understand, and accept the risks for this app session.",
+                );
+            }
             ConfirmAction::DeleteBackups => {
                 ui.label(
                     "Are you sure you want to permanently delete all hoops replay backup (.replay.bak) files?",
@@ -1464,10 +1525,23 @@ impl MainApp {
                 let rl_path = self.state.system.config.load().rocket_league_path.clone();
                 crate::assets::start_restore_standard_boost(self.state.clone(), rl_path);
             }
+            #[cfg(not(feature = "microsoft-store"))]
+            ConfirmAction::ItemSwapApply => {
+                self.item_swap_risk_accepted = true;
+                self.perform_pending_item_swap();
+            }
             ConfirmAction::DeleteBackups => {
                 crate::hoops_fixer::start_delete_backups_task(self.state.clone());
             }
             ConfirmAction::ClearHistory => crate::history::start_clear_history(self.state.clone()),
+        }
+    }
+
+    #[cfg(not(feature = "microsoft-store"))]
+    fn perform_pending_item_swap(&mut self) {
+        if let Some((donor, target)) = self.pending_item_swap.take() {
+            let install = self.state.system.config.load().rocket_league_path.clone();
+            crate::item_swapper::start_apply(self.state.clone(), install, donor, target);
         }
     }
 }

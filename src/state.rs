@@ -1197,11 +1197,6 @@ pub fn standard_team(team: u8) -> Option<u8> {
 }
 
 pub struct DiagnosticsState {
-    pub frame_tracker: Arc<crate::diagnostics::SharedFrameTracker>,
-    pub foreground_tracker: Arc<crate::diagnostics::ForegroundTracker>,
-    pub resource_tracker: Arc<crate::diagnostics::ResourceTracker>,
-    pub resource_poller: Arc<std::sync::Mutex<crate::diagnostics::ResourcePoller>>,
-    pub alt_tab_diagnostics_status: Arc<std::sync::Mutex<String>>,
     pub debug_capture_status: ArcSwap<DebugCaptureStatus>,
     pub recent_stats_api_log: std::sync::Mutex<crate::stats_api::RecentStatsApiLog>,
     pub api_log_export_status: ArcSwap<ApiLogExportStatus>,
@@ -1343,6 +1338,8 @@ pub struct AppState {
     pub diagnostics: DiagnosticsState,
     pub replays: ReplaysState,
     pub boost: BoostState,
+    #[cfg(not(feature = "microsoft-store"))]
+    pub item_swapper: crate::item_swapper::ItemSwapperState,
     pub hoops_fixer: HoopsFixerState,
     pub mmr: MmrState,
     pub history: HistoryState,
@@ -1443,11 +1440,6 @@ impl AppState {
                 .expect("Failed to build Ballchasing HTTP client"),
         );
 
-        let resource_tracker = Arc::new(crate::diagnostics::ResourceTracker::new());
-        let resource_poller = Arc::new(std::sync::Mutex::new(
-            crate::diagnostics::ResourcePoller::new(resource_tracker.clone()),
-        ));
-
         let mut history_status = "History disabled.".to_string();
         let conn =
             match crate::history::initialize_database_at_with_recovery(paths.config_dir.clone()) {
@@ -1518,11 +1510,6 @@ impl AppState {
                 is_simulating_input: AtomicBool::new(false),
             },
             diagnostics: DiagnosticsState {
-                frame_tracker: Arc::new(crate::diagnostics::SharedFrameTracker::new(60)),
-                foreground_tracker: Arc::new(crate::diagnostics::ForegroundTracker::new()),
-                resource_tracker,
-                resource_poller,
-                alt_tab_diagnostics_status: Arc::new(std::sync::Mutex::new("Idle".to_string())),
                 debug_capture_status: ArcSwap::from_pointee(DebugCaptureStatus::default()),
                 recent_stats_api_log: std::sync::Mutex::new(
                     crate::stats_api::RecentStatsApiLog::default(),
@@ -1566,6 +1553,8 @@ impl AppState {
                 ),
                 inspection_running: AtomicBool::new(false),
             },
+            #[cfg(not(feature = "microsoft-store"))]
+            item_swapper: crate::item_swapper::ItemSwapperState::default(),
             hoops_fixer: HoopsFixerState {
                 hoops_fixer_status: Arc::new(std::sync::Mutex::new("Idle".to_string())),
                 hoops_fixer_logs: Arc::new(std::sync::Mutex::new(Vec::new())),

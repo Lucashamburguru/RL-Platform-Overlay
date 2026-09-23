@@ -74,9 +74,12 @@ pub(super) fn render_local_mmr_panel(
         );
     }
     if !local_mmr.error.is_empty() {
+        let provider_denied = crate::mmr::provider_access_denied(&local_mmr.error);
         ui.colored_label(
             egui::Color32::from_rgb(230, 120, 80),
-            if local_mmr.error.contains("403") {
+            if provider_denied {
+                "The MMR provider has lost access to Rocket League's PsyNet service. This is a provider outage, not a rejection of your player account."
+            } else if local_mmr.error.contains("403") {
                 "MMR request denied (403). Retry or use Support diagnostics if it persists."
             } else {
                 "Could not refresh MMR. Retry or check Support diagnostics."

@@ -172,7 +172,7 @@ pub(crate) fn render_boost_settings_tab(
         );
         debug_status_row(
             ui,
-            "Cached Assets",
+            "Cached Audio",
             if inspection.cache_verified {
                 "verified"
             } else {
@@ -201,6 +201,7 @@ pub(crate) fn render_boost_settings_tab(
             crate::assets::BoostGameFileState::Original
                 | crate::assets::BoostGameFileState::Alpha
                 | crate::assets::BoostGameFileState::Unbacked
+                | crate::assets::BoostGameFileState::Unknown
         );
         let checkbox_resp = ui.add_enabled(
             can_toggle,
@@ -240,6 +241,12 @@ pub(crate) fn render_boost_settings_tab(
                 StatusTone::Warning,
                 "No backup metadata yet. First apply will back up the current game files as originals.",
             );
+        } else if inspection.game_file_state == crate::assets::BoostGameFileState::Unknown {
+            status_text(
+                ui,
+                StatusTone::Warning,
+                "Installed boost files differ from the saved metadata. Apply will validate the current UPKs and refresh the pristine backup before changing game files.",
+            );
         } else if !can_toggle && path_valid == Some(true) {
             status_text(
                 ui,
@@ -278,6 +285,7 @@ pub(crate) fn render_boost_settings_tab(
             .clone();
         if status != "Idle" {
             ui.add_space(6.0);
+            let swap_running = state.item_swapper.snapshot.load().running;
             if status.starts_with("Error")
                 || status.starts_with("Download failed")
                 || status.starts_with("Backup failed")
@@ -287,13 +295,18 @@ pub(crate) fn render_boost_settings_tab(
                 || status.starts_with("Blocked")
             {
                 status_text(ui, StatusTone::Error, format!("❌ {status}"));
-            } else if status.starts_with("Success") {
+            } else if status.starts_with("Success")
+                || status.starts_with("Applied:")
+                || status.starts_with("Restored ")
+            {
                 status_text(ui, StatusTone::Success, format!("✔ {status}"));
-            } else {
+            } else if swap_running {
                 ui.horizontal(|ui| {
                     ui.add(egui::Spinner::new());
                     ui.label(&status);
                 });
+            } else {
+                ui.label(&status);
             }
         }
 

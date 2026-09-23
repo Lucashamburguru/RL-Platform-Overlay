@@ -59,7 +59,9 @@ The relevant section is `TAGame.MatchStatsExporter_TA`. The app preserves an exi
 
 ### Transport and framing
 
-[`src/network.rs`](../src/network.rs) continuously reconnects to the loopback endpoint:
+[`src/network/transport.rs`](../src/network/transport.rs) continuously reconnects to the loopback
+endpoint, then passes complete JSON values to the event router in
+[`src/network.rs`](../src/network.rs):
 
 - It first attempts `ws://127.0.0.1:49123` with `tokio-tungstenite`.
 - If the handshake indicates raw TCP instead of WebSocket, it reconnects with `tokio::net::TcpStream`.
@@ -81,7 +83,10 @@ The end-user collection and privacy workflow is documented in
 
 [`src/network.rs`](../src/network.rs) routes parsed events and publishes resulting state. [`src/session.rs`](../src/session.rs) owns session-oriented rules such as match start/reset, clock and score updates, mode records, streaks, early leaves, results, and replay exclusion.
 
-Completed matches can update SQLite history, trigger post-match automation, and schedule replay upload work. Event processing also maintains touch debouncing, replay touch offsets, teammate-bump estimates, a stable match roster, and a coherent `DashboardMatchSnapshot` for completed-match display.
+Completed matches can update SQLite history, trigger post-match automation, and schedule replay upload
+work. [`src/network/touch_tracking.rs`](../src/network/touch_tracking.rs) maintains touch debouncing,
+replay touch offsets, and teammate-bump estimates. Event processing also maintains a stable match
+roster and a coherent `DashboardMatchSnapshot` for completed-match display.
 
 ## Shared state and concurrency
 
@@ -93,7 +98,7 @@ The process shares a single `Arc<AppState>` across the UI, Tokio tasks, and inpu
 | `hotkeys` | Recording state and keyboard/controller edge tracking |
 | `game` | Players, local identity/team, session, match roster, touch state, and dashboard match snapshot |
 | `system` | Configuration, setup/update status, HTTP clients, and automation coordination |
-| `diagnostics` | Frame/resource/foreground tracking, captures, and recent Stats API events |
+| `diagnostics` | Privacy-aware support reports, developer captures, and recent Stats API events |
 | `mmr` | Provider selection, MMR cache, local refresh coordination, and debug status |
 | `history` | SQLite connection, encounter summaries, totals, and refresh state |
 | `replays` | Ballchasing status, SQLite upload ledger, SHA-256 upload coordination, sync/download work, and metadata caches |
@@ -150,7 +155,10 @@ On non-Windows systems, the launched primary viewport uses the platform's fullsc
 - `config.toml` stores user settings, cached local identity, replay settings, and integration credentials. On Unix it is created and repaired with owner-only permissions.
 - `history.sqlite3` stores optional match/player encounter history and uses versioned migrations plus corruption recovery.
 - `replays.sqlite3` stores normalized replay upload membership, content hashes, remote IDs, file fingerprints, and timestamps. Automatic and bulk uploads share a content-keyed coordinator and publish a revisioned in-memory ledger snapshot for the UI.
+- [`src/replays/cloud_sync.rs`](../src/replays/cloud_sync.rs) owns Ballchasing replay-list synchronization, constrained pagination, cloud metadata parsing, and merged-cache publication.
+- [`src/replays/download.rs`](../src/replays/download.rs) owns replay downloads, including replay-ID normalization, strict payload validation, quarantine of invalid local copies, and atomic replacement.
 - Replay files and backups remain in user-selected Rocket League/replay directories.
+- Item Swapper caches the fetched catalog and stores a versioned manifest plus SHA-addressed pristine package backups under the application data directory.
 - Diagnostic logs or support exports are created only by the relevant enabled or explicit user action; recent raw Stats API events are otherwise memory-only.
 
 The application data directory is `%APPDATA%/RL-Platform-Overlay` on Windows and `$XDG_CONFIG_HOME/rl-platform-overlay` or `~/.config/rl-platform-overlay` on other supported systems.
@@ -161,8 +169,10 @@ The application data directory is `%APPDATA%/RL-Platform-Overlay` on Windows and
 | --- | --- | --- |
 | Rocket League loopback endpoint | Live match telemetry | Continuous reconnect while the app runs |
 | mmr.kmdw.dev (mmr-api-v2) | Rank/MMR lookup | Lobby players or explicit local refresh |
+| api.tracker.gg | Rank/MMR fallback | Primary MMR provider reports PsyNet AccessDenied; shared five-minute cooldown before retrying primary |
 | ballchasing.com | Replay upload, listing/sync, metadata, and download | User enables/configures the integration or starts an action |
 | GitHub Releases | Version metadata and release assets | Startup version check or user-approved update |
+| Toga Files on GitHub | Current Rocket League package catalog and AES keys | Opening or refreshing Item Swapper, or applying the Gold Rush preset |
 
 The shared HTTP clients have 15-second timeouts. The Ballchasing client disables redirects; pagination URLs are separately constrained to the expected HTTPS host. No code in the current architecture sends required first-party usage telemetry.
 
@@ -170,7 +180,7 @@ The shared HTTP clients have 15-second timeouts. The Ballchasing client disables
 
 Non-Microsoft-Store builds use [`src/update.rs`](../src/update.rs) to inspect GitHub Releases. A Windows update is accepted only after both its SHA-256 checksum and Ed25519 signature verify against the embedded release public key. The replacement is staged under the app config directory and launched through a generated update script.
 
-The `microsoft-store` Cargo feature removes self-update, post-match input automation, and the Gold Rush file-swap controls that are inappropriate for the Store package. CI validates normal Linux/Windows builds and the Microsoft Store/MSIX feature combination.
+The `microsoft-store` Cargo feature removes self-update, post-match input automation, and the game-file swap controls that are inappropriate for the Store package. CI validates normal Linux/Windows builds and the Microsoft Store/MSIX feature combination.
 
 ## Architectural boundaries to preserve
 

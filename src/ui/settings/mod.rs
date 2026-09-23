@@ -9,6 +9,8 @@ use crate::ui::common::{StatusTone, status_color};
 mod boost;
 mod dashboard;
 mod history;
+#[cfg(not(feature = "microsoft-store"))]
+mod item_swapper;
 mod overlay;
 mod replays;
 mod session;
@@ -18,6 +20,10 @@ mod support;
 pub(super) use boost::render_boost_settings_tab;
 pub(super) use dashboard::render_dashboard_settings_tab;
 pub(super) use history::render_history_settings_tab;
+#[cfg(not(feature = "microsoft-store"))]
+pub(super) use item_swapper::{
+    ItemSwapperAction, ItemSwapperUiState, render_item_swapper_settings_tab,
+};
 pub(super) use overlay::render_overlay_settings_tab;
 pub(super) use replays::render_replays_settings_tab;
 pub(super) use session::render_session_settings_tab;
@@ -43,6 +49,8 @@ pub(super) fn render_settings_tabs(
         ui.selectable_value(selected, SettingsTab::Dashboard, "Dashboard");
         ui.selectable_value(selected, SettingsTab::Session, "Session");
         ui.selectable_value(selected, SettingsTab::Boost, "Boost & Alpha");
+        #[cfg(not(feature = "microsoft-store"))]
+        ui.selectable_value(selected, SettingsTab::ItemSwapper, "Item Swapper");
         ui.selectable_value(selected, SettingsTab::Replays, "Replays");
         ui.selectable_value(selected, SettingsTab::History, "History");
         ui.selectable_value(selected, SettingsTab::Support, "Support");

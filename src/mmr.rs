@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 use tokio::time::sleep;
 
@@ -63,7 +64,6 @@ pub(crate) trait MmrProvider: Send + Sync {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(dead_code)] // Tracker remains compiled as a disabled provider for future selection/fallback.
 enum MmrProviderId {
     MmrApiV2,
     Tracker,
@@ -76,6 +76,22 @@ struct TrackerProvider;
 
 static MMR_API_V2_PROVIDER: MmrApiV2Provider = MmrApiV2Provider;
 static TRACKER_PROVIDER: TrackerProvider = TrackerProvider;
+static PRIMARY_RETRY_AFTER: Mutex<Option<Instant>> = Mutex::new(None);
+static TRACKER_CLIENT: LazyLock<Result<wreq::Client, String>> =
+    LazyLock::new(|| build_tracker_client().map_err(|error| error.to_string()));
+
+fn build_tracker_client() -> Result<wreq::Client, wreq::Error> {
+    wreq::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .redirect(wreq::redirect::Policy::none())
+        .emulation(
+            wreq_util::EmulationOption::builder()
+                .emulation(wreq_util::Emulation::Chrome137)
+                .emulation_os(wreq_util::EmulationOS::Windows)
+                .build(),
+        )
+        .build()
+}
 
 fn mmr_provider(id: MmrProviderId) -> &'static dyn MmrProvider {
     match id {
@@ -136,6 +152,10 @@ pub enum MmrError {
     ProviderResponse(String),
 }
 
+pub(crate) fn provider_access_denied(message: &str) -> bool {
+    message.contains("psynet error") && message.contains("AccessDenied")
+}
+
 pub async fn resolve_xuid_to_gamertag(
     client: &wreq::Client,
     cache: Option<&std::sync::Mutex<HashMap<String, String>>>,
@@ -188,13 +208,19 @@ async fn send_tracker_request(
     client: &wreq::Client,
     url: &str,
 ) -> Result<wreq::Response, wreq::Error> {
-    client.get(url)
-        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36")
+    tracker_request(client, url).send().await
+}
+
+fn tracker_request(client: &wreq::Client, url: &str) -> wreq::RequestBuilder {
+    client
+        .get(url)
         .header("Accept-Language", "en-US,en;q=0.9")
         .header("Accept", "application/json, text/plain, */*")
         .header("Referer", "https://rocketleague.tracker.network/")
-        .send()
-        .await
+        .header("Origin", "https://rocketleague.tracker.network")
+        .header("Sec-Fetch-Site", "cross-site")
+        .header("Sec-Fetch-Mode", "cors")
+        .header("Sec-Fetch-Dest", "empty")
 }
 
 pub async fn fetch_tracker_snapshot(
@@ -226,7 +252,10 @@ pub async fn fetch_tracker_snapshot(
     }
 
     let api_url = tracker_api_url(&resolved_player);
-    let mut response = send_tracker_request(client, &api_url).await?;
+    let tracker_client = TRACKER_CLIENT.as_ref().map_err(|error| {
+        MmrError::ProviderResponse(format!("Could not initialize Tracker client: {error}"))
+    })?;
+    let mut response = send_tracker_request(tracker_client, &api_url).await?;
 
     let mut status = response.status();
     if status.as_u16() == 404
@@ -236,7 +265,7 @@ pub async fn fetch_tracker_snapshot(
         let mut fallback_player = resolved_player.clone();
         fallback_player.player_id = fallback_player.player_name.clone();
         let fallback_url = tracker_api_url(&fallback_player);
-        if let Ok(resp) = send_tracker_request(client, &fallback_url).await {
+        if let Ok(resp) = send_tracker_request(tracker_client, &fallback_url).await {
             let fallback_status = resp.status();
             if fallback_status.is_success() {
                 response = resp;
@@ -372,9 +401,44 @@ pub async fn fetch_mmr_snapshot(
     xuid_cache: Option<&std::sync::Mutex<HashMap<String, String>>>,
     player: &TrackerPlayer,
 ) -> Result<TrackerSnapshot, MmrError> {
-    default_mmr_provider()
-        .fetch(client, xuid_cache, player)
-        .await
+    fetch_with_fallback(
+        default_mmr_provider(),
+        mmr_provider(MmrProviderId::Tracker),
+        &PRIMARY_RETRY_AFTER,
+        client,
+        xuid_cache,
+        player,
+    )
+    .await
+}
+
+async fn fetch_with_fallback(
+    primary: &dyn MmrProvider,
+    fallback: &dyn MmrProvider,
+    retry_after: &Mutex<Option<Instant>>,
+    client: &wreq::Client,
+    xuid_cache: Option<&Mutex<HashMap<String, String>>>,
+    player: &TrackerPlayer,
+) -> Result<TrackerSnapshot, MmrError> {
+    let cooling_down = retry_after
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .is_some_and(|until| Instant::now() < until);
+    if !cooling_down {
+        match primary.fetch(client, xuid_cache, player).await {
+            Err(MmrError::ProviderResponse(ref message)) if provider_access_denied(message) => {
+                *retry_after.lock().unwrap_or_else(|e| e.into_inner()) =
+                    Some(Instant::now() + Duration::from_secs(300));
+                log::warn!(
+                    "{} received PsyNet AccessDenied; using {} for five minutes.",
+                    primary.name(),
+                    fallback.name()
+                );
+            }
+            result => return result,
+        }
+    }
+    fallback.fetch(client, xuid_cache, player).await
 }
 
 #[derive(Deserialize)]
@@ -648,13 +712,12 @@ pub fn start_mmr_fetch_task(state: Arc<AppState>) {
                         provider.name()
                     ),
                 );
-                match provider
-                    .fetch(
-                        &state.system.http_client,
-                        Some(&state.mmr.xuid_gamertag_cache),
-                        &tracker_player,
-                    )
-                    .await
+                match fetch_mmr_snapshot(
+                    &state.system.http_client,
+                    Some(&state.mmr.xuid_gamertag_cache),
+                    &tracker_player,
+                )
+                .await
                 {
                     Ok(snapshot) => {
                         append_tracker_log(
@@ -729,6 +792,26 @@ pub fn start_mmr_fetch_task(state: Arc<AppState>) {
                                     "MMR fetching blocked: 403. Cooling down for 60 seconds."
                                 );
                                 cooldown_until = Some(Instant::now() + Duration::from_secs(60));
+                                failed_fetches.insert(
+                                    cache_key.clone(),
+                                    Instant::now() + Duration::from_secs(300),
+                                );
+                                fetching_players.remove(&cache_key);
+                            }
+                            MmrError::ProviderResponse(ref message)
+                                if provider_access_denied(message) =>
+                            {
+                                append_tracker_log(
+                                    &state,
+                                    format!(
+                                        "MMR provider unavailable for {} ({}): upstream PsyNet access denied",
+                                        name, tracker_player.platform
+                                    ),
+                                );
+                                log::warn!(
+                                    "MMR provider's upstream PsyNet access was denied. Cooling down for 5 minutes."
+                                );
+                                cooldown_until = Some(Instant::now() + Duration::from_secs(300));
                                 failed_fetches.insert(
                                     cache_key.clone(),
                                     Instant::now() + Duration::from_secs(300),
@@ -947,14 +1030,13 @@ pub fn start_local_mmr_refresh(state: Arc<AppState>) {
                 provider.name()
             ),
         );
-        let result = provider
-            .fetch(
-                &state.system.http_client,
-                Some(&state.mmr.xuid_gamertag_cache),
-                &tracker_player,
-            )
-            .await
-            .map_err(|error| error.to_string());
+        let result = fetch_mmr_snapshot(
+            &state.system.http_client,
+            Some(&state.mmr.xuid_gamertag_cache),
+            &tracker_player,
+        )
+        .await
+        .map_err(|error| error.to_string());
 
         let completion_log = match &result {
             Ok(snapshot) => format!(
@@ -1090,6 +1172,116 @@ mod tests {
     }
 
     #[test]
+    fn detects_provider_psynet_access_denial() {
+        assert!(provider_access_denied(
+            "Provider response error: psynet error:{\"Error\":{\"Type\":\"AccessDenied\",\"Message\":\"\"}}"
+        ));
+        assert!(!provider_access_denied("HTTP status error: 403"));
+        assert!(!provider_access_denied("Player was not found"));
+    }
+
+    #[tokio::test]
+    async fn fallback_only_handles_upstream_denial_and_retries_after_cooldown() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        struct Stub {
+            calls: AtomicUsize,
+            status: u16,
+        }
+        impl MmrProvider for Stub {
+            fn name(&self) -> &'static str {
+                "stub"
+            }
+            fn fetch<'a>(
+                &'a self,
+                _: &'a wreq::Client,
+                _: Option<&'a Mutex<HashMap<String, String>>>,
+                _: &'a MmrPlayer,
+            ) -> MmrProviderFuture<'a> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                Box::pin(async move {
+                    match self.status {
+                        200 => Ok(local_snapshot(1234)),
+                        0 => Err(MmrError::ProviderResponse(
+                            "psynet error:{\"Error\":{\"Type\":\"AccessDenied\"}}".into(),
+                        )),
+                        status => Err(MmrError::HttpStatus(status)),
+                    }
+                })
+            }
+        }
+        let client = wreq::Client::new();
+        let player = TrackerPlayer {
+            platform: "Steam".into(),
+            player_name: "Test".into(),
+            player_id: "1".into(),
+            primary_id: "Steam|1|0".into(),
+        };
+        let denied = Stub {
+            calls: AtomicUsize::new(0),
+            status: 0,
+        };
+        let healthy = Stub {
+            calls: AtomicUsize::new(0),
+            status: 200,
+        };
+        let missing = Stub {
+            calls: AtomicUsize::new(0),
+            status: 404,
+        };
+        let retry_after = Mutex::new(None);
+        for _ in 0..2 {
+            let snapshot =
+                fetch_with_fallback(&denied, &healthy, &retry_after, &client, None, &player)
+                    .await
+                    .unwrap();
+            assert_eq!(snapshot.playlists[&11].rating, 1234);
+        }
+        assert_eq!(denied.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(healthy.calls.load(Ordering::SeqCst), 2);
+        *retry_after.lock().unwrap() = Some(Instant::now() - Duration::from_secs(1));
+        fetch_with_fallback(&denied, &healthy, &retry_after, &client, None, &player)
+            .await
+            .unwrap();
+        assert_eq!(denied.calls.load(Ordering::SeqCst), 2);
+
+        let fallback_calls = healthy.calls.load(Ordering::SeqCst);
+        assert!(matches!(
+            fetch_with_fallback(
+                &missing,
+                &healthy,
+                &Mutex::new(None),
+                &client,
+                None,
+                &player
+            )
+            .await,
+            Err(MmrError::HttpStatus(404))
+        ));
+        assert_eq!(healthy.calls.load(Ordering::SeqCst), fallback_calls);
+        // A working primary must not contact the fallback.
+        fetch_with_fallback(
+            &healthy,
+            &missing,
+            &Mutex::new(None),
+            &client,
+            None,
+            &player,
+        )
+        .await
+        .unwrap();
+        assert_eq!(missing.calls.load(Ordering::SeqCst), 1);
+        // Propagate a denied fallback so the caller retains its existing backoff behavior.
+        let blocked = Stub {
+            calls: AtomicUsize::new(0),
+            status: 403,
+        };
+        assert!(matches!(
+            fetch_with_fallback(&denied, &blocked, &retry_after, &client, None, &player).await,
+            Err(MmrError::HttpStatus(403))
+        ));
+    }
+
+    #[test]
     fn mmr_api_v2_uses_primary_id_without_rewriting_it() {
         let player = TrackerPlayer {
             platform: "Steam".to_string(),
@@ -1117,74 +1309,43 @@ mod tests {
             .emulation(wreq_util::Emulation::Chrome128)
             .build()
             .unwrap();
-        match fetch_mmr_snapshot(&client, None, &player).await {
-            Ok(snapshot) => {
-                println!("Got snapshot with {} playlists", snapshot.playlists.len());
-                for (id, pl) in snapshot.playlists {
-                    println!("Playlist {}: {} MMR ({})", id, pl.rating, pl.tier_name);
-                }
-            }
-            Err(e) => {
-                println!("Error: {}", e);
-            }
-        }
+        let snapshot = fetch_mmr_snapshot(&client, None, &player)
+            .await
+            .expect("MMR provider chain must return a snapshot");
+        assert!(
+            !snapshot.playlists.is_empty(),
+            "Provider chain returned no playlist data"
+        );
+        println!(
+            "MMR provider chain returned {} playlists",
+            snapshot.playlists.len()
+        );
     }
 
     #[tokio::test]
-    #[ignore = "hits the disabled live Tracker provider"]
-    async fn test_disabled_tracker_provider() {
-        let players = vec![
-            TrackerPlayer {
-                platform: "Steam".to_string(),
-                player_name: "PengiWin".to_string(),
-                player_id: "76561198034789585".to_string(), // Example SteamID64
-                primary_id: "Steam|76561198034789585|0".to_string(),
-            },
-            TrackerPlayer {
-                platform: "Ps4".to_string(),
-                player_name: "alfa_699".to_string(),
-                player_id: "2695557321719975533".to_string(),
-                primary_id: "PS4|2695557321719975533|0".to_string(),
-            },
-            TrackerPlayer {
-                platform: "Ps4".to_string(),
-                player_name: "Cleanmolles".to_string(),
-                player_id: "8318453829852839315".to_string(),
-                primary_id: "PS4|8318453829852839315|0".to_string(),
-            },
-            TrackerPlayer {
-                platform: "Epic".to_string(),
-                player_name: "pengiwin".to_string(),
-                player_id: "pengiwin".to_string(),
-                primary_id: "Epic|pengiwin|0".to_string(),
-            },
-        ];
+    #[ignore = "hits the live Tracker provider; requires network access"]
+    async fn test_tracker_provider_live() {
+        let player = TrackerPlayer {
+            platform: "Steam".into(),
+            player_name: "documented example".into(),
+            player_id: "76561198144145654".into(),
+            primary_id: "Steam|76561198144145654|0".into(),
+        };
         let client = wreq::Client::builder()
-            .emulation(wreq_util::Emulation::Chrome128)
+            .timeout(Duration::from_secs(15))
             .build()
             .unwrap();
-        for player in players {
-            println!(
-                "Fetching MMR for {}/{}...",
-                player.platform, player.player_name
-            );
-            match fetch_tracker_snapshot(&client, None, &player).await {
-                Ok(snapshot) => {
-                    println!(
-                        "Got snapshot with {} playlists for {}",
-                        snapshot.playlists.len(),
-                        player.player_name
-                    );
-                    for (id, pl) in snapshot.playlists {
-                        println!("  Playlist {}: {} MMR ({})", id, pl.rating, pl.tier_name);
-                    }
-                }
-                Err(e) => {
-                    println!("Error for {}: {}", player.player_name, e);
-                }
-            }
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-        }
+        let snapshot = fetch_tracker_snapshot(&client, None, &player)
+            .await
+            .expect("production Tracker client must return a snapshot");
+        assert!(
+            !snapshot.playlists.is_empty(),
+            "Tracker returned no playlist data"
+        );
+        println!(
+            "Production Tracker client returned {} playlists",
+            snapshot.playlists.len()
+        );
     }
 
     #[test]
