@@ -37,6 +37,13 @@ pub(super) enum ArrangeHudAction {
     Cancel,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum OverlaySubtab {
+    Lobby,
+    Session,
+    Boost,
+}
+
 pub(super) fn render_settings_tabs(
     ui: &mut egui::Ui,
     selected: &mut SettingsTab,
@@ -45,10 +52,8 @@ pub(super) fn render_settings_tabs(
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 6.0;
         ui.selectable_value(selected, SettingsTab::Setup, "Setup");
-        ui.selectable_value(selected, SettingsTab::Overlay, "Lobby");
+        ui.selectable_value(selected, SettingsTab::Overlay, "Overlay");
         ui.selectable_value(selected, SettingsTab::Dashboard, "Dashboard");
-        ui.selectable_value(selected, SettingsTab::Session, "Session");
-        ui.selectable_value(selected, SettingsTab::Boost, "Boost & Alpha");
         #[cfg(not(feature = "microsoft-store"))]
         ui.selectable_value(selected, SettingsTab::ItemSwapper, "Item Swapper");
         ui.selectable_value(selected, SettingsTab::Replays, "Replays");
@@ -59,6 +64,15 @@ pub(super) fn render_settings_tabs(
         }
     });
     ui.add_space(8.0);
+}
+
+pub(super) fn render_overlay_subtabs(ui: &mut egui::Ui, selected: &mut OverlaySubtab) {
+    ui.horizontal(|ui| {
+        ui.selectable_value(selected, OverlaySubtab::Lobby, "Lobby");
+        ui.selectable_value(selected, OverlaySubtab::Session, "Session");
+        ui.selectable_value(selected, OverlaySubtab::Boost, "Boost & Alpha");
+    });
+    ui.add_space(6.0);
 }
 
 #[cfg(feature = "microsoft-store")]

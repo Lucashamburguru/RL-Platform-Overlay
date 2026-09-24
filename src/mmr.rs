@@ -36,9 +36,19 @@ pub struct MmrPlaylistSnapshot {
     pub tier_name: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MmrPeakRating {
+    pub playlist_name: String,
+    pub rating: i32,
+    pub tier_name: String,
+    pub season: Option<String>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MmrSnapshot {
     pub playlists: HashMap<i32, MmrPlaylistSnapshot>,
+    #[serde(default)]
+    pub peak_rating: Option<MmrPeakRating>,
     pub last_updated: Option<String>,
     pub current_season: Option<i32>,
 }
@@ -69,7 +79,7 @@ enum MmrProviderId {
     Tracker,
 }
 
-const DEFAULT_MMR_PROVIDER: MmrProviderId = MmrProviderId::MmrApiV2;
+const DEFAULT_MMR_PROVIDER: MmrProviderId = MmrProviderId::Tracker;
 
 struct MmrApiV2Provider;
 struct TrackerProvider;
@@ -306,6 +316,43 @@ fn extract_tracker_stats(payload: &Value) -> Option<TrackerSnapshot> {
     };
 
     for segment in segments {
+        if segment.get("type").and_then(Value::as_str) == Some("peak-rating") {
+            let playlist_id = segment
+                .get("attributes")
+                .and_then(|v| v.get("playlistId"))
+                .and_then(Value::as_i64)
+                .and_then(|id| i32::try_from(id).ok());
+            if !playlist_id.is_some_and(|id| id != 0 && id != 34 && is_tracked_playlist(id)) {
+                continue;
+            }
+            let stat = &segment["stats"]["peakRating"];
+            let (Some(rating), Some(playlist_name), Some(tier_name)) = (
+                stat.get("value")
+                    .and_then(Value::as_i64)
+                    .and_then(|v| i32::try_from(v).ok()),
+                segment["metadata"]["name"].as_str(),
+                stat["metadata"]["name"].as_str(),
+            ) else {
+                continue;
+            };
+            if rating <= 0 || tier_name.eq_ignore_ascii_case("Unranked") {
+                continue;
+            }
+            let peak = MmrPeakRating {
+                playlist_name: playlist_name.to_string(),
+                rating,
+                tier_name: tier_name.to_string(),
+                season: stat["metadata"]["season"].as_str().map(str::to_string),
+            };
+            if snapshot
+                .peak_rating
+                .as_ref()
+                .is_none_or(|current| rating > current.rating)
+            {
+                snapshot.peak_rating = Some(peak);
+            }
+            continue;
+        }
         if segment.get("type").and_then(Value::as_str) != Some("playlist") {
             continue;
         }
@@ -403,7 +450,7 @@ pub async fn fetch_mmr_snapshot(
 ) -> Result<TrackerSnapshot, MmrError> {
     fetch_with_fallback(
         default_mmr_provider(),
-        mmr_provider(MmrProviderId::Tracker),
+        mmr_provider(MmrProviderId::MmrApiV2),
         &PRIMARY_RETRY_AFTER,
         client,
         xuid_cache,
@@ -426,6 +473,16 @@ async fn fetch_with_fallback(
         .is_some_and(|until| Instant::now() < until);
     if !cooling_down {
         match primary.fetch(client, xuid_cache, player).await {
+            Ok(snapshot) if !snapshot.playlists.is_empty() || snapshot.peak_rating.is_some() => {
+                return Ok(snapshot);
+            }
+            Ok(_) => {
+                log::warn!(
+                    "{} returned no playlist data; trying {}.",
+                    primary.name(),
+                    fallback.name()
+                );
+            }
             Err(MmrError::ProviderResponse(ref message)) if provider_access_denied(message) => {
                 *retry_after.lock().unwrap_or_else(|e| e.into_inner()) =
                     Some(Instant::now() + Duration::from_secs(300));
@@ -435,7 +492,33 @@ async fn fetch_with_fallback(
                     fallback.name()
                 );
             }
-            result => return result,
+            Err(MmrError::HttpStatus(status))
+                if status == 403 || status == 429 || (500..=599).contains(&status) =>
+            {
+                *retry_after.lock().unwrap_or_else(|e| e.into_inner()) =
+                    Some(Instant::now() + Duration::from_secs(60));
+                log::warn!(
+                    "{} returned HTTP {status}; using {} for one minute.",
+                    primary.name(),
+                    fallback.name()
+                );
+            }
+            Err(MmrError::ApiRequest(error)) => {
+                *retry_after.lock().unwrap_or_else(|e| e.into_inner()) =
+                    Some(Instant::now() + Duration::from_secs(60));
+                log::warn!(
+                    "{} request failed: {error}; using {} for one minute.",
+                    primary.name(),
+                    fallback.name()
+                );
+            }
+            Err(error) => {
+                log::warn!(
+                    "{} failed: {error}; trying {}.",
+                    primary.name(),
+                    fallback.name()
+                );
+            }
         }
     }
     fallback.fetch(client, xuid_cache, player).await
@@ -1129,12 +1212,12 @@ mod tests {
     }
 
     #[test]
-    fn mmr_api_v2_is_the_default_provider() {
-        assert_eq!(DEFAULT_MMR_PROVIDER, MmrProviderId::MmrApiV2);
-        assert_eq!(default_mmr_provider().name(), "Rocket League MMR");
+    fn tracker_is_the_default_provider() {
+        assert_eq!(DEFAULT_MMR_PROVIDER, MmrProviderId::Tracker);
+        assert_eq!(default_mmr_provider().name(), "Tracker Network");
         assert_eq!(
-            mmr_provider(MmrProviderId::Tracker).name(),
-            "Tracker Network"
+            mmr_provider(MmrProviderId::MmrApiV2).name(),
+            "Rocket League MMR"
         );
     }
 
@@ -1156,6 +1239,49 @@ mod tests {
         assert_eq!(snapshot.playlists[&11].name, "Ranked Doubles 2v2");
         assert_eq!(snapshot.playlists[&11].tier_name, "Champion I");
         assert_eq!(snapshot.playlists[&27].tier_name, "Diamond II");
+        assert!(snapshot.peak_rating.is_none());
+    }
+
+    #[test]
+    fn tracker_extracts_recorded_peak_rating() {
+        let payload = serde_json::json!({
+            "data": {
+                "segments": [
+                    {
+                        "type": "playlist",
+                        "attributes": {"playlistId": 13},
+                        "metadata": {"name": "Ranked Standard 3v3"},
+                        "stats": {"rating": {"value": 900}, "tier": {"metadata": {"name": "Diamond I"}}}
+                    },
+                    {
+                        "type": "peak-rating",
+                        "attributes": {"playlistId": 13, "season": 14},
+                        "metadata": {"name": "Ranked Standard 3v3"},
+                        "stats": {"peakRating": {"value": 1642, "metadata": {"name": "Grand Champion I", "season": "Season 14"}}}
+                    },
+                    {
+                        "type": "peak-rating",
+                        "attributes": {"playlistId": 11},
+                        "metadata": {"name": "Ranked Doubles 2v2"},
+                        "stats": {"peakRating": {"value": 1500, "metadata": {"name": "Champion III"}}}
+                    },
+                    {
+                        "type": "peak-rating",
+                        "attributes": {"playlistId": 0},
+                        "metadata": {"name": "Casual"},
+                        "stats": {"peakRating": {"value": 3000, "metadata": {"name": "Unranked"}}}
+                    }
+                ]
+            }
+        });
+
+        let snapshot = extract_tracker_stats(&payload).unwrap();
+        assert_eq!(snapshot.playlists[&13].rating, 900);
+        let peak = snapshot.peak_rating.unwrap();
+        assert_eq!(peak.playlist_name, "Ranked Standard 3v3");
+        assert_eq!(peak.rating, 1642);
+        assert_eq!(peak.tier_name, "Grand Champion I");
+        assert_eq!(peak.season.as_deref(), Some("Season 14"));
     }
 
     #[test]
@@ -1181,7 +1307,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fallback_only_handles_upstream_denial_and_retries_after_cooldown() {
+    async fn fallback_handles_primary_failures_and_empty_results() {
         use std::sync::atomic::{AtomicUsize, Ordering};
         struct Stub {
             calls: AtomicUsize,
@@ -1201,6 +1327,16 @@ mod tests {
                 Box::pin(async move {
                     match self.status {
                         200 => Ok(local_snapshot(1234)),
+                        204 => Ok(TrackerSnapshot::default()),
+                        206 => Ok(TrackerSnapshot {
+                            peak_rating: Some(MmrPeakRating {
+                                playlist_name: "Ranked Standard 3v3".into(),
+                                rating: 1642,
+                                tier_name: "Grand Champion I".into(),
+                                season: None,
+                            }),
+                            ..Default::default()
+                        }),
                         0 => Err(MmrError::ProviderResponse(
                             "psynet error:{\"Error\":{\"Type\":\"AccessDenied\"}}".into(),
                         )),
@@ -1244,21 +1380,107 @@ mod tests {
             .unwrap();
         assert_eq!(denied.calls.load(Ordering::SeqCst), 2);
 
-        let fallback_calls = healthy.calls.load(Ordering::SeqCst);
-        assert!(matches!(
+        let server_error = Stub {
+            calls: AtomicUsize::new(0),
+            status: 502,
+        };
+        let server_retry_after = Mutex::new(None);
+        for _ in 0..2 {
+            let snapshot = fetch_with_fallback(
+                &server_error,
+                &healthy,
+                &server_retry_after,
+                &client,
+                None,
+                &player,
+            )
+            .await
+            .unwrap();
+            assert_eq!(snapshot.playlists[&11].rating, 1234);
+        }
+        assert_eq!(server_error.calls.load(Ordering::SeqCst), 1);
+        *server_retry_after.lock().unwrap() = Some(Instant::now() - Duration::from_secs(1));
+        fetch_with_fallback(
+            &server_error,
+            &healthy,
+            &server_retry_after,
+            &client,
+            None,
+            &player,
+        )
+        .await
+        .unwrap();
+        assert_eq!(server_error.calls.load(Ordering::SeqCst), 2);
+
+        // A missing player can still be found by the other provider; do not
+        // disable the primary globally for a player-specific failure.
+        let missing_retry_after = Mutex::new(None);
+        for _ in 0..2 {
             fetch_with_fallback(
                 &missing,
                 &healthy,
-                &Mutex::new(None),
+                &missing_retry_after,
                 &client,
                 None,
-                &player
+                &player,
             )
-            .await,
-            Err(MmrError::HttpStatus(404))
-        ));
+            .await
+            .unwrap();
+        }
+        assert_eq!(missing.calls.load(Ordering::SeqCst), 2);
+        assert!(missing_retry_after.lock().unwrap().is_none());
+
+        for status in [403, 429] {
+            let blocked = Stub {
+                calls: AtomicUsize::new(0),
+                status,
+            };
+            let blocked_retry_after = Mutex::new(None);
+            for _ in 0..2 {
+                fetch_with_fallback(
+                    &blocked,
+                    &healthy,
+                    &blocked_retry_after,
+                    &client,
+                    None,
+                    &player,
+                )
+                .await
+                .unwrap();
+            }
+            assert_eq!(blocked.calls.load(Ordering::SeqCst), 1);
+        }
+
+        let empty = Stub {
+            calls: AtomicUsize::new(0),
+            status: 204,
+        };
+        let empty_retry_after = Mutex::new(None);
+        fetch_with_fallback(&empty, &healthy, &empty_retry_after, &client, None, &player)
+            .await
+            .unwrap();
+        assert!(empty_retry_after.lock().unwrap().is_none());
+
+        let peak_only = Stub {
+            calls: AtomicUsize::new(0),
+            status: 206,
+        };
+        let fallback_calls = healthy.calls.load(Ordering::SeqCst);
+        let snapshot = fetch_with_fallback(
+            &peak_only,
+            &healthy,
+            &Mutex::new(None),
+            &client,
+            None,
+            &player,
+        )
+        .await
+        .unwrap();
+        assert_eq!(snapshot.peak_rating.unwrap().rating, 1642);
         assert_eq!(healthy.calls.load(Ordering::SeqCst), fallback_calls);
+
         // A working primary must not contact the fallback.
+        let missing_calls = missing.calls.load(Ordering::SeqCst);
         fetch_with_fallback(
             &healthy,
             &missing,
@@ -1269,7 +1491,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(missing.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(missing.calls.load(Ordering::SeqCst), missing_calls);
         // Propagate a denied fallback so the caller retains its existing backoff behavior.
         let blocked = Stub {
             calls: AtomicUsize::new(0),
@@ -1297,7 +1519,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "hits the live default MMR provider"]
-    async fn test_mmr_api_v2_documented_player() {
+    async fn test_default_mmr_provider_live() {
         let player = TrackerPlayer {
             platform: "Steam".to_string(),
             player_name: "documented example".to_string(),
@@ -1345,6 +1567,13 @@ mod tests {
         println!(
             "Production Tracker client returned {} playlists",
             snapshot.playlists.len()
+        );
+        let peak = snapshot
+            .peak_rating
+            .expect("Tracker sample has a peak rating");
+        println!(
+            "Tracker peak: {} {} ({})",
+            peak.playlist_name, peak.tier_name, peak.rating
         );
     }
 

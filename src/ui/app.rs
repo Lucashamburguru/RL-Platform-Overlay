@@ -10,11 +10,12 @@ use super::debug::render_debug_settings_tab;
 use super::hotkeys::egui_to_rdev_key;
 use super::lobby_overlay::render_overlay;
 use super::session_hud::render_session_overlay;
+use super::settings::OverlaySubtab;
 use super::settings::{
     ArrangeHudAction, render_boost_settings_tab, render_history_settings_tab,
-    render_launch_controls, render_overlay_settings_tab, render_replays_settings_tab,
-    render_session_settings_tab, render_settings_tabs, render_setup_settings_tab,
-    render_support_settings_tab, render_update_notice,
+    render_launch_controls, render_overlay_settings_tab, render_overlay_subtabs,
+    render_replays_settings_tab, render_session_settings_tab, render_settings_tabs,
+    render_setup_settings_tab, render_support_settings_tab, render_update_notice,
 };
 #[cfg(not(feature = "microsoft-store"))]
 use super::settings::{ItemSwapperAction, ItemSwapperUiState, render_item_swapper_settings_tab};
@@ -59,6 +60,7 @@ pub enum ConfirmAction {
 pub struct MainApp {
     state: Arc<AppState>,
     settings_tab: SettingsTab,
+    overlay_subtab: OverlaySubtab,
     is_rl_running: bool,
     rl_process_detection_detail: String,
     last_rl_check: std::time::Instant,
@@ -88,6 +90,7 @@ impl MainApp {
         Self {
             state,
             settings_tab: SettingsTab::Overlay,
+            overlay_subtab: OverlaySubtab::Lobby,
             is_rl_running: false,
             rl_process_detection_detail: "not checked".to_string(),
             last_rl_check: std::time::Instant::now()
@@ -222,19 +225,20 @@ mod tests {
                 renderer.capture(&ctx, &warmup, size, None);
                 ctx.set_zoom_factor(zoom);
                 let mut app = MainApp::new(state.clone(), None);
-                for tab in [
-                    SettingsTab::Setup,
-                    SettingsTab::Overlay,
-                    SettingsTab::Dashboard,
-                    SettingsTab::Session,
-                    SettingsTab::Boost,
+                for (tab, overlay_subtab) in [
+                    (SettingsTab::Setup, OverlaySubtab::Lobby),
+                    (SettingsTab::Overlay, OverlaySubtab::Lobby),
+                    (SettingsTab::Dashboard, OverlaySubtab::Lobby),
+                    (SettingsTab::Overlay, OverlaySubtab::Session),
+                    (SettingsTab::Overlay, OverlaySubtab::Boost),
                     #[cfg(not(feature = "microsoft-store"))]
-                    SettingsTab::ItemSwapper,
-                    SettingsTab::Replays,
-                    SettingsTab::History,
-                    SettingsTab::Support,
+                    (SettingsTab::ItemSwapper, OverlaySubtab::Lobby),
+                    (SettingsTab::Replays, OverlaySubtab::Lobby),
+                    (SettingsTab::History, OverlaySubtab::Lobby),
+                    (SettingsTab::Support, OverlaySubtab::Lobby),
                 ] {
                     app.settings_tab = tab;
+                    app.overlay_subtab = overlay_subtab;
                     app.last_rl_check = std::time::Instant::now();
                     for frame in 0..6 {
                         let mut input = egui::RawInput {
@@ -326,7 +330,7 @@ mod tests {
                                 let directory = std::path::PathBuf::from(directory);
                                 std::fs::create_dir_all(&directory).unwrap();
                                 directory.join(format!(
-                                    "{tab:?}{}.png",
+                                    "{tab:?}_{overlay_subtab:?}{}.png",
                                     if frame == 5 { "_scrolled" } else { "" }
                                 ))
                             });
@@ -347,22 +351,23 @@ mod tests {
             ([640.0, 600.0], 1.0, true),
         ] {
             state.update_config(|config| config.layout_mode = arranging);
-            for tab in [
-                SettingsTab::Setup,
-                SettingsTab::Overlay,
-                SettingsTab::Session,
-                SettingsTab::Dashboard,
-                SettingsTab::Boost,
+            for (tab, overlay_subtab) in [
+                (SettingsTab::Setup, OverlaySubtab::Lobby),
+                (SettingsTab::Overlay, OverlaySubtab::Lobby),
+                (SettingsTab::Overlay, OverlaySubtab::Session),
+                (SettingsTab::Dashboard, OverlaySubtab::Lobby),
+                (SettingsTab::Overlay, OverlaySubtab::Boost),
                 #[cfg(not(feature = "microsoft-store"))]
-                SettingsTab::ItemSwapper,
-                SettingsTab::Replays,
-                SettingsTab::History,
-                SettingsTab::Support,
+                (SettingsTab::ItemSwapper, OverlaySubtab::Lobby),
+                (SettingsTab::Replays, OverlaySubtab::Lobby),
+                (SettingsTab::History, OverlaySubtab::Lobby),
+                (SettingsTab::Support, OverlaySubtab::Lobby),
             ] {
                 let ctx = egui::Context::default();
                 ctx.set_zoom_factor(zoom);
                 let mut app = MainApp::new(state.clone(), None);
                 app.settings_tab = tab;
+                app.overlay_subtab = overlay_subtab;
                 app.last_rl_check = std::time::Instant::now();
                 let mut settled_height = None;
                 for frame in 0..120 {
@@ -470,8 +475,6 @@ pub(super) enum SettingsTab {
     Setup,
     Overlay,
     Dashboard,
-    Session,
-    Boost,
     #[cfg(not(feature = "microsoft-store"))]
     ItemSwapper,
     Replays,
@@ -556,7 +559,8 @@ impl eframe::App for MainApp {
         let show_boost_position_preview =
             (is_launched && config.show_teammate_boost && config.layout_mode)
                 || (show_settings
-                    && self.settings_tab == SettingsTab::Boost
+                    && self.settings_tab == SettingsTab::Overlay
+                    && self.overlay_subtab == OverlaySubtab::Boost
                     && config.show_teammate_boost);
         let show_boost_hud =
             is_launched && config.show_teammate_boost && !show_settings && !config.layout_mode;
@@ -1192,6 +1196,9 @@ impl MainApp {
 
         render_update_notice(ui, &self.state);
         render_settings_tabs(ui, &mut self.settings_tab, self.state.debug_enabled);
+        if self.settings_tab == SettingsTab::Overlay {
+            render_overlay_subtabs(ui, &mut self.overlay_subtab);
+        }
         if self.settings_tab == SettingsTab::History && config_edit.history_enabled {
             crate::history::request_all_player_history_refresh(&self.state, false);
         }
@@ -1224,8 +1231,13 @@ impl MainApp {
         let footer_rect = footer_ui.min_rect();
         let content_height =
             (footer_rect.top() - ui.cursor().top() - ui.spacing().item_spacing.y).max(0.0);
+        let overlay_page_id = if self.settings_tab == SettingsTab::Overlay {
+            self.overlay_subtab as u8
+        } else {
+            0
+        };
         let page = egui::ScrollArea::vertical()
-            .id_salt(("settings_page", self.settings_tab as u8))
+            .id_salt(("settings_page", self.settings_tab as u8, overlay_page_id))
             .auto_shrink([false, false])
             .max_height(content_height)
             .show(ui, |ui| match self.settings_tab {
@@ -1237,32 +1249,34 @@ impl MainApp {
                     &mut changed,
                     self.is_rl_running,
                 ),
-                SettingsTab::Overlay => render_overlay_settings_tab(
-                    ui,
-                    ctx,
-                    &self.state,
-                    &config,
-                    config_edit,
-                    &mut changed,
-                    is_launched,
-                ),
+                SettingsTab::Overlay => match self.overlay_subtab {
+                    OverlaySubtab::Lobby => render_overlay_settings_tab(
+                        ui,
+                        ctx,
+                        &self.state,
+                        &config,
+                        config_edit,
+                        &mut changed,
+                        is_launched,
+                    ),
+                    OverlaySubtab::Session => {
+                        render_session_settings_tab(ui, &self.state, config_edit, &mut changed)
+                    }
+                    OverlaySubtab::Boost => render_boost_settings_tab(
+                        ui,
+                        &self.state,
+                        config_edit,
+                        &mut changed,
+                        self.is_rl_running,
+                        &mut self.confirm_modal,
+                    ),
+                },
                 SettingsTab::Dashboard => super::settings::render_dashboard_settings_tab(
                     ui,
                     ctx,
                     &self.state,
                     config_edit,
                     &mut changed,
-                ),
-                SettingsTab::Session => {
-                    render_session_settings_tab(ui, &self.state, config_edit, &mut changed)
-                }
-                SettingsTab::Boost => render_boost_settings_tab(
-                    ui,
-                    &self.state,
-                    config_edit,
-                    &mut changed,
-                    self.is_rl_running,
-                    &mut self.confirm_modal,
                 ),
                 #[cfg(not(feature = "microsoft-store"))]
                 SettingsTab::ItemSwapper => {

@@ -6,6 +6,13 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- **Tracker Peak Rating**: An optional setting shows each player's recorded peak rank and MMR, including the playlist and season when available.
+
+### Changed
+- **Rank & MMR Sources**: Tracker Network is now the primary source, with Rocket League MMR as a fallback when Tracker is unavailable. Current rank is clearly labeled when peak data is unavailable.
+- **Settings Navigation**: Lobby, Session, and Boost settings now sit under Overlay subtabs; Dashboard remains its own tab.
+
 ---
 
 ## [0.1.51.0] - 2026-09-23

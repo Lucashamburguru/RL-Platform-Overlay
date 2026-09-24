@@ -111,6 +111,7 @@ fn store_players_preserves_existing_mmr_when_update_omits_it() {
     );
     let snapshot = crate::mmr::TrackerSnapshot {
         playlists,
+        peak_rating: None,
         last_updated: Some("now".to_string()),
         current_season: Some(20),
     };

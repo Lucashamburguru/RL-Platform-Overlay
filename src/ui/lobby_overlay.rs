@@ -160,6 +160,7 @@ fn preview_mmr(rating: i32, tier_name: &str) -> TrackerSnapshot {
     );
     TrackerSnapshot {
         playlists,
+        peak_rating: None,
         last_updated: None,
         current_season: None,
     }
@@ -493,11 +494,11 @@ fn render_compact_row(
                 render_you_badge(ui, scale);
             }
 
-            if let (true, Some(playlist)) = (
+            if let (true, Some(rank)) = (
                 config.show_lobby_ranks,
-                select_lobby_playlist(mmr, session_mode, player_count),
+                select_display_rank(mmr, session_mode, player_count, config.show_peak_rank),
             ) {
-                render_mmr_badge(ui, &playlist.tier_name, playlist.rating, false, scale);
+                render_mmr_badge(ui, rank, false, scale);
             }
 
             if !is_local
@@ -598,17 +599,25 @@ fn render_expanded_row_v2(
                 if config.show_lobby_ranks {
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 4.0 * scale;
-                        let playlist = select_lobby_playlist(mmr, session_mode, player_count);
-                        let show_matches =
-                            config.show_lobby_matches && playlist.is_some_and(|p| p.matches > 0);
+                        let rank = select_display_rank(
+                            mmr,
+                            session_mode,
+                            player_count,
+                            config.show_peak_rank,
+                        );
+                        let show_matches = config.show_lobby_matches
+                            && rank.is_some_and(|rank| rank.matches.is_some_and(|n| n > 0));
 
-                        if let Some(pl) = playlist {
-                            render_mmr_badge(ui, &pl.tier_name, pl.rating, true, scale);
+                        if let Some(rank) = rank {
+                            render_mmr_badge(ui, rank, true, scale);
                             if show_matches {
                                 ui.label(
-                                    egui::RichText::new(format!("{} Games", pl.matches))
-                                        .size(7.0 * scale)
-                                        .color(overlay_subtle_color()),
+                                    egui::RichText::new(format!(
+                                        "{} Games",
+                                        rank.matches.unwrap_or(0)
+                                    ))
+                                    .size(7.0 * scale)
+                                    .color(overlay_subtle_color()),
                                 );
                             }
                         } else if should_fetch_rank(player) {
@@ -775,7 +784,7 @@ fn render_rank_icon(ui: &mut egui::Ui, icon: egui::ImageSource<'static>, size: f
     );
 }
 
-fn render_mmr_badge(ui: &mut egui::Ui, rank: &str, rating: i32, show_rank_name: bool, scale: f32) {
+fn render_mmr_badge(ui: &mut egui::Ui, rank: RankDisplay<'_>, show_rank_name: bool, scale: f32) {
     let frame = egui::Frame::default()
         .fill(egui::Color32::from_rgba_unmultiplied(8, 10, 14, 180))
         .stroke(egui::Stroke::new(
@@ -788,27 +797,37 @@ fn render_mmr_badge(ui: &mut egui::Ui, rank: &str, rating: i32, show_rank_name: 
             (2.0 * scale).round() as i8,
         ));
 
-    frame.show(ui, |ui| {
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 2.0 * scale;
-            if let Some(icon) = rank_icon(rank) {
-                render_rank_icon(ui, icon, 12.0 * scale);
-            }
-            if show_rank_name {
+    frame
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 2.0 * scale;
+                if rank.is_peak {
+                    ui.label(
+                        egui::RichText::new("Peak")
+                            .size(7.5 * scale)
+                            .color(egui::Color32::from_rgb(180, 200, 255)),
+                    );
+                }
+                if let Some(icon) = rank_icon(rank.tier_name) {
+                    render_rank_icon(ui, icon, 12.0 * scale);
+                }
+                if show_rank_name {
+                    ui.label(
+                        egui::RichText::new(rank.tier_name)
+                            .size(7.5 * scale)
+                            .color(egui::Color32::from_rgb(180, 200, 255)),
+                    );
+                }
                 ui.label(
-                    egui::RichText::new(rank)
-                        .size(7.5 * scale)
-                        .color(egui::Color32::from_rgb(180, 200, 255)),
+                    egui::RichText::new(mmr_badge_rating_text(rank.tier_name, rank.rating))
+                        .size(8.5 * scale)
+                        .color(overlay_player_text_color())
+                        .strong(),
                 );
-            }
-            ui.label(
-                egui::RichText::new(mmr_badge_rating_text(rank, rating))
-                    .size(8.5 * scale)
-                    .color(overlay_player_text_color())
-                    .strong(),
-            );
-        });
-    });
+            });
+        })
+        .response
+        .on_hover_text(rank.tooltip());
 }
 
 fn mmr_badge_rating_text(rank: &str, rating: i32) -> String {
@@ -828,7 +847,56 @@ fn compact_player_text(player: &PlayerInfo) -> String {
     }
 }
 
-pub(super) fn select_lobby_playlist(
+#[derive(Clone, Copy)]
+pub(super) struct RankDisplay<'a> {
+    pub playlist_name: &'a str,
+    pub tier_name: &'a str,
+    pub rating: i32,
+    pub matches: Option<i32>,
+    pub season: Option<&'a str>,
+    pub is_peak: bool,
+}
+
+impl RankDisplay<'_> {
+    fn tooltip(self) -> String {
+        if self.is_peak {
+            let season = self.season.map_or(String::new(), |s| format!(" • {s}"));
+            format!("Tracker Peak Rating • {}{season}", self.playlist_name)
+        } else {
+            format!("Current rating • {}", self.playlist_name)
+        }
+    }
+}
+
+pub(super) fn select_display_rank(
+    mmr: Option<&TrackerSnapshot>,
+    session_mode: SessionMode,
+    player_count: usize,
+    show_peak_rank: bool,
+) -> Option<RankDisplay<'_>> {
+    let snapshot = mmr?;
+    if show_peak_rank && let Some(peak) = snapshot.peak_rating.as_ref() {
+        return Some(RankDisplay {
+            playlist_name: &peak.playlist_name,
+            tier_name: &peak.tier_name,
+            rating: peak.rating,
+            matches: None,
+            season: peak.season.as_deref(),
+            is_peak: true,
+        });
+    }
+    let playlist = select_lobby_playlist(Some(snapshot), session_mode, player_count)?;
+    Some(RankDisplay {
+        playlist_name: &playlist.name,
+        tier_name: &playlist.tier_name,
+        rating: playlist.rating,
+        matches: Some(playlist.matches),
+        season: None,
+        is_peak: false,
+    })
+}
+
+fn select_lobby_playlist(
     mmr: Option<&TrackerSnapshot>,
     session_mode: SessionMode,
     player_count: usize,
@@ -1128,6 +1196,7 @@ mod tests {
         );
         let mmr = TrackerSnapshot {
             playlists,
+            peak_rating: None,
             last_updated: None,
             current_season: None,
         };
@@ -1164,6 +1233,7 @@ mod tests {
             .store(Arc::new(crate::state::LocalMmrState {
                 current: Some(TrackerSnapshot {
                     playlists,
+                    peak_rating: None,
                     last_updated: None,
                     current_season: None,
                 }),
@@ -1267,6 +1337,7 @@ mod tests {
 
         let mmr = TrackerSnapshot {
             playlists,
+            peak_rating: None,
             last_updated: None,
             current_season: None,
         };
@@ -1301,5 +1372,49 @@ mod tests {
         let pl_single_player = select_lobby_playlist(Some(&mmr), SessionMode::Unknown, 1).unwrap();
         assert_eq!(pl_single_player.name, "Ranked Doubles 2v2");
         assert_eq!(pl_single_player.rating, 1200);
+    }
+
+    #[test]
+    fn peak_rank_uses_tracker_peak_and_labels_current_fallback() {
+        let mut mmr = TrackerSnapshot::default();
+        for (id, rank, rating) in [
+            (0, "Unranked", 2200),
+            (10, "Diamond III", 950),
+            (11, "Champion II", 900),
+            (13, "Champion II", 920),
+            (27, "Platinum III", 1400),
+        ] {
+            mmr.playlists.insert(
+                id,
+                crate::mmr::TrackerPlaylistSnapshot {
+                    name: format!("Playlist {id}"),
+                    rating,
+                    matches: 10,
+                    tier_name: rank.to_string(),
+                },
+            );
+        }
+
+        let current_mode = select_display_rank(Some(&mmr), SessionMode::Hoops, 4, false).unwrap();
+        assert_eq!(current_mode.rating, 1400);
+
+        mmr.peak_rating = Some(crate::mmr::MmrPeakRating {
+            playlist_name: "Ranked Standard 3v3".to_string(),
+            rating: 1642,
+            tier_name: "Champion III".to_string(),
+            season: Some("Season 14".to_string()),
+        });
+        let peak = select_display_rank(Some(&mmr), SessionMode::Hoops, 4, true).unwrap();
+        assert_eq!(peak.tier_name, "Champion III");
+        assert_eq!(peak.rating, 1642);
+        assert_eq!(peak.playlist_name, "Ranked Standard 3v3");
+        assert!(peak.is_peak);
+        assert!(peak.tooltip().contains("Season 14"));
+
+        mmr.peak_rating = None;
+        let fallback = select_display_rank(Some(&mmr), SessionMode::Hoops, 4, true).unwrap();
+        assert_eq!(fallback.rating, 1400);
+        assert!(!fallback.is_peak);
+        assert!(fallback.tooltip().starts_with("Current rating"));
     }
 }

@@ -40,6 +40,7 @@ struct DashboardPlayerRow {
     rank_label: String,
     mmr: Option<i32>,
     matches_played: Option<i32>,
+    rank_note: Option<String>,
     history_summary: Option<PlayerHistorySummary>,
 }
 
@@ -1357,7 +1358,13 @@ fn render_rank(ui: &mut egui::Ui, row: &DashboardPlayerRow) {
                         .color(egui::Color32::WHITE),
                 );
             });
-            if let Some(matches) = row.matches_played {
+            if let Some(note) = &row.rank_note {
+                ui.label(
+                    egui::RichText::new(note)
+                        .size(11.0)
+                        .color(egui::Color32::from_gray(140)),
+                );
+            } else if let Some(matches) = row.matches_played {
                 ui.label(
                     egui::RichText::new(format!("{matches} matches"))
                         .size(11.0)
@@ -1812,19 +1819,27 @@ fn build_dashboard_rows(
                 .mmr
                 .as_ref()
                 .or_else(|| is_local.then_some(context.local_mmr).flatten());
-            let playlist = super::lobby_overlay::select_lobby_playlist(
+            let rank = super::lobby_overlay::select_display_rank(
                 mmr_snapshot,
                 context.mode,
                 playlist_player_count,
+                context.config.show_peak_rank,
             );
-            let (rank_label, mmr, matches_played) = if let Some(playlist) = playlist {
+            let (rank_label, mmr, matches_played, rank_note) = if let Some(rank) = rank {
                 (
-                    clean_rank_label(&playlist.tier_name),
-                    Some(playlist.rating),
-                    Some(playlist.matches),
+                    clean_rank_label(rank.tier_name),
+                    Some(rank.rating),
+                    rank.matches,
+                    context.config.show_peak_rank.then(|| {
+                        format!(
+                            "{} • {}",
+                            if rank.is_peak { "Peak" } else { "Current" },
+                            compact_playlist_name(rank.playlist_name)
+                        )
+                    }),
                 )
             } else {
-                ("Unranked".to_string(), None, None)
+                ("Unranked".to_string(), None, None, None)
             };
             DashboardPlayerRow {
                 name: if player.name.trim().is_empty() {
@@ -1851,6 +1866,7 @@ fn build_dashboard_rows(
                 rank_label,
                 mmr,
                 matches_played,
+                rank_note,
                 history_summary,
             }
         })
@@ -2258,6 +2274,48 @@ mod tests {
         let local = rows.iter().find(|row| row.name == "Local").unwrap();
         assert_eq!(local.rank_label, "Champion II");
         assert_eq!(local.mmr, Some(989));
+    }
+
+    #[test]
+    fn dashboard_rows_use_peak_rank_when_enabled() {
+        let config = Config {
+            show_peak_rank: true,
+            ..Default::default()
+        };
+        let mut snapshot = TrackerSnapshot::default();
+        for (id, rank, rating) in [(11, "Champion I", 1040), (27, "Diamond III", 1180)] {
+            snapshot.playlists.insert(
+                id,
+                TrackerPlaylistSnapshot {
+                    name: format!("Playlist {id}"),
+                    rating,
+                    matches: 10,
+                    tier_name: rank.to_string(),
+                },
+            );
+        }
+        snapshot.peak_rating = Some(crate::mmr::MmrPeakRating {
+            playlist_name: "Ranked Standard 3v3".to_string(),
+            rating: 1642,
+            tier_name: "Grand Champion I".to_string(),
+            season: Some("Season 14".to_string()),
+        });
+
+        let rows = build_dashboard_rows(
+            vec![player("Local", 0, 0, true)],
+            rows_context(
+                &config,
+                SessionMode::Hoops,
+                Some(0),
+                false,
+                Some(&snapshot),
+                &HashMap::new(),
+            ),
+        );
+
+        assert_eq!(rows[0].rank_label, "Grand Champion I");
+        assert_eq!(rows[0].mmr, Some(1642));
+        assert_eq!(rows[0].rank_note.as_deref(), Some("Peak • 3v3"));
     }
 
     #[test]

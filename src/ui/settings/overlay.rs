@@ -184,6 +184,18 @@ pub(crate) fn render_overlay_settings_tab(
                     }
                 });
 
+                setting_row(right, "Rank Source", |ui| {
+                    if ui
+                        .checkbox(&mut config_edit.show_peak_rank, "Show Tracker Peak Rating")
+                        .on_hover_text(
+                            "Show Tracker Network's recorded Peak Rating and rank. When peak data is unavailable, show the current playlist rating and label it as current.",
+                        )
+                        .changed()
+                    {
+                        *changed = true;
+                    }
+                });
+
                 #[cfg(not(feature = "microsoft-store"))]
                 right.heading("Automation");
                 #[cfg(not(feature = "microsoft-store"))]
