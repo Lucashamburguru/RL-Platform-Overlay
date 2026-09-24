@@ -6,6 +6,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+---
+
+## [0.1.52] - 2026-09-24
+
 ### Added
 - **Tracker Peak Rating**: An optional setting shows each player's recorded peak rank and MMR, including the playlist and season when available.
 
