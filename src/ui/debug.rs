@@ -96,7 +96,7 @@ pub(super) fn render_debug_settings_tab(
 
         ui.separator();
         let version_check = state.system.version_check.load();
-        debug_status_row(ui, "Current Version", env!("CARGO_PKG_VERSION"));
+        debug_status_row(ui, "Current Version", &crate::app_version());
         let version_status = if !version_check.checked {
             "Checking...".to_string()
         } else if version_check.update_available {

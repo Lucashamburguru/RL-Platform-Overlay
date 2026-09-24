@@ -51,7 +51,7 @@ impl RecentStatsApiSnapshot {
         let mut output = String::new();
         output.push_str("Rocket League Stats API recent issue log\n");
         output.push_str(&format!("generated_unix_ms={generated_unix_ms}\n"));
-        output.push_str(&format!("app_version={}\n", env!("CARGO_PKG_VERSION")));
+        output.push_str(&format!("app_version={}\n", crate::app_version()));
         output.push_str("privacy=identifiable\n");
         output.push_str(
             "warning=May contain player names, account identifiers, and match identifiers.\n",

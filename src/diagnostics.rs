@@ -182,7 +182,7 @@ pub fn support_diagnostics_bundle_with_privacy(
     let mut lines = Vec::new();
     lines.push("RL Platform Overlay Support Diagnostics".to_string());
     lines.push(format!("generated_unix_ms={}", crate::stats_api::now_ms()));
-    lines.push(format!("app_version={}", env!("CARGO_PKG_VERSION")));
+    lines.push(format!("app_version={}", crate::app_version()));
     lines.push(format!("os={}", std::env::consts::OS));
     lines.push(format!("arch={}", std::env::consts::ARCH));
     lines.push(format!("privacy={}", privacy.label()));

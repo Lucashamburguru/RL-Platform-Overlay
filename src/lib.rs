@@ -26,6 +26,10 @@ mod upk_swap;
 use eframe::egui;
 use state::AppState;
 
+pub fn app_version() -> String {
+    env!("CARGO_PKG_VERSION").replacen('+', ".", 1)
+}
+
 pub async fn run(debug_enabled: bool) -> eframe::Result<()> {
     let mut builder = env_logger::Builder::new();
     builder.filter_level(log::LevelFilter::Warn);

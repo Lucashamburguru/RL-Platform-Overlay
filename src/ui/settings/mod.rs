@@ -249,7 +249,7 @@ pub(super) fn render_launch_controls(
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
         ui.label(
-            egui::RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
+            egui::RichText::new(format!("v{}", crate::app_version()))
                 .size(12.0)
                 .color(egui::Color32::from_gray(178)),
         );

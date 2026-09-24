@@ -377,8 +377,19 @@ fn compare_versions(left: &str, right: &str) -> Option<std::cmp::Ordering> {
     Some(parse_version(left)?.cmp(&parse_version(right)?))
 }
 
-fn parse_version(version: &str) -> Option<Version> {
-    Version::parse(version.trim().trim_start_matches('v')).ok()
+fn parse_version(version: &str) -> Option<(Version, Option<u64>)> {
+    let version = version.trim().trim_start_matches('v');
+    if let Ok(parsed) = Version::parse(version) {
+        let revision = parsed.build.as_str().parse().ok();
+        return Some((parsed, revision));
+    }
+
+    let (base, revision) = version.rsplit_once('.')?;
+    let parsed = Version::parse(base).ok()?;
+    if !parsed.pre.is_empty() || !parsed.build.is_empty() {
+        return None;
+    }
+    Some((parsed, Some(revision.parse().ok()?)))
 }
 
 #[cfg(any(target_os = "windows", test))]
@@ -545,6 +556,30 @@ mod tests {
         assert_eq!(
             compare_versions("v0.1.4", "0.1.4"),
             Some(std::cmp::Ordering::Equal)
+        );
+    }
+
+    #[test]
+    fn four_part_release_supersedes_failed_three_part_release() {
+        assert_eq!(
+            compare_versions("v0.1.51.0", "0.1.51"),
+            Some(std::cmp::Ordering::Greater)
+        );
+        assert_eq!(
+            compare_versions("v0.1.51.0", "0.1.51+0"),
+            Some(std::cmp::Ordering::Equal)
+        );
+        assert_eq!(
+            compare_versions("v0.1.51.1", "0.1.51+0"),
+            Some(std::cmp::Ordering::Greater)
+        );
+        assert_eq!(
+            compare_versions("v0.1.52", "0.1.51+0"),
+            Some(std::cmp::Ordering::Greater)
+        );
+        assert_eq!(
+            latest_release_tag(&json!({ "tag_name": "v0.1.51.0" })),
+            Some("v0.1.51.0".to_string())
         );
     }
 

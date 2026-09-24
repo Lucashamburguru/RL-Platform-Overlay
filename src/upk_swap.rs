@@ -103,8 +103,10 @@ impl FString {
                 return Err("Invalid UTF-16 UPK terminator".into());
             }
             let words = raw[..raw.len() - 2]
-                .chunks_exact(2)
-                .map(|c| u16::from_le_bytes(c.try_into().unwrap()))
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|c| u16::from_le_bytes(*c))
                 .collect::<Vec<_>>();
             Ok(Self {
                 text: String::from_utf16(&words).map_err(|_| "Invalid UTF-16 UPK string")?,
@@ -423,7 +425,7 @@ struct Tables {
 
 fn crypt(bytes: &mut [u8], key: &[u8; 32], decrypt: bool) {
     let cipher = Aes256::new(key.into());
-    for raw in bytes.chunks_exact_mut(16) {
+    for raw in bytes.as_chunks_mut::<16>().0 {
         let block = aes::cipher::generic_array::GenericArray::from_mut_slice(raw);
         if decrypt {
             cipher.decrypt_block(block)
@@ -652,7 +654,7 @@ mod tests {
         }
         h.i32(0);
         let actual = h.pos();
-        while h.pos() % 16 != 0 {
+        while !h.pos().is_multiple_of(16) {
             h.raw(&[0])
         }
         s.total_header = (size + actual) as i32;

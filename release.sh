@@ -47,7 +47,7 @@ bump_version() {
         return
     fi
 
-    IFS=. read -r major minor patch <<<"$current"
+    IFS=. read -r major minor patch <<<"${current%%+*}"
     case $bump in
         major) printf '%d.0.0\n' "$((major + 1))" ;;
         minor) printf '%d.%d.0\n' "$major" "$((minor + 1))" ;;
@@ -156,7 +156,7 @@ branch=$(git branch --show-current)
 [[ -n $branch ]] || die "releases cannot be created from a detached HEAD"
 
 old_version=$(current_version)
-[[ $old_version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "Cargo.toml has no valid package version"
+[[ $old_version =~ ^[0-9]+\.[0-9]+\.[0-9]+(\+[0-9]+)?$ ]] || die "Cargo.toml has no valid package version"
 new_version=$(bump_version "$bump" "$old_version")
 [[ $new_version != "$old_version" ]] || die "new version must differ from $old_version"
 
