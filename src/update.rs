@@ -379,8 +379,11 @@ fn compare_versions(left: &str, right: &str) -> Option<std::cmp::Ordering> {
 
 fn parse_version(version: &str) -> Option<(Version, Option<u64>)> {
     let version = version.trim().trim_start_matches('v');
-    if let Ok(parsed) = Version::parse(version) {
+    if let Ok(mut parsed) = Version::parse(version) {
         let revision = parsed.build.as_str().parse().ok();
+        // Build metadata is not part of SemVer precedence. Numeric metadata
+        // represents our fourth version component, compared separately below.
+        parsed.build = semver::BuildMetadata::EMPTY;
         return Some((parsed, revision));
     }
 
@@ -580,6 +583,22 @@ mod tests {
         assert_eq!(
             latest_release_tag(&json!({ "tag_name": "v0.1.51.0" })),
             Some("v0.1.51.0".to_string())
+        );
+    }
+
+    #[test]
+    fn build_labels_do_not_affect_release_precedence() {
+        assert_eq!(
+            compare_versions("1.2.3+linux", "1.2.3+windows"),
+            Some(std::cmp::Ordering::Equal)
+        );
+        assert_eq!(
+            compare_versions("1.2.3+build.7", "1.2.3"),
+            Some(std::cmp::Ordering::Equal)
+        );
+        assert_eq!(
+            compare_versions("1.2.3+10", "1.2.3.2"),
+            Some(std::cmp::Ordering::Greater)
         );
     }
 

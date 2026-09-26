@@ -52,14 +52,20 @@ You can also edit `TAGame/Config/DefaultStatsAPI.ini` yourself and set
   ballchasing.com.
 * **Hoops replay fixer:** Repair supported legacy Hoops replays, with a backup
   created first.
-* **Gold Rush swapper:** Build the visual swap from the installed Alpha Boost
-  and Standard Boost UPKs, then apply the separate boost audio swap. It fetches
+* **Gold Rush swapper:** Build appearance and sound swaps from the installed Alpha
+  and Standard Boost packages and sound banks. It fetches
   current package keys and keeps verified backups so the visual package is
   rebuilt after game updates.
 * **Item Swapper:** Search the installed body, wheel, boost, trail, goal
   explosion, topper, antenna, and paint-finish catalog and make one cosmetic
   package appear in place of another. Swaps are generated from the current
   game files and can be restored individually.
+  For boosts, keep the target's original sound, match the chosen appearance, or
+  pick another installed boost sound. Select the same appearance and target for
+  a sound-only swap. Shared sound banks also affect other boosts using that bank;
+  conflicting swaps are blocked. Unsupported sound banks are disabled in the picker.
+  Appearance and audio backups are restored together. Turn off Rocket League's
+  Standard Boost audio override to hear individual boost sounds.
 
 The app changes local Rocket League files only when you choose the Gold Rush
 preset, Item Swapper, or Hoops replay fixer.

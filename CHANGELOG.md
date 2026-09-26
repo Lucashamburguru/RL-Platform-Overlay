@@ -6,6 +6,18 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- **Boost Sound Choices**: Keep a boost's original sound, match its new appearance, or choose another installed boost sound. Sound-only swaps are also supported.
+
+### Changed
+- **Generated Boost Audio**: The Gold Rush preset now generates its sound replacement from installed game files. Appearance and audio are backed up, reapplied, and restored together, with checks for shared sound banks.
+
+### Fixed
+- **Dev Boost Swapping**: Added support for Dev Boost's encrypted package format using the current catalog key.
+- **Alpha Preset Status**: The Gold Rush checkbox now requires both Alpha visuals and Alpha sound; other combinations display as custom swaps.
+- **Update Version Checks**: Fixed comparisons between four-part release tags and their equivalent application versions.
+- **Build Checks**: Normal builds now run alongside Microsoft Store checks so item-swapper regressions are caught before release.
+
 ---
 
 ## [0.1.52] - 2026-09-24

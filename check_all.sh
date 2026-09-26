@@ -12,6 +12,10 @@ run_check() {
 }
 
 run_check "formatting" cargo fmt --all -- --check
+run_check "Clippy (normal build, all targets)" \
+    cargo clippy --locked --all-targets -- -D warnings
+run_check "tests (normal build, all targets)" \
+    cargo test --locked --all-targets
 run_check "Clippy (all targets and features)" \
     cargo clippy --locked --all-targets --all-features -- -D warnings
 run_check "tests (all targets and features)" \

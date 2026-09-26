@@ -9,6 +9,8 @@ pub mod stats_api;
 pub mod stats_api_parser;
 
 mod assets;
+#[cfg(not(feature = "microsoft-store"))]
+mod boost_audio;
 mod diagnostics;
 mod input;
 #[cfg(not(feature = "microsoft-store"))]

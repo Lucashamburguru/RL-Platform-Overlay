@@ -1,4 +1,4 @@
-use crate::item_swapper::{CatalogPackage, ItemSlot, SwapHealth};
+use crate::item_swapper::{CatalogPackage, ItemSlot, SoundChoice, SwapHealth};
 use crate::state::AppState;
 use eframe::egui;
 use std::sync::Arc;
@@ -10,10 +10,18 @@ pub(crate) struct ItemSwapperUiState {
     pub target_search: String,
     pub donor: Option<String>,
     pub target: Option<String>,
+    pub sound: SoundChoice,
+    pub sound_search: String,
+    pub sound_bank: Option<String>,
+    pub choose_sound: bool,
 }
 
 pub(crate) enum ItemSwapperAction {
-    Apply { donor: String, target: String },
+    Apply {
+        donor: String,
+        target: String,
+        sound: SoundChoice,
+    },
 }
 
 pub(crate) fn render_item_swapper_settings_tab(
@@ -96,8 +104,122 @@ pub(crate) fn render_item_swapper_settings_tab(
         );
     });
 
+    let is_boost = edit.slot == Some(ItemSlot::RocketBoost);
+    let mut sound_problem = None;
+    if is_boost {
+        ui.add_space(8.0);
+        ui.strong("3. Boost sound");
+        ui.horizontal_wrapped(|ui| {
+            if ui
+                .selectable_label(
+                    !edit.choose_sound && edit.sound == SoundChoice::Original,
+                    "Keep original target sound",
+                )
+                .clicked()
+            {
+                edit.choose_sound = false;
+                edit.sound = SoundChoice::Original;
+            }
+            if ui
+                .selectable_label(
+                    !edit.choose_sound && edit.sound == SoundChoice::MatchAppearance,
+                    "Match appearance",
+                )
+                .clicked()
+            {
+                edit.choose_sound = false;
+                edit.sound = SoundChoice::MatchAppearance;
+            }
+            if ui
+                .selectable_label(edit.choose_sound, "Choose another sound")
+                .clicked()
+            {
+                edit.choose_sound = true;
+            }
+        });
+        if edit.choose_sound {
+            ui.add(
+                egui::TextEdit::singleline(&mut edit.sound_search).hint_text("Search boost sounds"),
+            );
+            let needle = edit.sound_search.to_lowercase();
+            egui::ScrollArea::vertical()
+                .id_salt("boost_sound_picker")
+                .max_height(130.0)
+                .show(ui, |ui| {
+                    for bank in snapshot.sounds.iter().filter(|s| {
+                        s.label.to_lowercase().contains(&needle)
+                            || s.file.to_lowercase().contains(&needle)
+                    }) {
+                        let response = ui.add_enabled(
+                            bank.unavailable.is_none(),
+                            egui::SelectableLabel::new(
+                                edit.sound_bank.as_deref() == Some(bank.file.as_str()),
+                                &bank.label,
+                            ),
+                        );
+                        if response.clicked() {
+                            edit.sound_bank = Some(bank.file.clone());
+                        }
+                        if let Some(reason) = &bank.unavailable {
+                            response.on_disabled_hover_text(reason);
+                        }
+                    }
+                });
+            if let Some(bank) = &edit.sound_bank {
+                edit.sound = SoundChoice::Bank(bank.clone());
+            } else {
+                sound_problem = Some("Choose a sound to copy.".to_owned());
+            }
+        }
+        if edit.sound != SoundChoice::Original {
+            let source_bank = match &edit.sound {
+                SoundChoice::Bank(bank) => Some(bank),
+                SoundChoice::MatchAppearance => edit
+                    .donor
+                    .as_ref()
+                    .and_then(|p| snapshot.boost_banks.get(p)),
+                SoundChoice::Original => None,
+            };
+            if let Some(bank) = source_bank {
+                ui.label(format!("Sound: {}", crate::boost_audio::display_name(bank)));
+                if let Some(info) = snapshot.sounds.iter().find(|s| s.file == *bank) {
+                    if let Some(reason) = &info.unavailable {
+                        sound_problem = Some(reason.clone());
+                    }
+                } else {
+                    sound_problem =
+                        Some("This sound is no longer installed. Refresh the catalog.".into());
+                }
+            } else if edit.donor.is_some() {
+                sound_problem = Some("This appearance's sound could not be identified. Choose another sound or keep the original.".into());
+            }
+            if let Some(target) = &edit.target {
+                if let Some(bank) = snapshot.boost_banks.get(target) {
+                    if let Some(reason) = snapshot
+                        .sounds
+                        .iter()
+                        .find(|s| &s.file == bank)
+                        .and_then(|s| s.unavailable.as_ref())
+                    {
+                        sound_problem = Some(format!("Target sound unavailable: {reason}"));
+                    }
+                    let shared = snapshot.boost_banks.values().filter(|b| *b == bank).count();
+                    if shared > 1 {
+                        ui.weak(format!("This sound is shared by {shared} boost packages. They will all use the replacement sound."));
+                    }
+                } else {
+                    sound_problem = Some("This target's sound could not be identified. Its appearance can still be swapped with the original sound.".into());
+                }
+            }
+        }
+        ui.weak("To hear a boost's own sound, turn off Rocket League's setting that uses Standard Boost audio for every boost.");
+        if let Some(problem) = &sound_problem {
+            ui.colored_label(egui::Color32::from_rgb(255, 188, 72), problem);
+        }
+    }
+
     match (&edit.donor, &edit.target) {
-        (Some(donor), Some(target)) if donor != target => {
+        (Some(donor), Some(target)) => {
             let donor_name = display_name(&packages, donor);
             let target_name = display_name(&packages, target);
             ui.group(|ui| {
@@ -118,17 +240,27 @@ pub(crate) fn render_item_swapper_settings_tab(
         && !is_rl_running
         && edit.donor.is_some()
         && edit.target.is_some()
-        && edit.donor != edit.target;
+        && sound_problem.is_none()
+        && (edit.donor != edit.target || (is_boost && edit.sound != SoundChoice::Original));
     if ui
         .add_enabled(
             can_apply,
-            egui::Button::new("Replace target with source appearance"),
+            egui::Button::new(if is_boost {
+                "Apply appearance and sound"
+            } else {
+                "Replace target with source appearance"
+            }),
         )
         .clicked()
     {
         action = Some(ItemSwapperAction::Apply {
             donor: edit.donor.clone().unwrap(),
             target: edit.target.clone().unwrap(),
+            sound: if is_boost {
+                edit.sound.clone()
+            } else {
+                SoundChoice::Original
+            },
         });
     }
     if is_rl_running {
@@ -156,6 +288,14 @@ pub(crate) fn render_item_swapper_settings_tab(
                 "{} now displays {}'s appearance",
                 swap.target_package, swap.donor_package
             ));
+            if swap.sound_choice() != SoundChoice::Original {
+                let label = match swap.sound_choice() {
+                    SoundChoice::MatchAppearance => "matches appearance".to_owned(),
+                    SoundChoice::Bank(bank) => crate::boost_audio::display_name(&bank),
+                    SoundChoice::Original => unreachable!(),
+                };
+                ui.label(format!("Sound: {label}"));
+            }
             let color = match swap.health {
                 SwapHealth::Active => egui::Color32::from_rgb(80, 200, 120),
                 SwapHealth::NeedsReapply => egui::Color32::from_rgb(255, 188, 72),

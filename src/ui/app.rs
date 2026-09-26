@@ -79,7 +79,7 @@ pub struct MainApp {
     #[cfg(not(feature = "microsoft-store"))]
     item_swapper_ui: ItemSwapperUiState,
     #[cfg(not(feature = "microsoft-store"))]
-    pending_item_swap: Option<(String, String)>,
+    pending_item_swap: Option<(String, String, crate::item_swapper::SoundChoice)>,
     #[cfg(not(feature = "microsoft-store"))]
     item_swap_risk_accepted: bool,
     settings_content_overflow: bool,
@@ -1280,7 +1280,7 @@ impl MainApp {
                 ),
                 #[cfg(not(feature = "microsoft-store"))]
                 SettingsTab::ItemSwapper => {
-                    if let Some(ItemSwapperAction::Apply { donor, target }) =
+                    if let Some(ItemSwapperAction::Apply { donor, target, sound }) =
                         render_item_swapper_settings_tab(
                             ui,
                             &self.state,
@@ -1289,14 +1289,15 @@ impl MainApp {
                             self.is_rl_running,
                         )
                     {
-                        self.pending_item_swap = Some((donor, target));
+                        self.pending_item_swap = Some((donor, target, sound));
                         if self.item_swap_risk_accepted {
-                            if let Some((donor, target)) = self.pending_item_swap.take() {
+                            if let Some((donor, target, sound)) = self.pending_item_swap.take() {
                                 crate::item_swapper::start_apply(
                                     self.state.clone(),
                                     config_edit.rocket_league_path.clone(),
                                     donor,
                                     target,
+                                    sound,
                                 );
                             }
                         } else {
@@ -1553,9 +1554,9 @@ impl MainApp {
 
     #[cfg(not(feature = "microsoft-store"))]
     fn perform_pending_item_swap(&mut self) {
-        if let Some((donor, target)) = self.pending_item_swap.take() {
+        if let Some((donor, target, sound)) = self.pending_item_swap.take() {
             let install = self.state.system.config.load().rocket_league_path.clone();
-            crate::item_swapper::start_apply(self.state.clone(), install, donor, target);
+            crate::item_swapper::start_apply(self.state.clone(), install, donor, target, sound);
         }
     }
 }

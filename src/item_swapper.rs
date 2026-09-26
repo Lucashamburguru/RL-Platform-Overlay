@@ -10,7 +10,22 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 const CATALOG_URL: &str =
     "https://raw.githubusercontent.com/ShinyEmii/Toga-Files/refs/heads/master/products.csv";
-const MANIFEST_VERSION: u32 = 1;
+const MANIFEST_VERSION: u32 = 2;
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub enum SoundChoice {
+    #[default]
+    Original,
+    MatchAppearance,
+    Bank(String),
+}
+
+#[derive(Clone, Debug)]
+pub struct SoundBankInfo {
+    pub file: String,
+    pub label: String,
+    pub unavailable: Option<String>,
+}
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub enum ItemSlot {
@@ -106,6 +121,29 @@ pub struct ActiveSwap {
     pub audio_original_sha256: Option<String>,
     #[serde(default)]
     pub audio_applied_sha256: Option<String>,
+    #[serde(default)]
+    pub audio_target: Option<String>,
+    #[serde(default)]
+    pub sound: Option<SoundChoice>,
+}
+
+impl ActiveSwap {
+    fn audio_file(&self) -> Option<&str> {
+        self.audio_backup.as_ref().map(|_| {
+            self.audio_target
+                .as_deref()
+                .unwrap_or("SFX_Boost_Standard.bnk")
+        })
+    }
+    pub fn sound_choice(&self) -> SoundChoice {
+        self.sound.clone().unwrap_or_else(|| {
+            if self.audio_backup.is_some() {
+                SoundChoice::Bank("SFX_Boost_Alpha.bnk".into())
+            } else {
+                SoundChoice::Original
+            }
+        })
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -117,6 +155,8 @@ pub struct ItemSwapperSnapshot {
     pub refreshing: bool,
     pub running: bool,
     pub message: String,
+    pub sounds: Vec<SoundBankInfo>,
+    pub boost_banks: BTreeMap<String, String>,
 }
 
 pub struct ItemSwapperState {
@@ -229,6 +269,7 @@ pub fn start_apply(
     install: String,
     donor: String,
     target: String,
+    sound: SoundChoice,
 ) {
     if state
         .item_swapper
@@ -237,46 +278,21 @@ pub fn start_apply(
     {
         return;
     }
-    let alpha_pair = donor == "Boost_AlphaReward" && target == "Boost_Standard";
     publish(&state, |s| {
         s.running = true;
-        s.message = if alpha_pair {
-            "Preparing Alpha Boost visual and audio…".into()
-        } else {
-            "Generating swap…".into()
-        };
+        s.message = "Generating appearance and sound swap…".into();
     });
     let packages = state.item_swapper.snapshot.load().packages.clone();
     tokio::spawn(async move {
-        let audio = if alpha_pair {
-            match crate::assets::prepare_alpha_audio_asset().await {
-                Ok(path) => Some(path),
-                Err(error) => {
-                    finish_operation(&state, Err(error), &install);
-                    return;
-                }
-            }
-        } else {
-            None
-        };
         let operation_install = install.clone();
         let result = tokio::task::spawn_blocking(move || {
             if crate::assets::is_rocket_league_running() {
                 return Err("Close Rocket League before changing game files.".into());
             }
-            if alpha_pair {
+            if donor == "Boost_AlphaReward" && target == "Boost_Standard" {
                 crate::assets::restore_legacy_bubble_swap(&operation_install)?;
             }
-            let message = apply(&operation_install, &packages, &donor, &target)?;
-            if let Some(audio) = audio
-                && let Err(error) = apply_alpha_audio(&operation_install, &audio)
-            {
-                let _ = restore(&operation_install, "Boost_Standard");
-                return Err(format!(
-                    "Alpha audio failed; visual swap was rolled back: {error}"
-                ));
-            }
-            Ok(message)
+            apply(&operation_install, &packages, &donor, &target, &sound)
         })
         .await
         .unwrap_or_else(|e| Err(format!("Swap worker failed: {e}")));
@@ -307,6 +323,7 @@ pub fn start_alpha_preset(state: Arc<crate::state::AppState>, install: String) {
                     install,
                     "Boost_AlphaReward".into(),
                     "Boost_Standard".into(),
+                    SoundChoice::MatchAppearance,
                 );
                 return;
             }
@@ -333,36 +350,53 @@ pub fn start_alpha_preset(state: Arc<crate::state::AppState>, install: String) {
     });
 }
 
-pub fn has_alpha_preset() -> bool {
+pub fn has_standard_swap() -> bool {
     let Some(conf) = crate::state::config_dir() else {
         return false;
     };
     load_manifest(&conf).is_ok_and(|manifest| {
-        manifest.active.iter().any(|swap| {
-            swap.donor_package == "Boost_AlphaReward" && swap.target_package == "Boost_Standard"
-        })
+        manifest
+            .active
+            .iter()
+            .any(|swap| swap.target_package == "Boost_Standard")
     })
 }
 
 pub fn alpha_preset_file_state(install: &str) -> Option<crate::assets::BoostGameFileState> {
     let conf = crate::state::config_dir()?;
     let manifest = load_manifest(&conf).ok()?;
-    let record = manifest.active.iter().find(|swap| {
-        swap.donor_package == "Boost_AlphaReward" && swap.target_package == "Boost_Standard"
-    })?;
+    let record = manifest
+        .active
+        .iter()
+        .find(|swap| swap.target_package == "Boost_Standard")?;
     let cooked = cooked_dir(install).ok()?;
     let visual = hash_file(&package_path(&cooked, "Boost_Standard")).ok()?;
     let audio = hash_file(&cooked.join("SFX_Boost_Standard.bnk")).ok()?;
-    if visual == record.applied_sha256
-        && record.audio_applied_sha256.as_deref() == Some(audio.as_str())
-    {
-        Some(crate::assets::BoostGameFileState::Alpha)
-    } else if visual == record.original_sha256
-        && record.audio_original_sha256.as_deref() == Some(audio.as_str())
-    {
-        Some(crate::assets::BoostGameFileState::Original)
+    Some(standard_swap_state(record, &visual, &audio))
+}
+
+fn standard_swap_state(
+    record: &ActiveSwap,
+    visual: &str,
+    audio: &str,
+) -> crate::assets::BoostGameFileState {
+    use crate::assets::BoostGameFileState;
+    let sound = record.sound_choice();
+    let untouched_audio = sound == SoundChoice::Original && record.audio_file().is_none();
+    let audio_original = untouched_audio || record.audio_original_sha256.as_deref() == Some(audio);
+    let audio_applied = record.audio_applied_sha256.as_deref() == Some(audio);
+    if visual == record.original_sha256 && audio_original {
+        BoostGameFileState::Original
+    } else if visual == record.applied_sha256 && (audio_applied || untouched_audio) {
+        let alpha_sound = sound == SoundChoice::MatchAppearance
+            || sound == SoundChoice::Bank("SFX_Boost_Alpha.bnk".into());
+        if record.donor_package == "Boost_AlphaReward" && alpha_sound && audio_applied {
+            BoostGameFileState::Alpha
+        } else {
+            BoostGameFileState::Custom
+        }
     } else {
-        Some(crate::assets::BoostGameFileState::Unknown)
+        BoostGameFileState::Unknown
     }
 }
 
@@ -380,7 +414,13 @@ pub fn start_reapply(state: Arc<crate::state::AppState>, install: String, target
         });
         return;
     };
-    start_apply(state, install, record.donor_package.clone(), target);
+    start_apply(
+        state,
+        install,
+        record.donor_package.clone(),
+        target,
+        record.sound_choice(),
+    );
 }
 
 fn start_operation(
@@ -428,24 +468,32 @@ fn finish_operation(
         s.running = false;
         s.message = message.clone();
     });
+    let was_standard_managed = state
+        .item_swapper
+        .snapshot
+        .load()
+        .active
+        .iter()
+        .any(|record| record.target_package == "Boost_Standard");
     refresh_active(state, install);
-    let alpha_managed = has_alpha_preset();
+    let standard_managed = has_standard_swap();
+    let alpha_enabled =
+        alpha_preset_file_state(install) == Some(crate::assets::BoostGameFileState::Alpha);
     let mut boost_status = state
         .boost
         .boost_swap_status
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    let alpha_context = alpha_managed
+    let alpha_context = standard_managed
+        || was_standard_managed
         || boost_status.starts_with("Loading the current item catalog")
         || boost_status.starts_with("Restoring the Alpha Boost preset");
     if alpha_context {
         *boost_status = message;
     }
     drop(boost_status);
-    if alpha_managed {
-        state.update_config(|config| config.alpha_boost_enabled = true);
-    } else if alpha_context {
-        state.update_config(|config| config.alpha_boost_enabled = false);
+    if alpha_context {
+        state.update_config(|config| config.alpha_boost_enabled = alpha_enabled);
     }
     crate::assets::request_boost_swap_inspection(state, install.to_owned(), true);
 }
@@ -455,9 +503,23 @@ fn apply(
     packages: &[CatalogPackage],
     donor_id: &str,
     target_id: &str,
+    sound: &SoundChoice,
 ) -> Result<String, String> {
-    if donor_id == target_id {
-        return Err("Choose two different packages.".into());
+    let cooked = cooked_dir(install)?;
+    let conf = crate::state::config_dir().ok_or("Could not resolve config directory")?;
+    apply_at(&cooked, &conf, packages, donor_id, target_id, sound)
+}
+
+fn apply_at(
+    cooked: &Path,
+    conf: &Path,
+    packages: &[CatalogPackage],
+    donor_id: &str,
+    target_id: &str,
+    sound: &SoundChoice,
+) -> Result<String, String> {
+    if donor_id == target_id && *sound == SoundChoice::Original {
+        return Err("Choose a different appearance or a replacement sound.".into());
     }
     let donor = packages
         .iter()
@@ -470,13 +532,26 @@ fn apply(
     if donor.slot != target.slot {
         return Err("Donor and target must use the same item slot.".into());
     }
-    let cooked = cooked_dir(install)?;
-    let conf = crate::state::config_dir().ok_or("Could not resolve config directory")?;
-    let mut manifest = load_manifest(&conf)?;
-    let target_path = package_path(&cooked, target_id);
-    let donor_path = pristine_path(&cooked, &manifest, donor_id)?;
+    let mut manifest = load_manifest(conf)?;
+    let target_path = package_path(cooked, target_id);
+    let donor_path = pristine_path(cooked, &manifest, donor_id)?;
+    let donor_bytes = fs::read(&donor_path)
+        .map_err(|e| format!("Could not read donor {}: {e}", donor_path.display()))?;
+    let donor_key = crate::upk_swap::key_from_base64(&donor.key)?;
+    crate::upk_swap::validate_identity(&donor_bytes, &donor_key, donor_id).map_err(|error| {
+        format!(
+            "Could not validate {donor_id} with its catalog key: {error}. Refresh the catalog and confirm the package is from the current game install. No game files were changed."
+        )
+    })?;
     let target_current = fs::read(&target_path)
         .map_err(|e| format!("Could not read {}: {e}", target_path.display()))?;
+    let target_key = crate::upk_swap::key_from_base64(&target.key)?;
+    crate::upk_swap::validate_identity(&target_current, &target_key, target_id).map_err(|error| {
+        format!(
+            "Could not validate {target_id} with its catalog key: {error}. Refresh the catalog and confirm the package is from the current game install. No game files were changed."
+        )
+    })?;
+    let visual_before = target_current.clone();
     let current_hash = hash_bytes(&target_current);
 
     let existing = manifest
@@ -486,13 +561,6 @@ fn apply(
         .cloned();
     let (target_original, backup_path, original_hash) = if let Some(record) = &existing {
         if current_hash != record.applied_sha256 && current_hash != record.original_sha256 {
-            let target_key = crate::upk_swap::key_from_base64(&target.key)?;
-            crate::upk_swap::validate_identity(&target_current, &target_key, target_id).map_err(
-                |_| {
-                    "Target is not a valid current package. Verify the game files before applying."
-                        .to_string()
-                },
-            )?;
             let prior = fs::read(&record.target_backup)
                 .map_err(|e| format!("Could not read prior target backup: {e}"))?;
             if crate::upk_swap::package_guid(&target_current)?
@@ -500,7 +568,7 @@ fn apply(
             {
                 return Err("Target changed without a new package GUID. Verify the game files before applying.".into());
             }
-            let backup = backup_path(&conf, target_id, &current_hash);
+            let backup = backup_path(conf, target_id, &current_hash);
             if !backup.exists() {
                 if let Some(parent) = backup.parent() {
                     fs::create_dir_all(parent)
@@ -525,7 +593,7 @@ fn apply(
             )
         }
     } else {
-        let backup = backup_path(&conf, target_id, &current_hash);
+        let backup = backup_path(conf, target_id, &current_hash);
         if !backup.exists() {
             if let Some(parent) = backup.parent() {
                 fs::create_dir_all(parent)
@@ -538,24 +606,39 @@ fn apply(
         }
         (target_current, backup, current_hash)
     };
-    let donor_bytes = fs::read(&donor_path)
-        .map_err(|e| format!("Could not read donor {}: {e}", donor_path.display()))?;
-    let donor_key = crate::upk_swap::key_from_base64(&donor.key)?;
-    let target_key = crate::upk_swap::key_from_base64(&target.key)?;
-    let generated = crate::upk_swap::masquerade(
+    let generated = if donor_id == target_id {
+        target_original.clone()
+    } else {
+        crate::upk_swap::masquerade(
+            &donor_bytes,
+            &target_original,
+            &donor_key,
+            &target_key,
+            donor_id,
+            target_id,
+        )?
+    };
+    crate::upk_swap::validate_identity(&generated, &target_key, target_id)?;
+    let audio = prepare_audio(
+        conf,
+        cooked,
+        &manifest,
+        existing.as_ref(),
+        sound,
+        donor.slot,
         &donor_bytes,
-        &target_original,
         &donor_key,
+        &target_original,
         &target_key,
-        donor_id,
         target_id,
     )?;
-    crate::upk_swap::validate_identity(&generated, &target_key, target_id)?;
+    let mut changes = vec![FileChange {
+        path: target_path,
+        before: visual_before,
+        after: generated.clone(),
+    }];
+    changes.extend(audio.changes);
     let applied_hash = hash_bytes(&generated);
-    install_transaction(&target_path, &generated, &target_original)?;
-    if hash_file(&target_path)? != applied_hash {
-        return Err("Installed package failed verification; the original was restored.".into());
-    }
     manifest.active.retain(|v| v.target_package != target_id);
     manifest.active.push(ActiveSwap {
         donor_package: donor_id.into(),
@@ -564,130 +647,338 @@ fn apply(
         original_sha256: original_hash,
         applied_sha256: applied_hash,
         health: SwapHealth::Active,
-        audio_backup: existing.as_ref().and_then(|v| v.audio_backup.clone()),
-        audio_original_sha256: existing
-            .as_ref()
-            .and_then(|v| v.audio_original_sha256.clone()),
-        audio_applied_sha256: existing
-            .as_ref()
-            .and_then(|v| v.audio_applied_sha256.clone()),
+        audio_backup: audio.backup,
+        audio_original_sha256: audio.original_hash,
+        audio_applied_sha256: audio.applied_hash,
+        audio_target: audio.target,
+        sound: Some(sound.clone()),
     });
-    if let Err(error) = save_manifest(&conf, &manifest) {
-        install_transaction(&target_path, &target_original, &target_original)?;
-        return Err(format!(
-            "Could not save swap manifest; restored original: {error}"
-        ));
-    }
+    commit_changes(conf, &manifest, &changes)?;
     Ok(format!(
-        "Applied: {} now displays {}'s appearance.",
+        "Applied: {} now displays {}'s appearance. {}",
         target.display_name(),
-        donor.display_name()
+        donor.display_name(),
+        audio.description
     ))
 }
 
 fn restore(install: &str, target_id: &str) -> Result<String, String> {
     let cooked = cooked_dir(install)?;
     let conf = crate::state::config_dir().ok_or("Could not resolve config directory")?;
-    let mut manifest = load_manifest(&conf)?;
+    restore_at(&cooked, &conf, target_id)
+}
+
+fn restore_at(cooked: &Path, conf: &Path, target_id: &str) -> Result<String, String> {
+    let mut manifest = load_manifest(conf)?;
     let index = manifest
         .active
         .iter()
         .position(|v| v.target_package == target_id)
         .ok_or("No active swap exists for this target")?;
-    let record = manifest.active[index].clone();
-    let backup =
-        fs::read(&record.target_backup).map_err(|e| format!("Could not read backup: {e}"))?;
-    if hash_bytes(&backup) != record.original_sha256 {
-        return Err("Backup failed hash verification.".into());
+    let record = &manifest.active[index];
+    let backup = verified_backup(&record.target_backup, &record.original_sha256)?;
+    let target = package_path(cooked, target_id);
+    let visual_current =
+        fs::read(&target).map_err(|e| format!("Could not read current target: {e}"))?;
+    check_known(
+        &visual_current,
+        &record.original_sha256,
+        &record.applied_sha256,
+    )?;
+    let mut changes = vec![FileChange {
+        path: target,
+        before: visual_current,
+        after: backup,
+    }];
+    if let Some(file) = record.audio_file() {
+        let (before, original) = recorded_audio(cooked, record)?;
+        changes.push(FileChange {
+            path: cooked.join(file),
+            before,
+            after: original,
+        });
     }
-    let target = package_path(&cooked, target_id);
-    let visual_current = fs::read(&target)
-        .map_err(|e| format!("Could not read current target before restore: {e}"))?;
-    let current_hash = hash_file(&target)?;
-    if current_hash != record.applied_sha256 && current_hash != record.original_sha256 {
-        return Err("Target changed outside the swapper. Refusing to overwrite it.".into());
-    }
-    let prepared_audio = if let (Some(audio_backup), Some(original_hash)) =
-        (&record.audio_backup, &record.audio_original_sha256)
-    {
-        let audio_backup =
-            fs::read(audio_backup).map_err(|e| format!("Could not read audio backup: {e}"))?;
-        if hash_bytes(&audio_backup) != *original_hash {
-            return Err("Audio backup failed hash verification.".into());
-        }
-        let audio_target = cooked.join("SFX_Boost_Standard.bnk");
-        let current = hash_file(&audio_target)?;
-        if current != *original_hash
-            && record.audio_applied_sha256.as_deref() != Some(current.as_str())
-        {
-            return Err("Audio target changed outside the swapper. Nothing was restored.".into());
-        }
-        Some((audio_target, audio_backup))
-    } else {
-        None
-    };
-    install_transaction(&target, &backup, &backup)?;
-    if let Some((audio_target, audio_backup)) = prepared_audio {
-        if let Err(error) = install_transaction(&audio_target, &audio_backup, &audio_backup) {
-            let _ = install_transaction(&target, &visual_current, &visual_current);
+    manifest.active.remove(index);
+    commit_changes(conf, &manifest, &changes)?;
+    Ok(format!("Restored {target_id}'s appearance and sound."))
+}
+
+struct FileChange {
+    path: PathBuf,
+    before: Vec<u8>,
+    after: Vec<u8>,
+}
+
+fn commit_changes(conf: &Path, manifest: &Manifest, changes: &[FileChange]) -> Result<(), String> {
+    // Preflight the entire set before the first write, including changes made
+    // outside this process while the replacements were being generated.
+    for change in changes {
+        if hash_file(&change.path)? != hash_bytes(&change.before) {
             return Err(format!(
-                "Audio restore failed and the visual swap was put back: {error}"
+                "{} changed while preparing the swap. Nothing was applied.",
+                change.path.display()
             ));
         }
     }
-    manifest.active.remove(index);
-    save_manifest(&conf, &manifest)?;
-    Ok(format!("Restored {target_id}."))
-}
-
-fn apply_alpha_audio(install: &str, audio_asset: &Path) -> Result<(), String> {
-    let cooked = cooked_dir(install)?;
-    let conf = crate::state::config_dir().ok_or("Could not resolve config directory")?;
-    let target = cooked.join("SFX_Boost_Standard.bnk");
-    let asset = fs::read(audio_asset).map_err(|e| format!("Could not read Alpha audio: {e}"))?;
-    let applied_hash = hash_bytes(&asset);
-    let current =
-        fs::read(&target).map_err(|e| format!("Could not read Standard Boost audio: {e}"))?;
-    let current_hash = hash_bytes(&current);
-    let mut manifest = load_manifest(&conf)?;
-    let record = manifest
-        .active
-        .iter_mut()
-        .find(|v| v.target_package == "Boost_Standard")
-        .ok_or("Alpha visual swap record is missing")?;
-    let (original, original_hash, backup) =
-        if let (Some(path), Some(hash)) = (&record.audio_backup, &record.audio_original_sha256) {
-            let bytes = fs::read(path).map_err(|e| format!("Could not read audio backup: {e}"))?;
-            if hash_bytes(&bytes) != *hash {
-                return Err("Audio backup failed hash verification.".into());
-            }
-            (bytes, hash.clone(), PathBuf::from(path))
-        } else {
-            let (bytes, hash) = if current_hash == applied_hash {
-                legacy_alpha_audio_backup(&conf).unwrap_or((current, current_hash))
-            } else {
-                (current, current_hash)
-            };
-            let path = conf
-                .join("backups/ItemSwapper/audio/Boost_Standard")
-                .join(format!("{hash}.bnk"));
-            if !path.exists() {
-                atomic_write(&path, &bytes)?;
-            }
-            if hash_file(&path)? != hash {
-                return Err("Audio backup failed verification.".into());
-            }
-            (bytes, hash, path)
-        };
-    install_transaction(&target, &asset, &original)?;
-    record.audio_backup = Some(backup.display().to_string());
-    record.audio_original_sha256 = Some(original_hash);
-    record.audio_applied_sha256 = Some(applied_hash);
-    if let Err(error) = save_manifest(&conf, &manifest) {
-        install_transaction(&target, &original, &original)?;
-        return Err(format!("Could not save audio swap record: {error}"));
+    for (i, change) in changes.iter().enumerate() {
+        if let Err(error) = install_transaction(&change.path, &change.after, &change.before) {
+            return Err(rollback_changes(&changes[..=i], error));
+        }
+    }
+    if let Err(error) = save_manifest(conf, manifest) {
+        return Err(rollback_changes(
+            changes,
+            format!("Could not save swap record: {error}"),
+        ));
     }
     Ok(())
+}
+
+fn rollback_changes(changes: &[FileChange], error: String) -> String {
+    let mut failures = Vec::new();
+    for change in changes.iter().rev() {
+        if let Err(e) = atomic_write(&change.path, &change.before) {
+            failures.push(e);
+        }
+    }
+    if failures.is_empty() {
+        format!("{error}. The previous files were restored.")
+    } else {
+        format!(
+            "{error}. Could not fully roll back: {}. Backups were retained.",
+            failures.join("; ")
+        )
+    }
+}
+
+fn verified_backup(path: &str, expected: &str) -> Result<Vec<u8>, String> {
+    let bytes = fs::read(path).map_err(|e| format!("Could not read backup: {e}"))?;
+    if hash_bytes(&bytes) != expected {
+        return Err("Backup failed hash verification".into());
+    }
+    Ok(bytes)
+}
+
+fn check_known(bytes: &[u8], original: &str, applied: &str) -> Result<(), String> {
+    let hash = hash_bytes(bytes);
+    if hash != original && hash != applied {
+        return Err("A game file changed outside the swapper. Restore or verify game files before applying; nothing was changed.".into());
+    }
+    Ok(())
+}
+
+fn recorded_audio(cooked: &Path, record: &ActiveSwap) -> Result<(Vec<u8>, Vec<u8>), String> {
+    let name = record.audio_file().ok_or("Missing recorded sound bank")?;
+    if !crate::boost_audio::valid_bank_name(name) {
+        return Err("Invalid recorded sound bank name".into());
+    }
+    let hash = record
+        .audio_original_sha256
+        .as_deref()
+        .ok_or("Missing original sound hash")?;
+    let original = verified_backup(
+        record
+            .audio_backup
+            .as_deref()
+            .ok_or("Missing sound backup")?,
+        hash,
+    )?;
+    let current =
+        fs::read(cooked.join(name)).map_err(|e| format!("Could not read sound bank: {e}"))?;
+    let known = check_known(
+        &current,
+        hash,
+        record
+            .audio_applied_sha256
+            .as_deref()
+            .ok_or("Missing applied sound hash")?,
+    );
+    if let Err(error) = known {
+        if package_was_updated(cooked, record)? {
+            crate::boost_audio::validate(&current, name)?;
+            return Ok((current.clone(), current));
+        }
+        return Err(error);
+    }
+    Ok((current, original))
+}
+
+fn package_was_updated(cooked: &Path, record: &ActiveSwap) -> Result<bool, String> {
+    let current =
+        fs::read(package_path(cooked, &record.target_package)).map_err(|e| e.to_string())?;
+    let original = verified_backup(&record.target_backup, &record.original_sha256)?;
+    Ok(crate::upk_swap::package_guid(&current)? != crate::upk_swap::package_guid(&original)?)
+}
+
+fn original_bank(
+    cooked: &Path,
+    conf: &Path,
+    manifest: &Manifest,
+    file: &str,
+) -> Result<Vec<u8>, String> {
+    if !crate::boost_audio::valid_bank_name(file) {
+        return Err("Invalid boost sound bank name".into());
+    }
+    if let Some(record) = manifest
+        .active
+        .iter()
+        .find(|r| r.audio_file() == Some(file))
+    {
+        return recorded_audio(cooked, record).map(|(_, original)| original);
+    }
+    let bytes = fs::read(cooked.join(file)).map_err(|e| format!("Could not read {file}: {e}"))?;
+    if file == "SFX_Boost_Standard.bnk" && hash_bytes(&bytes) == crate::assets::alpha_audio_sha256()
+    {
+        return legacy_alpha_audio_backup(conf)
+            .map(|(original, _)| original)
+            .ok_or("Missing pristine Standard audio backup for the legacy Alpha swap".into());
+    }
+    Ok(bytes)
+}
+
+fn package_bank(bytes: &[u8], key: &[u8; 32], cooked: &Path) -> Result<String, String> {
+    let banks = crate::upk_swap::boost_sound_banks(bytes, key)?
+        .into_iter()
+        .filter(|bank| crate::boost_audio::valid_bank_name(bank) && cooked.join(bank).is_file())
+        .collect::<Vec<_>>();
+    if banks.len() != 1 {
+        return Err("Could not identify a single installed sound bank for this boost".into());
+    }
+    Ok(banks[0].clone())
+}
+
+#[derive(Default)]
+struct PreparedAudio {
+    changes: Vec<FileChange>,
+    backup: Option<String>,
+    original_hash: Option<String>,
+    applied_hash: Option<String>,
+    target: Option<String>,
+    description: String,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_audio(
+    conf: &Path,
+    cooked: &Path,
+    manifest: &Manifest,
+    existing: Option<&ActiveSwap>,
+    choice: &SoundChoice,
+    slot: ItemSlot,
+    donor: &[u8],
+    donor_key: &[u8; 32],
+    target: &[u8],
+    target_key: &[u8; 32],
+    target_id: &str,
+) -> Result<PreparedAudio, String> {
+    let mut result = PreparedAudio {
+        description: "Original sound.".into(),
+        ..Default::default()
+    };
+    let previous = existing.filter(|r| r.audio_file().is_some());
+    if *choice == SoundChoice::Original {
+        if slot == ItemSlot::RocketBoost
+            && let Ok(file) = package_bank(target, target_key, cooked)
+            && let Some(owner) = manifest
+                .active
+                .iter()
+                .find(|r| r.target_package != target_id && r.audio_file() == Some(file.as_str()))
+        {
+            return Err(format!(
+                "The original sound is shared with {} and currently replaced by its swap. Restore that swap first.",
+                owner.target_package
+            ));
+        }
+        if let Some(record) = previous {
+            let (before, after) = recorded_audio(cooked, record)?;
+            result.changes.push(FileChange {
+                path: cooked.join(record.audio_file().unwrap()),
+                before,
+                after,
+            });
+        } else if slot == ItemSlot::RocketBoost
+            && package_bank(target, target_key, cooked).as_deref() == Ok("SFX_Boost_Standard.bnk")
+        {
+            let path = cooked.join("SFX_Boost_Standard.bnk");
+            let before = fs::read(&path).map_err(|e| e.to_string())?;
+            if hash_bytes(&before) == crate::assets::alpha_audio_sha256() {
+                let after = legacy_alpha_audio_backup(conf)
+                    .ok_or("Missing original sound backup for the legacy Alpha swap")?
+                    .0;
+                result.changes.push(FileChange {
+                    path,
+                    before,
+                    after,
+                });
+            }
+        }
+        return Ok(result);
+    }
+    if slot != ItemSlot::RocketBoost {
+        return Err("Sound choices are available for Rocket Boosts only".into());
+    }
+    let target_file = package_bank(target, target_key, cooked)?;
+    if let Some(owner) = manifest
+        .active
+        .iter()
+        .find(|r| r.target_package != target_id && r.audio_file() == Some(target_file.as_str()))
+    {
+        return Err(format!(
+            "This boost shares its sound with {}. Restore that swap before changing their shared sound.",
+            owner.target_package
+        ));
+    }
+    if previous.is_some_and(|r| r.audio_file() != Some(target_file.as_str())) {
+        return Err(
+            "This boost's sound bank changed. Restore the previous swap before applying.".into(),
+        );
+    }
+    let source_file = match choice {
+        SoundChoice::MatchAppearance => package_bank(donor, donor_key, cooked)?,
+        SoundChoice::Bank(file) => file.clone(),
+        SoundChoice::Original => unreachable!(),
+    };
+    let current = fs::read(cooked.join(&target_file))
+        .map_err(|e| format!("Could not read target sound: {e}"))?;
+    let original = if let Some(record) = previous {
+        recorded_audio(cooked, record)?.1
+    } else if target_file == "SFX_Boost_Standard.bnk"
+        && hash_bytes(&current) == crate::assets::alpha_audio_sha256()
+    {
+        legacy_alpha_audio_backup(conf)
+            .ok_or("The existing Alpha sound needs its original backup before continuing")?
+            .0
+    } else {
+        current.clone()
+    };
+    let source = if source_file == target_file {
+        original.clone()
+    } else {
+        original_bank(cooked, conf, manifest, &source_file)?
+    };
+    let generated = crate::boost_audio::generate(&source, &original, &source_file, &target_file)?;
+    let original_hash = hash_bytes(&original);
+    let backup = conf
+        .join("backups/ItemSwapper/audio")
+        .join(&target_file)
+        .join(format!("{original_hash}.bnk"));
+    if !backup.exists() {
+        atomic_write(&backup, &original)?;
+    }
+    if hash_file(&backup)? != original_hash {
+        return Err("Sound backup failed hash verification".into());
+    }
+    result.applied_hash = Some(hash_bytes(&generated));
+    result.original_hash = Some(original_hash);
+    result.backup = Some(backup.display().to_string());
+    result.target = Some(target_file.clone());
+    result.description = format!("Sound: {}.", crate::boost_audio::display_name(&source_file));
+    result.changes.push(FileChange {
+        path: cooked.join(target_file),
+        before: current,
+        after: generated,
+    });
+    Ok(result)
 }
 
 fn legacy_alpha_audio_backup(conf: &Path) -> Option<(Vec<u8>, String)> {
@@ -736,6 +1027,16 @@ fn pristine_path(cooked: &Path, manifest: &Manifest, package: &str) -> Result<Pa
         if hash_file(&backup)? != active.original_sha256 {
             return Err(format!("Backup for donor {package} is corrupt"));
         }
+        let current_path = package_path(cooked, package);
+        let current = hash_file(&current_path)?;
+        if current != active.original_sha256 && current != active.applied_sha256 {
+            if package_was_updated(cooked, active)? {
+                return Ok(current_path);
+            }
+            return Err(format!(
+                "Donor {package} changed outside the swapper; restore or verify it first"
+            ));
+        }
         Ok(backup)
     } else {
         Ok(package_path(cooked, package))
@@ -781,6 +1082,30 @@ fn refresh_active(state: &Arc<crate::state::AppState>, install: &str) {
             }
             Err(_) => SwapHealth::Conflict,
         };
+        if let Some(file) = record.audio_file() {
+            let audio_health = match hash_file(&cooked.join(file)) {
+                Ok(hash) if record.audio_applied_sha256.as_deref() == Some(&hash) => {
+                    SwapHealth::Active
+                }
+                Ok(hash) if record.audio_original_sha256.as_deref() == Some(&hash) => {
+                    SwapHealth::NeedsReapply
+                }
+                Ok(_)
+                    if package_was_updated(&cooked, record).unwrap_or(false)
+                        && fs::read(cooked.join(file)).is_ok_and(|bytes| {
+                            crate::boost_audio::validate(&bytes, file).is_ok()
+                        }) =>
+                {
+                    SwapHealth::NeedsReapply
+                }
+                _ => SwapHealth::Conflict,
+            };
+            if audio_health == SwapHealth::Conflict || record.health == SwapHealth::Conflict {
+                record.health = SwapHealth::Conflict;
+            } else if audio_health == SwapHealth::NeedsReapply {
+                record.health = SwapHealth::NeedsReapply;
+            }
+        }
     }
     let _ = save_manifest(&conf, &manifest);
     publish(state, |s| s.active = manifest.active);
@@ -792,14 +1117,87 @@ fn publish_catalog(
     install: &str,
     message: &str,
 ) {
+    let (sounds, boost_banks) = sound_catalog(&packages, install);
     publish(state, |s| {
         s.packages = packages;
+        s.sounds = sounds;
+        s.boost_banks = boost_banks;
         s.install_path = install.into();
         s.catalog_loaded = true;
         s.refreshing = false;
         s.message = message.into();
     });
     refresh_active(state, install);
+}
+
+fn sound_catalog(
+    packages: &[CatalogPackage],
+    install: &str,
+) -> (Vec<SoundBankInfo>, BTreeMap<String, String>) {
+    let mut sounds = Vec::new();
+    let mut mappings = BTreeMap::new();
+    let Ok(cooked) = cooked_dir(install) else {
+        return (sounds, mappings);
+    };
+    let Some(conf) = crate::state::config_dir() else {
+        return (sounds, mappings);
+    };
+    let manifest = load_manifest(&conf).unwrap_or_default();
+    if let Ok(entries) = fs::read_dir(&cooked) {
+        for entry in entries.flatten() {
+            let file = entry.file_name().to_string_lossy().into_owned();
+            if !crate::boost_audio::valid_bank_name(&file) {
+                continue;
+            }
+            let unavailable = original_bank(&cooked, &conf, &manifest, &file)
+                .and_then(|bytes| crate::boost_audio::validate(&bytes, &file))
+                .err();
+            sounds.push(SoundBankInfo {
+                label: crate::boost_audio::display_name(&file),
+                file,
+                unavailable,
+            });
+        }
+    }
+    sounds.sort_by_key(|s| s.label.to_lowercase());
+    for package in packages.iter().filter(|p| p.slot == ItemSlot::RocketBoost) {
+        let resolve = || -> Result<String, String> {
+            let bytes = fs::read(pristine_path(&cooked, &manifest, &package.package)?)
+                .map_err(|e| e.to_string())?;
+            let key = crate::upk_swap::key_from_base64(&package.key)?;
+            package_bank(&bytes, &key, &cooked)
+        };
+        if let Ok(bank) = resolve() {
+            mappings.insert(package.package.clone(), bank);
+        }
+    }
+    for sound in &mut sounds {
+        if sound.file == "SFX_Boost_Alpha.bnk" {
+            continue;
+        }
+        let mut labels = packages
+            .iter()
+            .filter(|p| mappings.get(&p.package) == Some(&sound.file))
+            .flat_map(|p| p.labels.iter().cloned())
+            .collect::<Vec<_>>();
+        labels.sort();
+        labels.dedup();
+        if !labels.is_empty() {
+            sound.label = labels
+                .iter()
+                .take(3)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(" / ");
+            if labels.len() > 3 {
+                sound
+                    .label
+                    .push_str(&format!(" (+{} variants)", labels.len() - 3));
+            }
+        }
+    }
+    sounds.sort_by_key(|s| s.label.to_lowercase());
+    (sounds, mappings)
 }
 fn finish_refresh(state: &Arc<crate::state::AppState>, message: &str) {
     publish(state, |s| {
@@ -928,16 +1326,17 @@ fn load_manifest(conf: &Path) -> Result<Manifest, String> {
             active: Vec::new(),
         });
     }
-    let value: Manifest = serde_json::from_slice(
+    let mut value: Manifest = serde_json::from_slice(
         &fs::read(&path).map_err(|e| format!("Could not read swap manifest: {e}"))?,
     )
     .map_err(|e| format!("Invalid swap manifest: {e}"))?;
-    if value.version != MANIFEST_VERSION {
+    if value.version != 1 && value.version != MANIFEST_VERSION {
         return Err(format!(
             "Unsupported swap manifest version {}",
             value.version
         ));
     }
+    value.version = MANIFEST_VERSION;
     Ok(value)
 }
 fn save_manifest(conf: &Path, manifest: &Manifest) -> Result<(), String> {
@@ -978,6 +1377,355 @@ fn hash_file(path: &Path) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn manifest_failure_rolls_back_visual_and_audio_together() {
+        let root = tempfile::tempdir().unwrap();
+        let conf = root.path().join("conf");
+        // A directory where the manifest file belongs forces the final save to fail.
+        fs::create_dir_all(manifest_path(&conf)).unwrap();
+        let visual = root.path().join("target.upk");
+        let audio = root.path().join("target.bnk");
+        fs::write(&visual, b"old visual").unwrap();
+        fs::write(&audio, b"old audio").unwrap();
+        let changes = [
+            FileChange {
+                path: visual.clone(),
+                before: b"old visual".to_vec(),
+                after: b"new visual".to_vec(),
+            },
+            FileChange {
+                path: audio.clone(),
+                before: b"old audio".to_vec(),
+                after: b"new audio".to_vec(),
+            },
+        ];
+        assert!(
+            commit_changes(&conf, &Manifest::default(), &changes)
+                .unwrap_err()
+                .contains("previous files were restored")
+        );
+        assert_eq!(fs::read(visual).unwrap(), b"old visual");
+        assert_eq!(fs::read(audio).unwrap(), b"old audio");
+    }
+
+    #[test]
+    fn changed_audio_aborts_before_visual_write() {
+        let root = tempfile::tempdir().unwrap();
+        let visual = root.path().join("target.upk");
+        let audio = root.path().join("target.bnk");
+        fs::write(&visual, b"old visual").unwrap();
+        fs::write(&audio, b"outside edit").unwrap();
+        let changes = [
+            FileChange {
+                path: visual.clone(),
+                before: b"old visual".to_vec(),
+                after: b"new visual".to_vec(),
+            },
+            FileChange {
+                path: audio.clone(),
+                before: b"old audio".to_vec(),
+                after: b"new audio".to_vec(),
+            },
+        ];
+        assert!(commit_changes(root.path(), &Manifest::default(), &changes).is_err());
+        assert_eq!(fs::read(visual).unwrap(), b"old visual");
+        assert_eq!(fs::read(audio).unwrap(), b"outside edit");
+    }
+
+    #[test]
+    fn audio_write_failure_rolls_back_the_visual_and_preserves_manifest() {
+        let root = tempfile::tempdir().unwrap();
+        let visual = root.path().join("target.upk");
+        let audio = root.path().join("sound.bnk");
+        fs::write(&visual, b"old visual").unwrap();
+        fs::write(&audio, b"old audio").unwrap();
+        let conf = root.path().join("conf");
+        let manifest = Manifest {
+            version: MANIFEST_VERSION,
+            active: vec![],
+        };
+        save_manifest(&conf, &manifest).unwrap();
+        let before_manifest = fs::read(manifest_path(&conf)).unwrap();
+        fs::create_dir(audio.with_extension("upk.swap-previous")).unwrap();
+        let changes = [
+            FileChange {
+                path: visual.clone(),
+                before: b"old visual".to_vec(),
+                after: b"new visual".to_vec(),
+            },
+            FileChange {
+                path: audio.clone(),
+                before: b"old audio".to_vec(),
+                after: b"new audio".to_vec(),
+            },
+        ];
+        assert!(commit_changes(&conf, &manifest, &changes).is_err());
+        assert_eq!(fs::read(visual).unwrap(), b"old visual");
+        assert_eq!(fs::read(audio).unwrap(), b"old audio");
+        assert_eq!(fs::read(manifest_path(&conf)).unwrap(), before_manifest);
+    }
+
+    #[test]
+    fn reads_legacy_alpha_sound_record() {
+        let record: ActiveSwap = serde_json::from_value(serde_json::json!({
+            "donor_package": "Boost_AlphaReward", "target_package": "Boost_Standard",
+            "target_backup": "backup.upk", "original_sha256": "a", "applied_sha256": "b",
+            "health": "Active", "audio_backup": "backup.bnk", "audio_original_sha256": "c", "audio_applied_sha256": "d"
+        })).unwrap();
+        assert_eq!(record.audio_file(), Some("SFX_Boost_Standard.bnk"));
+        assert_eq!(
+            record.sound_choice(),
+            SoundChoice::Bank("SFX_Boost_Alpha.bnk".into())
+        );
+    }
+
+    #[test]
+    fn alpha_indicator_requires_alpha_appearance_and_verified_alpha_sound() {
+        use crate::assets::BoostGameFileState as State;
+        let mut record: ActiveSwap = serde_json::from_value(serde_json::json!({
+            "donor_package": "Boost_AlphaReward", "target_package": "Boost_Standard",
+            "target_backup": "backup.upk", "original_sha256": "visual-original", "applied_sha256": "visual-applied",
+            "health": "Active", "audio_backup": "backup.bnk", "audio_original_sha256": "audio-original", "audio_applied_sha256": "audio-applied"
+        })).unwrap();
+        // Legacy Alpha records and both ways of selecting Alpha sound agree.
+        for sound in [
+            None,
+            Some(SoundChoice::MatchAppearance),
+            Some(SoundChoice::Bank("SFX_Boost_Alpha.bnk".into())),
+        ] {
+            record.sound = sound;
+            assert_eq!(
+                standard_swap_state(&record, "visual-applied", "audio-applied"),
+                State::Alpha
+            );
+            assert_eq!(
+                standard_swap_state(&record, "visual-original", "audio-original"),
+                State::Original
+            );
+            assert_eq!(
+                standard_swap_state(&record, "visual-applied", "unexpected-audio"),
+                State::Unknown
+            );
+            assert_eq!(
+                standard_swap_state(&record, "unexpected-visual", "audio-applied"),
+                State::Unknown
+            );
+        }
+        record.sound = Some(SoundChoice::Bank("SFX_Boost_Bubbles.bnk".into()));
+        assert_eq!(
+            standard_swap_state(&record, "visual-applied", "audio-applied"),
+            State::Custom
+        );
+        record.sound = Some(SoundChoice::MatchAppearance);
+        record.donor_package = "boost_alphadevreward".into();
+        assert_eq!(
+            standard_swap_state(&record, "visual-applied", "audio-applied"),
+            State::Custom
+        );
+        record.donor_package = "Boost_AlphaReward".into();
+        record.sound = Some(SoundChoice::Original);
+        record.audio_backup = None;
+        record.audio_original_sha256 = None;
+        record.audio_applied_sha256 = None;
+        assert_eq!(
+            standard_swap_state(&record, "visual-applied", "audio-original"),
+            State::Custom
+        );
+        assert_eq!(
+            standard_swap_state(&record, "visual-original", "audio-original"),
+            State::Original
+        );
+    }
+
+    #[test]
+    #[ignore = "requires RL_AUDIO_FIXTURES with pristine UPKs/banks and RL_KEY_INDEX; writes only temporary copies"]
+    fn boost_appearance_and_sound_round_trip_on_copies() {
+        let inputs = PathBuf::from(std::env::var("RL_AUDIO_FIXTURES").unwrap());
+        let root = tempfile::tempdir().unwrap();
+        let install = root.path().join("game");
+        let cooked = install.join("TAGame/CookedPCConsole");
+        fs::create_dir_all(&cooked).unwrap();
+        for name in [
+            "boost_alphadevreward_SF.upk",
+            "Boost_Standard_SF.upk",
+            "Boost_Standard_Blue_SF.upk",
+            "SFX_Boost_Alpha.bnk",
+            "SFX_Boost_Standard.bnk",
+        ] {
+            fs::copy(inputs.join(name), cooked.join(name)).unwrap();
+        }
+        let conf = root.path().join("conf");
+        let csv = fs::read_to_string(std::env::var("RL_KEY_INDEX").unwrap()).unwrap();
+        let packages = build_catalog(&csv, install.to_str().unwrap()).unwrap();
+        let original_visual = fs::read(cooked.join("Boost_Standard_SF.upk")).unwrap();
+        let original_audio = fs::read(cooked.join("SFX_Boost_Standard.bnk")).unwrap();
+        let source_audio = fs::read(cooked.join("SFX_Boost_Alpha.bnk")).unwrap();
+        let expected_audio = crate::boost_audio::generate(
+            &source_audio,
+            &original_audio,
+            "SFX_Boost_Alpha.bnk",
+            "SFX_Boost_Standard.bnk",
+        )
+        .unwrap();
+        apply_at(
+            &cooked,
+            &conf,
+            &packages,
+            "boost_alphadevreward",
+            "Boost_Standard",
+            &SoundChoice::MatchAppearance,
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read(cooked.join("SFX_Boost_Standard.bnk")).unwrap(),
+            expected_audio
+        );
+        // A painted Standard variant must not overwrite another swap's shared sound.
+        let blue_before = fs::read(cooked.join("Boost_Standard_Blue_SF.upk")).unwrap();
+        assert!(
+            apply_at(
+                &cooked,
+                &conf,
+                &packages,
+                "boost_alphadevreward",
+                "Boost_Standard_Blue",
+                &SoundChoice::MatchAppearance
+            )
+            .unwrap_err()
+            .contains("shares its sound")
+        );
+        assert_eq!(
+            fs::read(cooked.join("Boost_Standard_Blue_SF.upk")).unwrap(),
+            blue_before
+        );
+        // Selecting the original bank as a sound source reads its pristine backup.
+        apply_at(
+            &cooked,
+            &conf,
+            &packages,
+            "boost_alphadevreward",
+            "Boost_Standard",
+            &SoundChoice::Bank("SFX_Boost_Standard.bnk".into()),
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read(cooked.join("SFX_Boost_Standard.bnk")).unwrap(),
+            original_audio
+        );
+        // Reapply uses the stored selection; switch to Alpha and then Original.
+        apply_at(
+            &cooked,
+            &conf,
+            &packages,
+            "boost_alphadevreward",
+            "Boost_Standard",
+            &SoundChoice::Bank("SFX_Boost_Alpha.bnk".into()),
+        )
+        .unwrap();
+        let record = load_manifest(&conf).unwrap().active.remove(0);
+        apply_at(
+            &cooked,
+            &conf,
+            &packages,
+            &record.donor_package,
+            &record.target_package,
+            &record.sound_choice(),
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read(cooked.join("SFX_Boost_Standard.bnk")).unwrap(),
+            expected_audio
+        );
+        apply_at(
+            &cooked,
+            &conf,
+            &packages,
+            "boost_alphadevreward",
+            "Boost_Standard",
+            &SoundChoice::Original,
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read(cooked.join("SFX_Boost_Standard.bnk")).unwrap(),
+            original_audio
+        );
+        assert!(
+            load_manifest(&conf).unwrap().active[0]
+                .audio_file()
+                .is_none()
+        );
+        restore_at(&cooked, &conf, "Boost_Standard").unwrap();
+        assert_eq!(
+            fs::read(cooked.join("Boost_Standard_SF.upk")).unwrap(),
+            original_visual
+        );
+        assert_eq!(
+            fs::read(cooked.join("SFX_Boost_Standard.bnk")).unwrap(),
+            original_audio
+        );
+        assert!(load_manifest(&conf).unwrap().active.is_empty());
+        // Sound-only swaps also restore without changing the original appearance.
+        apply_at(
+            &cooked,
+            &conf,
+            &packages,
+            "Boost_Standard",
+            "Boost_Standard",
+            &SoundChoice::Bank("SFX_Boost_Alpha.bnk".into()),
+        )
+        .unwrap();
+        restore_at(&cooked, &conf, "Boost_Standard").unwrap();
+        assert_eq!(
+            fs::read(cooked.join("Boost_Standard_SF.upk")).unwrap(),
+            original_visual
+        );
+        assert_eq!(
+            fs::read(cooked.join("SFX_Boost_Standard.bnk")).unwrap(),
+            original_audio
+        );
+        // A game update must replace the old pristine backups, never restore
+        // pre-update sound or use a pre-update package as the next donor.
+        apply_at(
+            &cooked,
+            &conf,
+            &packages,
+            "boost_alphadevreward",
+            "Boost_Standard",
+            &SoundChoice::MatchAppearance,
+        )
+        .unwrap();
+        let mut updated_visual = original_visual.clone();
+        let guid = crate::upk_swap::package_guid(&original_visual).unwrap();
+        let guid_offset = updated_visual.windows(16).position(|v| v == guid).unwrap();
+        updated_visual[guid_offset] ^= 0x80;
+        let mut updated_audio = original_audio.clone();
+        updated_audio.extend_from_slice(b"JUNK\0\0\0\0");
+        fs::write(cooked.join("Boost_Standard_SF.upk"), &updated_visual).unwrap();
+        fs::write(cooked.join("SFX_Boost_Standard.bnk"), &updated_audio).unwrap();
+        assert_eq!(
+            pristine_path(&cooked, &load_manifest(&conf).unwrap(), "Boost_Standard").unwrap(),
+            cooked.join("Boost_Standard_SF.upk")
+        );
+        apply_at(
+            &cooked,
+            &conf,
+            &packages,
+            "boost_alphadevreward",
+            "Boost_Standard",
+            &SoundChoice::MatchAppearance,
+        )
+        .unwrap();
+        restore_at(&cooked, &conf, "Boost_Standard").unwrap();
+        assert_eq!(
+            fs::read(cooked.join("Boost_Standard_SF.upk")).unwrap(),
+            updated_visual
+        );
+        assert_eq!(
+            fs::read(cooked.join("SFX_Boost_Standard.bnk")).unwrap(),
+            updated_audio
+        );
+    }
     #[test]
     fn csv_parser_handles_commas_and_quotes() {
         let rows = parse_csv("A,B\n\"x, y\",\"a\"\"b\"\n").unwrap();

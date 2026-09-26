@@ -172,9 +172,9 @@ pub(crate) fn render_boost_settings_tab(
         );
         debug_status_row(
             ui,
-            "Cached Audio",
+            "Installed Audio",
             if inspection.cache_verified {
-                "verified"
+                "ready"
             } else {
                 "not verified"
             },
@@ -200,6 +200,7 @@ pub(crate) fn render_boost_settings_tab(
             inspection.game_file_state,
             crate::assets::BoostGameFileState::Original
                 | crate::assets::BoostGameFileState::Alpha
+                | crate::assets::BoostGameFileState::Custom
                 | crate::assets::BoostGameFileState::Unbacked
                 | crate::assets::BoostGameFileState::Unknown
         );

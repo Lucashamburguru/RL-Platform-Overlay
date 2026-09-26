@@ -83,6 +83,7 @@ pub enum BoostGameFileState {
     Unavailable,
     Original,
     Alpha,
+    Custom,
     Unbacked,
     Mixed,
     Unknown,
@@ -95,6 +96,7 @@ impl BoostGameFileState {
             Self::Unavailable => "unavailable",
             Self::Original => "original",
             Self::Alpha => "alpha",
+            Self::Custom => "custom swap",
             Self::Unbacked => "unbacked",
             Self::Mixed => "mixed",
             Self::Unknown => "unknown",
@@ -211,20 +213,40 @@ pub fn inspect_boost_swap(rocket_league_path: &str) -> BoostSwapInspection {
 
 fn inspect_boost_swap_at(rocket_league_path: &str, conf_dir: &Path) -> BoostSwapInspection {
     #[cfg(not(feature = "microsoft-store"))]
+    let audio_ready = cooked_pc_console_path(rocket_league_path).is_ok_and(|cooked| {
+        ["SFX_Boost_Alpha.bnk", "SFX_Boost_Standard.bnk"]
+            .iter()
+            .all(|name| {
+                fs::read(cooked.join(name))
+                    .is_ok_and(|bytes| crate::boost_audio::validate(&bytes, name).is_ok())
+            })
+    });
+    #[cfg(not(feature = "microsoft-store"))]
     if let Some(game_file_state) = crate::item_swapper::alpha_preset_file_state(rocket_league_path)
     {
         return BoostSwapInspection {
             metadata_exists: true,
-            cache_verified: cached_asset_verified(conf_dir, ALPHA_AUDIO_SPEC),
+            cache_verified: audio_ready,
             game_file_state,
-            message: "Alpha Boost is managed by the Item Swapper catalog.".into(),
+            message: if game_file_state == BoostGameFileState::Custom {
+                "Standard Boost has a custom appearance or sound managed in Item Swapper.".into()
+            } else {
+                "Standard Boost is managed by the Item Swapper catalog.".into()
+            },
         };
     }
     let metadata_exists = backup_metadata_path(conf_dir).exists();
     let game_file_state = inspect_game_file_state(rocket_league_path, conf_dir)
         .unwrap_or(BoostGameFileState::Unavailable);
+    #[cfg(not(feature = "microsoft-store"))]
+    let cache_verified = audio_ready;
+    #[cfg(feature = "microsoft-store")]
     let cache_verified = cached_asset_verified(conf_dir, ALPHA_AUDIO_SPEC);
 
+    #[cfg(not(feature = "microsoft-store"))]
+    let message =
+        "Appearance and sound will be generated from this Rocket League installation.".to_string();
+    #[cfg(feature = "microsoft-store")]
     let message = if cache_verified {
         "Visual UPK will be generated from this Rocket League install; cached audio verified."
             .to_string()
@@ -428,6 +450,7 @@ fn expected_hash_configured(hash: &str) -> bool {
     hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
+#[cfg(feature = "microsoft-store")]
 fn cached_asset_verified(conf_dir: &Path, spec: BoostAssetSpec) -> bool {
     if !expected_hash_configured(spec.expected_sha256) {
         return false;
@@ -475,10 +498,8 @@ async fn ensure_verified_cached_asset(
     Ok(cache_path)
 }
 
-pub(crate) async fn prepare_alpha_audio_asset() -> Result<PathBuf, String> {
-    let conf_dir =
-        config_dir().ok_or_else(|| "Error: Could not resolve config directory.".to_string())?;
-    ensure_verified_cached_asset(&conf_dir, ALPHA_AUDIO_SPEC).await
+pub(crate) fn alpha_audio_sha256() -> &'static str {
+    ALPHA_AUDIO_SHA256
 }
 
 async fn download_file(url: &str, dest_path: &Path) -> Result<(), String> {
@@ -534,7 +555,6 @@ pub fn start_apply_alpha_boost(
     #[cfg(not(feature = "microsoft-store"))]
     {
         crate::item_swapper::start_alpha_preset(state, rocket_league_path);
-        return;
     }
     #[cfg(feature = "microsoft-store")]
     let state_clone = state.clone();
@@ -720,7 +740,7 @@ pub fn start_restore_standard_boost(
     rocket_league_path: String,
 ) {
     #[cfg(not(feature = "microsoft-store"))]
-    if crate::item_swapper::has_alpha_preset() {
+    if crate::item_swapper::has_standard_swap() {
         {
             let mut status = state
                 .boost

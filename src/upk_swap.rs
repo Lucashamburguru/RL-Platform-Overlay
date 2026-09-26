@@ -5,6 +5,7 @@ use aes::cipher::{BlockDecrypt, BlockEncrypt, KeyInit};
 use base64::Engine as _;
 
 const MAGIC: u32 = 0x9e2a83c1;
+const FULL_ENCRYPTION: u32 = 0x0800;
 
 #[derive(Clone, Debug)]
 struct Reader<'a> {
@@ -212,10 +213,14 @@ struct Summary {
     garbage_size: i32,
     chunk_info_offset: i32,
     last_aes_block_size: i32,
+    header_nonce: Option<[u8; 12]>,
 }
 impl Summary {
     fn modern(&self) -> bool {
         self.licensee >= 33
+    }
+    fn full_encryption(&self) -> bool {
+        self.package_flags & FULL_ENCRYPTION != 0
     }
     fn encrypted_len(&self) -> Result<usize, String> {
         let n = self
@@ -226,7 +231,11 @@ impl Summary {
         if n < 0 {
             return Err("Invalid encrypted header size".into());
         }
-        Ok(((n as usize) + 15) & !15)
+        if self.full_encryption() {
+            Ok(n as usize)
+        } else {
+            Ok(((n as usize) + 15) & !15)
+        }
     }
     fn read(bytes: &[u8]) -> Result<(Self, usize), String> {
         let mut r = Reader::new(bytes);
@@ -274,12 +283,21 @@ impl Summary {
         let garbage_size = r.i32()?;
         let chunk_info_offset = r.i32()?;
         let last_aes_block_size = r.i32()?;
+        let header_nonce = if modern {
+            Some(r.take(12)?.try_into().unwrap())
+        } else {
+            None
+        };
+        if package_flags & FULL_ENCRYPTION != 0 && header_nonce.is_none() {
+            return Err("Fully encrypted UPK requires a header nonce".into());
+        }
         if name_count < 0
             || export_count < 0
             || import_count < 0
             || name_offset < r.pos as i32
             || total_header < name_offset
             || total_header as usize > bytes.len()
+            || garbage_size < 0
         {
             return Err("Invalid UPK summary offsets".into());
         }
@@ -311,6 +329,7 @@ impl Summary {
                 garbage_size,
                 chunk_info_offset,
                 last_aes_block_size,
+                header_nonce,
             },
             r.pos,
         ))
@@ -354,6 +373,9 @@ impl Summary {
         w.i32(self.garbage_size);
         w.i32(self.chunk_info_offset);
         w.i32(self.last_aes_block_size);
+        if let Some(nonce) = self.header_nonce {
+            w.raw(&nonce)
+        }
         w.bytes
     }
 }
@@ -434,6 +456,41 @@ fn crypt(bytes: &mut [u8], key: &[u8; 32], decrypt: bool) {
         }
     }
 }
+
+// Fully encrypted packages use a 96-bit nonce followed by a big-endian
+// 32-bit counter starting at zero, independently for the header and each chunk.
+fn crypt_ctr(bytes: &mut [u8], key: &[u8; 32], nonce: &[u8; 12]) -> Result<(), String> {
+    let cipher = Aes256::new(key.into());
+    for (index, chunk) in bytes.chunks_mut(16).enumerate() {
+        let counter = u32::try_from(index).map_err(|_| "UPK AES counter overflow")?;
+        let mut block = aes::cipher::Block::<Aes256>::default();
+        block[..12].copy_from_slice(nonce);
+        block[12..].copy_from_slice(&counter.to_be_bytes());
+        cipher.encrypt_block(&mut block);
+        for (byte, mask) in chunk.iter_mut().zip(block.iter()) {
+            *byte ^= mask;
+        }
+    }
+    Ok(())
+}
+
+fn crypt_header(
+    bytes: &mut [u8],
+    s: &Summary,
+    key: &[u8; 32],
+    decrypt: bool,
+) -> Result<(), String> {
+    if s.full_encryption() {
+        crypt_ctr(
+            bytes,
+            key,
+            s.header_nonce.as_ref().ok_or("Missing UPK header nonce")?,
+        )
+    } else {
+        crypt(bytes, key, decrypt);
+        Ok(())
+    }
+}
 fn read_tables(bytes: &[u8], s: &Summary, key: &[u8; 32]) -> Result<Tables, String> {
     let len = s.encrypted_len()?;
     let start = s.name_offset as usize;
@@ -441,7 +498,7 @@ fn read_tables(bytes: &[u8], s: &Summary, key: &[u8; 32]) -> Result<Tables, Stri
         .get(start..start + len)
         .ok_or("Truncated encrypted UPK header")?
         .to_vec();
-    crypt(&mut plain, key, true);
+    crypt_header(&mut plain, s, key, true)?;
     let mut r = Reader::new(&plain);
     let names = (0..s.name_count)
         .map(|_| {
@@ -501,6 +558,22 @@ pub fn validate_identity(data: &[u8], key: &[u8; 32], id: &str) -> Result<(), St
     }
 }
 
+#[cfg(not(feature = "microsoft-store"))]
+pub fn boost_sound_banks(data: &[u8], key: &[u8; 32]) -> Result<Vec<String>, String> {
+    let (summary, _) = Summary::read(data)?;
+    let tables = read_tables(data, &summary, key)?;
+    let mut banks = tables
+        .names
+        .into_iter()
+        .map(|n| n.value.text)
+        .filter(|name| name.starts_with("SFX_Boost"))
+        .map(|name| format!("{name}.bnk"))
+        .collect::<Vec<_>>();
+    banks.sort();
+    banks.dedup();
+    Ok(banks)
+}
+
 pub fn masquerade(
     donor: &[u8],
     target: &[u8],
@@ -510,6 +583,7 @@ pub fn masquerade(
     target_id: &str,
 ) -> Result<Vec<u8>, String> {
     let (mut ds, summary_len) = Summary::read(donor)?;
+    let donor_header_end = ds.total_header as usize;
     let (ts, _) = Summary::read(target)?;
     let mut tables = read_tables(donor, &ds, donor_key)?;
     let target_tables = read_tables(target, &ts, target_key)?;
@@ -555,7 +629,11 @@ pub fn masquerade(
     let chunk_local = header.pos();
     header.array(&tables.chunks, |w, c| c.write(w));
     let unpadded = header.pos();
-    let padded = (unpadded + 15) & !15;
+    let padded = if ds.full_encryption() {
+        unpadded
+    } else {
+        (unpadded + 15) & !15
+    };
     for pos in unpadded..padded {
         header.raw(&[(pos % 0xff) as u8])
     }
@@ -589,8 +667,21 @@ pub fn masquerade(
     rewritten.array(&tables.chunks, |w, c| c.write(w));
     header.bytes[chunk_local..chunk_local + rewritten.bytes.len()]
         .copy_from_slice(&rewritten.bytes);
-    crypt(&mut header.bytes, target_key, false);
-    let payload_start = Summary::read(donor)?.0.name_offset as usize + old_encrypted as usize;
+    let mut payload_start = ds.name_offset as usize + old_encrypted as usize;
+    if ds.full_encryption() {
+        // The verification bytes following the tables are part of the same CTR
+        // stream. Decrypt them at their old position and encrypt them again at
+        // their new position after resizing the names.
+        let mut old_header = donor[ds.name_offset as usize..donor_header_end].to_vec();
+        crypt_header(&mut old_header, &ds, donor_key, true)?;
+        header.bytes.extend_from_slice(
+            old_header
+                .get(old_encrypted as usize..)
+                .ok_or("Invalid UPK verification data")?,
+        );
+        payload_start = donor_header_end;
+    }
+    crypt_header(&mut header.bytes, &ds, target_key, false)?;
     let mut out = ds.write();
     if out.len() != summary_len {
         return Err("UPK summary size changed unexpectedly".into());
@@ -602,6 +693,28 @@ pub fn masquerade(
             .get(payload_start..)
             .ok_or("Truncated donor payload")?,
     );
+    if ds.full_encryption() {
+        // Asset chunks have their own nonces and remain encrypted under the
+        // donor key until explicitly rekeyed for the target package.
+        let mut previous_end = ds.total_header as usize;
+        for chunk in &tables.chunks {
+            let start = usize::try_from(chunk.compressed_offset)
+                .map_err(|_| "Invalid encrypted chunk offset")?;
+            let size = usize::try_from(chunk.compressed_size)
+                .map_err(|_| "Invalid encrypted chunk size")?;
+            let end = start.checked_add(size).ok_or("Encrypted chunk overflow")?;
+            if start < previous_end {
+                return Err("Overlapping encrypted UPK chunks".into());
+            }
+            let bytes = out
+                .get_mut(start..end)
+                .ok_or("Truncated encrypted UPK chunk")?;
+            let nonce = chunk.nonce.as_ref().ok_or("Missing UPK chunk nonce")?;
+            crypt_ctr(bytes, donor_key, nonce)?;
+            crypt_ctr(bytes, target_key, nonce)?;
+            previous_end = end;
+        }
+    }
     validate_identity(&out, target_key, target_id)?;
     Ok(out)
 }
@@ -640,6 +753,7 @@ mod tests {
             garbage_size: 0,
             chunk_info_offset: 0,
             last_aes_block_size: 0,
+            header_nonce: (licensee >= 33).then_some([0; 12]),
         };
         let size = s.write().len();
         s.name_offset = size as i32;
@@ -663,6 +777,111 @@ mod tests {
         out.extend(h.bytes);
         out.extend_from_slice(b"payload-data");
         out
+    }
+    fn ctr_fixture(id: &str, key: &[u8; 32]) -> Vec<u8> {
+        let basic = fixture(id, key, 1, 34);
+        let (mut s, _) = Summary::read(&basic).unwrap();
+        let tables = read_tables(&basic, &s, key).unwrap();
+        s.package_flags |= FULL_ENCRYPTION;
+        s.header_nonce = Some([3; 12]);
+        let verification = b"verification bytes after the tables";
+        s.garbage_size = verification.len() as i32;
+        let mut h = Writer::new();
+        for n in tables.names {
+            n.value.write(&mut h);
+            h.u64(n.flags);
+        }
+        s.chunk_info_offset = h.pos() as i32;
+        s.total_header = s.name_offset + (h.pos() + 4 + 2 * 36 + verification.len()) as i32;
+        let mut offset = s.total_header as i64;
+        let mut payload = Vec::new();
+        let mut chunks = Vec::new();
+        for (data, nonce) in [
+            (b"first asset chunk".as_slice(), [4; 12]),
+            (b"second chunk", [5; 12]),
+        ] {
+            chunks.push(Chunk {
+                uncompressed_offset: offset,
+                uncompressed_size: data.len() as i32,
+                compressed_offset: offset,
+                compressed_size: data.len() as i32,
+                nonce: Some(nonce),
+            });
+            let mut encrypted = data.to_vec();
+            crypt_ctr(&mut encrypted, key, &nonce).unwrap();
+            payload.extend(encrypted);
+            offset += data.len() as i64;
+        }
+        h.array(&chunks, |w, c| c.write(w));
+        h.raw(verification);
+        crypt_header(&mut h.bytes, &s, key, false).unwrap();
+        let mut out = s.write();
+        out.extend(h.bytes);
+        out.extend(payload);
+        out
+    }
+
+    #[test]
+    fn ctr_matches_openssl_vector_including_partial_block() {
+        // AES-256-CTR, zero key and IV. The second block checks counter order.
+        let expected = [
+            0xdc, 0x95, 0xc0, 0x78, 0xa2, 0x40, 0x89, 0x89, 0xad, 0x48, 0xa2, 0x14, 0x92, 0x84,
+            0x20, 0x87, 0x53, 0x0f, 0x8a, 0xfb, 0xc7,
+        ];
+        let mut bytes = [0; 21];
+        crypt_ctr(&mut bytes, &[0; 32], &[0; 12]).unwrap();
+        assert_eq!(bytes, expected);
+    }
+
+    #[test]
+    fn rekeys_ctr_header_verification_and_every_asset_chunk() {
+        let donor_key = [7; 32];
+        let target_key = [9; 32];
+        let donor = ctr_fixture("Boost_Dev", &donor_key);
+        assert!(validate_identity(&donor, &target_key, "Boost_Dev").is_err());
+        for target_id in ["A", "Boost_A_Much_Longer_Target"] {
+            let target = fixture(target_id, &target_key, 2, 34);
+            let result = masquerade(
+                &donor,
+                &target,
+                &donor_key,
+                &target_key,
+                "Boost_Dev",
+                target_id,
+            )
+            .unwrap();
+            validate_identity(&result, &target_key, target_id).unwrap();
+            let (s, _) = Summary::read(&result).unwrap();
+            assert!(s.full_encryption());
+            assert_eq!(s.guid, [2; 16]);
+            let t = read_tables(&result, &s, &target_key).unwrap();
+            let mut header = result[s.name_offset as usize..s.total_header as usize].to_vec();
+            crypt_header(&mut header, &s, &target_key, true).unwrap();
+            assert!(header.ends_with(b"verification bytes after the tables"));
+            assert_eq!(t.chunks.len(), 2);
+            for (chunk, expected) in t
+                .chunks
+                .iter()
+                .zip([b"first asset chunk".as_slice(), b"second chunk"])
+            {
+                let start = chunk.compressed_offset as usize;
+                let mut bytes = result[start..start + chunk.compressed_size as usize].to_vec();
+                crypt_ctr(&mut bytes, &target_key, chunk.nonce.as_ref().unwrap()).unwrap();
+                assert_eq!(bytes, expected);
+            }
+        }
+    }
+
+    #[test]
+    fn supports_fully_encrypted_target_with_ecb_donor() {
+        let a = [7; 32];
+        let b = [9; 32];
+        let donor = fixture("Boost_Standard", &a, 1, 34);
+        let target = ctr_fixture("Boost_Dev", &b);
+        let result = masquerade(&donor, &target, &a, &b, "Boost_Standard", "Boost_Dev").unwrap();
+        validate_identity(&result, &b, "Boost_Dev").unwrap();
+        assert!(!Summary::read(&result).unwrap().0.full_encryption());
+        assert!(result.ends_with(b"payload-data"));
     }
     #[test]
     fn supports_longer_target_and_cross_version() {
