@@ -6,6 +6,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+---
+
+## [0.1.53] - 2026-09-26
+
 ### Added
 - **Boost Sound Choices**: Keep a boost's original sound, match its new appearance, or choose another installed boost sound. Sound-only swaps are also supported.
 
