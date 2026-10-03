@@ -1,86 +1,109 @@
 # RL Platform Overlay
 
-Keep the information you want from Rocket League close at hand. RL Platform
-Overlay shows your lobby, ranks/MMR, teammate boost, and session stats while
-you play—without making you leave the game.
+RL Platform Overlay shows Rocket League player names, ranks, MMR, teammate boost,
+and session statistics while you play. You can see this information without
+leaving the game.
 
 ![Program Preview](assets/program-preview.png)
 
-The overlay is a separate desktop app that reads Rocket League’s built-in Stats
-API and draws its own information over the game. A second-monitor dashboard is
-available when you want a larger view.
+The app reads the built-in Rocket League Stats API and draws panels over the
+game. You can also use a larger dashboard on a second monitor.
 
 > [!IMPORTANT]
-> **Out-of-process design:** The app runs outside Rocket League. It does not
-> inject DLLs, read or modify game memory, or hook the renderer. This is an
-> intentionally conservative design, but it is not a guarantee about future
-> game or anti-cheat policy.
+> **Separate app:** The app runs outside Rocket League. It does not inject DLLs,
+> read or change game memory, or attach to the game renderer. This design does
+> not guarantee compliance with future game rules or anti-cheat policies.
 
 ## Quick Start
 
-1. Download the latest version from [Releases](https://github.com/Lucashamburguru/RL-Platform-Overlay/releases) and open it.
-2. Open **Setup**, then click **Auto-detect** to find your Rocket League folder.
-3. Click **Enable Stats API**. If Rocket League is already open, restart it.
-4. Choose your hotkeys and use **Arrange HUD** to place the panels where you want them.
-5. Click **Launch Overlay** and start playing.
+1. Download and open the latest version from [Releases](https://github.com/Lucashamburguru/RL-Platform-Overlay/releases).
+2. Open **Setup**. Select **Auto-detect** to find your Rocket League folder.
+3. Select **Enable Stats API**. If Rocket League is open, restart it.
+4. Select your hotkeys. Use **Arrange HUD** to put the panels in position.
+5. Select **Launch Overlay**. Then start a match.
 
-If Auto-detect cannot find the game, select your Rocket League folder manually.
-You can also edit `TAGame/Config/DefaultStatsAPI.ini` yourself and set
-`PacketSendRate` to a value above `0`, such as `30.0`.
+If Auto-detect cannot find the game, select the Rocket League folder manually.
+You can also change `TAGame/Config/DefaultStatsAPI.ini` manually.
+Set `PacketSendRate` to a value greater than `0`, for example `30.0`.
 
 ---
 
-## What You Get
+## Features
 
-### While you play
+### During a match
 
-* **Lobby overlay:** See player names, platforms, ranks, and MMR without
-  Alt-Tabbing.
-* **Teammate boost HUD:** Keep an eye on your teammate’s boost with adjustable
-  styles, size, and position.
-* **Session tracker:** Follow your record, win rate, streak, and play time.
-* **Second-monitor dashboard:** Put a larger lobby and session view on another
-  screen.
-* **Arrangeable panels:** Move the panels where they work best, then keep them
-  click-through while you play.
-* **Hotkeys:** Show or hide the HUD and settings from your keyboard or
-  controller.
+- **Lobby overlay:** See player names, platforms, ranks, and MMR without a change
+  to the active window.
+- **Teammate boost HUD:** See teammate boost. You can change the display style,
+  size, and position.
+- **Session tracker:** See your win and loss record, win rate, streak, and play
+  time.
+- **Second-monitor dashboard:** Use a larger display of lobby and session data
+  on another monitor.
+- **Panel positions:** Move the panels to the positions you want. During a
+  match, mouse clicks pass through the panels to the game.
+- **Hotkeys:** Show or hide the HUD and settings with a keyboard or controller.
 
-### Replays and local tools
+### Replays
 
-* **Ballchasing integration:** Upload, download, and organize replays through
-  ballchasing.com.
-* **Hoops replay fixer:** Repair supported legacy Hoops replays, with a backup
-  created first.
-* **Gold Rush swapper:** Build appearance and sound swaps from the installed Alpha
-  and Standard Boost packages and sound banks. It fetches
-  current package keys and keeps verified backups so the visual package is
-  rebuilt after game updates.
-* **Item Swapper:** Search the installed body, wheel, boost, trail, goal
-  explosion, topper, antenna, and paint-finish catalog and make one cosmetic
-  package appear in place of another. Swaps are generated from the current
-  game files and can be restored individually.
-  For boosts, keep the target's original sound, match the chosen appearance, or
-  pick another installed boost sound. Select the same appearance and target for
-  a sound-only swap. Shared sound banks also affect other boosts using that bank;
-  matching sound choices can share a bank, while conflicting choices are blocked.
-  Unsupported sound banks are disabled in the picker. Restoring an appearance keeps
-  shared audio until the last swap using it is restored. Turn off Rocket League's
-  Standard Boost audio override to hear individual boost sounds.
-  The **Engine Audio** category replaces one selectable engine sound with another.
-  Choose a source sound and a target you own, apply, then equip the target under
-  Engine Audio in Rocket League. Engine swaps use installed audio-profile packages
-  and can be reapplied or restored independently; unsupported packages are disabled.
+- **Ballchasing:** Upload, download, and organize replays through ballchasing.com.
+- **Hoops replay repair:** Repair supported legacy Hoops replays. The app makes
+  a backup before it changes the replay.
 
-The app changes local Rocket League files only when you choose the Gold Rush
-preset, Item Swapper, or Hoops replay fixer.
+### Gold Rush preset
+
+The app makes appearance and sound replacements from installed Alpha and Standard
+Boost packages and sound banks. It downloads current package keys and keeps
+verified backups. After a game update, the app makes the appearance package
+again from the installed files.
+
+### Item Swapper
+
+You can search the installed item catalog and replace one item appearance with
+another. The catalog includes bodies, wheels, boosts, trails, goal explosions,
+toppers, antennas, and paint finishes. Replacements use current game files.
+You can restore each item separately.
+
+For boost sounds, you can:
+
+- Keep the original sound of the target boost.
+- Use the sound of the selected appearance.
+- Select another installed boost sound.
+
+To change only the sound, select the same boost for the appearance and target.
+
+A shared sound bank affects all boosts that use that bank. Replacements can
+share a bank if their sound selections agree. The app prevents replacements
+with different sound selections for the same bank. Sound banks that the app
+cannot change are unavailable in the selection list.
+
+If you restore one appearance, other replacements keep the shared sound.
+The original sound returns when you restore the last replacement that uses it.
+To hear individual boost sounds, disable the Standard Boost audio override in
+Rocket League.
+
+### Engine Audio
+
+The **Engine Audio** category in Item Swapper replaces one selectable engine sound
+with another installed sound.
+
+1. Select a source sound and a target engine sound that you own.
+2. Apply the replacement.
+3. In Rocket League, equip the target engine sound under **Engine Audio**.
+
+Engine sound replacements use installed audio-profile packages. You can apply
+or restore each replacement separately. Packages that the app cannot change are
+unavailable in the selection list.
+
+The Gold Rush preset, Item Swapper, and Hoops replay repair tool change local
+game files or replay files when you use these tools.
 
 ---
 
 ## Screenshots
 
-Use the compact overlay during a match, or keep the dashboard open on another
-monitor for a roomier view.
+Use the compact overlay during a match. For a larger display, keep the dashboard
+open on another monitor.
 
 ![Overlay Preview](assets/overlay-preview-small.png)
 
@@ -90,41 +113,42 @@ monitor for a roomier view.
 
 ## Help and Support
 
-Something not working as expected? The [support and troubleshooting
-guide](docs/support.md) walks through Setup Readiness, connection problems,
-incorrect game-mode/team detection, privacy-aware diagnostics, and recent Game
-API logs.
+The [support and troubleshooting guide](docs/support.md) describes Setup Readiness,
+connection problems, incorrect game mode or team detection, and diagnostic data
+with privacy protection. It also explains recent Game API logs.
 
 ---
 
-## Developer Info
+## Developer Information
 
-If you are a developer, want to compile from source, or want to contribute:
+This section describes the development tools and build commands.
 
-### Tech Stack
+### Development Tools
 
-* **Language**: Rust
-* **UI Framework**: egui / eframe (Glow renderer)
-* **Input Hooking**: GilRs (Gamepad) & rdev (Keyboard)
-* **Data Sources**: Rocket League Stats API and a pluggable MMR provider.
+- **Language:** Rust
+- **User interface:** egui / eframe with the Glow renderer
+- **Input:** GilRs for gamepads and rdev for keyboards
+- **Data sources:** Rocket League Stats API and an MMR provider that can be changed
 
 ### Project Documentation
 
-* [Architecture](docs/architecture.md)
-* [Rocket League Stats API notes](docs/API/stats-api.md)
-* [Support and troubleshooting](docs/support.md)
-* [Release process](docs/releasing.md)
-* [Security advisory policy](docs/security-advisories.md)
+- [Architecture](docs/architecture.md)
+- [Rocket League Stats API notes](docs/API/stats-api.md)
+- [Support and troubleshooting](docs/support.md)
+- [Release process](docs/releasing.md)
+- [Security advisory policy](docs/security-advisories.md)
 
 ### Build from Source
 
-Ensure you have the Rust toolchain installed.
+Install the Rust toolchain before you build the app.
 
 #### Windows Build Dependencies
 
-Building on Windows requires **CMake**, **NASM** (Netwide Assembler), and **LLVM** for `libclang`, which is used by `bindgen` while compiling BoringSSL/wreq dependencies.
+Windows builds require **CMake**, **NASM** (Netwide Assembler), and **LLVM**.
+LLVM supplies `libclang`. The build uses `bindgen` and `libclang` for the
+BoringSSL/wreq dependencies.
 
-You can install them with `winget`:
+Install these tools with `winget`:
 
 ```powershell
 winget install Kitware.CMake
@@ -132,10 +156,12 @@ winget install NASM.NASM
 winget install LLVM.LLVM
 ```
 
-Set `LIBCLANG_PATH` to your LLVM bin folder, for example `C:\Program Files\LLVM\bin`, then restart your terminal.
+Set `LIBCLANG_PATH` to the LLVM bin folder, for example
+`C:\Program Files\LLVM\bin`. Then restart the terminal.
 
 > [!NOTE]
-> This project is mostly developed and tested on Linux. Windows builds may need extra packages, Visual Studio Build Tools, or local environment tweaks.
+> Development and tests occur mainly on Linux. Windows builds can require more
+> packages, Visual Studio Build Tools, or changes to the local environment.
 
 #### Build Command
 
@@ -143,17 +169,18 @@ Set `LIBCLANG_PATH` to your LLVM bin folder, for example `C:\Program Files\LLVM\
 cargo build --locked --release
 ```
 
-### Running in Debug Mode
+### Debug Mode
 
-You can run the application with the `--debug` command-line flag to expose a dedicated **Debug** tab inside the settings interface (useful for inspecting raw packet data, provider details, and network state).
+Use the `--debug` command-line flag to show the **Debug** tab in settings.
+This tab shows raw packet data, provider details, and network state.
 
-Windows compiled binary:
+For the compiled Windows app:
 
 ```powershell
 .\rl-platform-overlay.exe --debug
 ```
 
-Linux compiled binary:
+For the compiled Linux app:
 
 ```bash
 ./rl-platform-overlay --debug
@@ -167,23 +194,24 @@ cargo run --locked -- --debug
 
 ### Debug Capture
 
-To save raw game output for parser debugging:
+Use this command to save raw game output for parser diagnostics:
 
 ```bash
 cargo run --locked --bin debug_game_output -- --seconds 30 --output rl_game_output_debug.txt
 ```
 
-### Reporting Stats API Detection Issues
+### Stats API Detection Problems
 
-The app can save recent Game API events after a detection problem occurs, so a
-developer capture does not normally need to be started in advance. See
-[Support and troubleshooting](docs/support.md#the-game-mode-teams-or-match-state-is-wrong).
+After a detection problem, the app can save recent Game API events.
+Usually, you do not need to start a developer capture before the problem occurs.
+See [Support and troubleshooting](docs/support.md#the-game-mode-teams-or-match-state-is-wrong).
 
 ---
 
 ## AI Disclosure
 
-This project was developed and refactored with the assistance of **Gemini** and **Codex** AI coding models.
+Development and code changes for this project used assistance from the
+**Gemini** and **Codex** AI models.
 
 ---
 
