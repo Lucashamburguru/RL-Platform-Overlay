@@ -55,7 +55,7 @@ Most long-running I/O uses Tokio tasks. Global keyboard and controller listeners
 TAGame/Config/DefaultStatsAPI.ini
 ```
 
-The relevant section is `TAGame.MatchStatsExporter_TA`. The app preserves an existing positive packet rate, can write a selected rate, defaults the port to `49123`, and creates a backup before changing an existing file. Rocket League must be restarted after a configuration change.
+The relevant section is `TAGame.MatchStatsExporter_TA`. The app preserves an existing positive packet rate, can write a selected rate, requires and repairs the port to `49123` to match the network client, and creates a backup before changing an existing file. Rocket League must be restarted after a configuration change.
 
 ### Transport and framing
 

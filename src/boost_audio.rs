@@ -247,7 +247,7 @@ pub fn display_name(name: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn section(out: &mut Vec<u8>, tag: &[u8; 4], data: &[u8]) {
@@ -255,7 +255,7 @@ mod tests {
         out.extend((data.len() as u32).to_le_bytes());
         out.extend(data);
     }
-    fn fixture(name: &str, media: &[u8]) -> Vec<u8> {
+    pub(crate) fn fixture(name: &str, media: &[u8]) -> Vec<u8> {
         let stem = name.trim_start_matches("SFX_").trim_end_matches(".bnk");
         let mut out = Vec::new();
         let header = [150, name_id(name.trim_end_matches(".bnk"))]

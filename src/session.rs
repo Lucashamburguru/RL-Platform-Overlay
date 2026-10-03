@@ -331,14 +331,11 @@ impl SessionState {
                 return;
             }
 
+            // A reset event may have been missed while disconnected. Clear all
+            // per-match state, preserving session totals and result deduplication.
+            self.handle_reset_event();
             self.active_match_id = match_guid.to_string();
-            self.active_mode = SessionMode::Unknown;
-            self.active_mode_source = SessionModeSource::Unknown;
-            self.local_team = None;
-            self.result_recorded_for_match = false;
             self.last_result = MatchResult::Unknown;
-            self.blue_team_name.clear();
-            self.orange_team_name.clear();
 
             let b_replay = real_data
                 .get("Game")
@@ -798,6 +795,37 @@ pub fn format_win_rate(wins: u32, losses: u32) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn new_match_resets_transient_state_without_losing_session_totals() {
+        let mut session = SessionState::default();
+        session.handle_update_state(&json!({"MatchGuid":"old"}), Some(0), SessionMode::Unknown);
+        session.handle_round_started();
+        session.blue_score = 3;
+        session.orange_score = 1;
+        session.time_seconds = Some(42);
+        session.overtime = true;
+        session.wins = 2;
+        session.matches_played = 2;
+        session.handle_update_state(
+            &json!({"MatchGuid":"new", "Game":{"bHasWinner":false}, "Players":[]}),
+            Some(0),
+            SessionMode::Unknown,
+        );
+        assert_eq!(session.active_match_id, "new");
+        assert!(!session.round_started);
+        assert_eq!((session.blue_score, session.orange_score), (0, 0));
+        assert_eq!(session.time_seconds, None);
+        assert!(!session.overtime);
+        session.record_early_leave();
+        assert_eq!(
+            (session.matches_played, session.wins, session.losses),
+            (2, 2, 0)
+        );
+        session.handle_round_started();
+        session.record_early_leave();
+        assert_eq!((session.matches_played, session.losses), (3, 1));
+    }
 
     #[test]
     fn records_win_once_per_match() {

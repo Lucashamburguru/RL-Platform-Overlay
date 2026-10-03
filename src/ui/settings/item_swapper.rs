@@ -36,13 +36,14 @@ pub(crate) fn render_item_swapper_settings_tab(
     let mut action = None;
 
     ui.heading("Item Swapper");
-    ui.label("Make one installed cosmetic package appear in place of another. Changes are local to this Rocket League installation.");
+    ui.label("Replace an installed cosmetic's appearance or an engine sound. Changes are local to this Rocket League installation.");
     ui.colored_label(
         egui::Color32::from_rgb(255, 188, 72),
         "Editing game files can violate Rocket League's Terms of Service and may carry account risk.",
     );
     ui.add_space(8.0);
 
+    let previous_slot = edit.slot;
     ui.horizontal_wrapped(|ui| {
         ui.label("Item type:");
         for slot in ItemSlot::ALL {
@@ -52,6 +53,11 @@ pub(crate) fn render_item_swapper_settings_tab(
     if edit.slot.is_none() {
         edit.slot = Some(ItemSlot::RocketBoost);
     }
+    if previous_slot != edit.slot {
+        edit.donor_search.clear();
+        edit.target_search.clear();
+    }
+    let is_engine_audio = edit.slot == Some(ItemSlot::EngineAudio);
     ui.horizontal(|ui| {
         if ui
             .add_enabled(!snapshot.refreshing, egui::Button::new("Refresh catalog"))
@@ -70,25 +76,35 @@ pub(crate) fn render_item_swapper_settings_tab(
         .iter()
         .filter(|p| Some(p.slot) == edit.slot)
         .collect::<Vec<_>>();
-    if edit
-        .donor
-        .as_ref()
-        .is_some_and(|selected| !packages.iter().any(|p| p.package == *selected))
-    {
+    if edit.donor.as_ref().is_some_and(|selected| {
+        !packages
+            .iter()
+            .any(|p| p.package == *selected && p.unavailable.is_none())
+    }) {
         edit.donor = None;
     }
-    if edit
-        .target
-        .as_ref()
-        .is_some_and(|selected| !packages.iter().any(|p| p.package == *selected))
-    {
+    if edit.target.as_ref().is_some_and(|selected| {
+        !packages
+            .iter()
+            .any(|p| p.package == *selected && p.unavailable.is_none())
+    }) {
         edit.target = None;
     }
     ui.add_space(6.0);
+    if is_engine_audio {
+        let unavailable = packages.iter().filter(|p| p.unavailable.is_some()).count();
+        if unavailable > 0 {
+            ui.weak(format!("{unavailable} engine sounds are unavailable. Hover over a disabled entry for details."));
+        }
+    }
     ui.columns(2, |columns| {
         render_picker(
             &mut columns[0],
-            "1. Appearance to copy (source)",
+            if is_engine_audio {
+                "1. Engine sound to copy (source)"
+            } else {
+                "1. Appearance to copy (source)"
+            },
             "item_swap_donor",
             &packages,
             &mut edit.donor_search,
@@ -96,7 +112,11 @@ pub(crate) fn render_item_swapper_settings_tab(
         );
         render_picker(
             &mut columns[1],
-            "2. Item being replaced (target)",
+            if is_engine_audio {
+                "2. Engine sound you equip (target)"
+            } else {
+                "2. Item being replaced (target)"
+            },
             "item_swap_target",
             &packages,
             &mut edit.target_search,
@@ -224,14 +244,23 @@ pub(crate) fn render_item_swapper_settings_tab(
             let target_name = display_name(&packages, target);
             ui.group(|ui| {
                 ui.strong("What this swap does");
-                ui.label(format!(
-                    "When Rocket League loads {target_name}, it will show {donor_name}'s appearance."
-                ));
-                ui.monospace(format!("Replace {target} with {donor} visuals"));
+                if is_engine_audio {
+                    ui.label(format!("Equip {target_name} in Rocket League's Engine Audio selection to hear {donor_name}."));
+                    ui.monospace(format!("Replace {target}'s engine sound with {donor}"));
+                } else {
+                    ui.label(format!(
+                        "When Rocket League loads {target_name}, it will show {donor_name}'s appearance."
+                    ));
+                    ui.monospace(format!("Replace {target} with {donor} visuals"));
+                }
             });
         }
         _ => {
-            ui.weak("Choose the appearance to copy, then choose the item that should display it.");
+            ui.weak(if is_engine_audio {
+                "Choose the engine sound to copy, then an engine sound you can equip in Rocket League."
+            } else {
+                "Choose the appearance to copy, then choose the item that should display it."
+            });
         }
     }
     ui.add_space(6.0);
@@ -245,7 +274,9 @@ pub(crate) fn render_item_swapper_settings_tab(
     if ui
         .add_enabled(
             can_apply,
-            egui::Button::new(if is_boost {
+            egui::Button::new(if is_engine_audio {
+                "Replace target engine sound"
+            } else if is_boost {
                 "Apply appearance and sound"
             } else {
                 "Replace target with source appearance"
@@ -284,10 +315,14 @@ pub(crate) fn render_item_swapper_settings_tab(
     }
     for swap in &snapshot.active {
         ui.horizontal_wrapped(|ui| {
-            ui.label(format!(
-                "{} now displays {}'s appearance",
-                swap.target_package, swap.donor_package
-            ));
+            if swap.is_engine_audio() {
+                ui.label(format!("{} now uses {}'s engine sound", swap.target_package, swap.donor_package));
+            } else {
+                ui.label(format!(
+                    "{} now displays {}'s appearance",
+                    swap.target_package, swap.donor_package
+                ));
+            }
             if swap.sound_choice() != SoundChoice::Original {
                 let label = match swap.sound_choice() {
                     SoundChoice::MatchAppearance => "matches appearance".to_owned(),
@@ -295,6 +330,15 @@ pub(crate) fn render_item_swapper_settings_tab(
                     SoundChoice::Original => unreachable!(),
                 };
                 ui.label(format!("Sound: {label}"));
+            }
+            if let Some(bank) = swap.audio_file() {
+                let others = snapshot.active.iter().filter(|other| {
+                    other.target_package != swap.target_package && other.audio_file() == Some(bank)
+                }).count();
+                if others > 0 {
+                    ui.weak(format!("Sound shared with {others} other swap(s)"))
+                        .on_hover_text("Restoring this appearance keeps the shared sound. The original sound returns when the last swap using it is restored.");
+                }
             }
             let color = match swap.health {
                 SwapHealth::Active => egui::Color32::from_rgb(80, 200, 120),
@@ -370,18 +414,25 @@ fn render_picker(
         .auto_shrink([false, false])
         .show_rows(ui, 22.0, filtered.len(), |ui, rows| {
             for package in &filtered[rows] {
-                let response = ui.selectable_label(
-                    selected.as_deref() == Some(&package.package),
-                    package.display_name(),
+                let response = ui.add_enabled(
+                    package.unavailable.is_none(),
+                    egui::SelectableLabel::new(
+                        selected.as_deref() == Some(&package.package),
+                        package.display_name(),
+                    ),
                 );
                 if response.clicked() {
                     *selected = Some(package.package.clone());
                 }
-                response.on_hover_text(format!(
-                    "{}\n{}",
-                    package.package,
-                    package.labels.join(", ")
-                ));
+                if let Some(reason) = &package.unavailable {
+                    response.on_disabled_hover_text(format!("{}\n{reason}", package.package));
+                } else {
+                    response.on_hover_text(format!(
+                        "{}\n{}",
+                        package.package,
+                        package.labels.join(", ")
+                    ));
+                }
             }
         });
     if let Some(value) = selected.as_deref() {

@@ -9,11 +9,11 @@ use tokio::io::AsyncReadExt;
 use tokio::net::TcpStream;
 use tokio_tungstenite::connect_async;
 
-const DEFAULT_STATS_API_ADDR: &str = "127.0.0.1:49123";
 const RECONNECT_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
 
 pub async fn start_network_task(state: Arc<AppState>) {
-    start_network_task_with_addr(state, DEFAULT_STATS_API_ADDR).await;
+    let addr = format!("127.0.0.1:{}", crate::setup::DEFAULT_PORT);
+    start_network_task_with_addr(state, &addr).await;
 }
 
 pub async fn start_network_task_with_addr(state: Arc<AppState>, addr: &str) {

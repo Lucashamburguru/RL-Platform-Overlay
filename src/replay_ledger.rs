@@ -172,7 +172,8 @@ pub fn record_remote_batch(
              ON CONFLICT(filename_normalized) DO UPDATE SET
                 filename = excluded.filename,
                 remote_replay_id = excluded.remote_replay_id,
-                status = 'remote',
+                status = CASE WHEN replay_uploads.status = 'uploaded'
+                              THEN 'uploaded' ELSE 'remote' END,
                 uploaded_unix_ms = excluded.uploaded_unix_ms",
             params![
                 filename,
@@ -225,8 +226,9 @@ pub fn matches_uploaded_file(
         .query_row(
             "SELECT 1 FROM replay_uploads
              WHERE filename_normalized = ?1
-               AND (status = 'remote'
-                    OR (status = 'uploaded' AND file_size = ?2 AND modified_unix_ms = ?3))
+               AND status IN ('uploaded', 'remote')
+               AND content_hash IS NOT NULL
+               AND file_size = ?2 AND modified_unix_ms = ?3
              LIMIT 1",
             params![
                 filename.trim().to_ascii_lowercase(),
@@ -309,6 +311,35 @@ fn now_unix_ms() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cloud_sync_preserves_local_fingerprints_and_does_not_verify_remote_only_files() {
+        let root = tempfile::tempdir().unwrap();
+        let mut conn = initialize_database_at(root.path().to_path_buf()).unwrap();
+        record_uploaded(
+            &mut conn,
+            UploadedReplay {
+                filename: "known.replay",
+                content_hash: Some("hash"),
+                remote_replay_id: None,
+                file_size: Some(100),
+                modified_unix_ms: Some(1000),
+                status: "uploaded",
+            },
+        )
+        .unwrap();
+        record_remote_batch(&mut conn, &["known.replay".into(), "remote.replay".into()]).unwrap();
+        assert!(matches_uploaded_file(&conn, "known.replay", 100, 1000).unwrap());
+        assert!(!matches_uploaded_file(&conn, "known.replay", 200, 1000).unwrap());
+        assert!(!matches_uploaded_file(&conn, "known.replay", 100, 2000).unwrap());
+        assert!(!matches_uploaded_file(&conn, "remote.replay", 100, 1000).unwrap());
+        assert!(contains_filename(&conn, "remote.replay").unwrap());
+        // Rows written by older versions may already have been changed to remote.
+        conn.execute("UPDATE replay_uploads SET status = 'remote'", [])
+            .unwrap();
+        assert!(matches_uploaded_file(&conn, "known.replay", 100, 1000).unwrap());
+        assert!(!matches_uploaded_file(&conn, "known.replay", 200, 2000).unwrap());
+    }
 
     #[test]
     fn imports_legacy_names_and_promotes_verified_uploads() {

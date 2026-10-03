@@ -688,9 +688,9 @@ fn select_next_player(
             }
             mmr_cache.remove(&cache_key);
             fetching_players.remove(&cache_key);
-        } else if info.mmr.is_some() {
-            continue;
         }
+        // Published MMR can outlive an evicted cache entry. A displayed rating
+        // alone does not establish freshness; fetch it again when absent.
 
         if fetching_players.contains(&cache_key) {
             continue;
@@ -1695,6 +1695,53 @@ mod tests {
         assert_eq!(cache_key, "steam|76561198000000000|0");
         assert_eq!(player.player_id, "76561198000000000");
         assert_eq!(player.player_name, "Opponent");
+    }
+
+    #[test]
+    fn expired_published_mmr_is_selected_after_cache_cleanup() {
+        let mut players = PlayerMap::new();
+        insert_player(
+            &mut players,
+            PlayerInfo {
+                name: "Local".into(),
+                primary_id: "Epic|local|0".into(),
+                platform: "Epic".into(),
+                is_local: true,
+                ..Default::default()
+            },
+        );
+        let opponent = PlayerInfo {
+            name: "Opponent".into(),
+            primary_id: "Epic|opponent|0".into(),
+            platform: "Epic".into(),
+            mmr: Some(TrackerSnapshot::default()),
+            ..Default::default()
+        };
+        let (cache_key, _) = tracker_player_from_info(&opponent).unwrap();
+        insert_player(&mut players, opponent);
+        let mut cache = HashMap::from([(
+            cache_key.clone(),
+            MmrCacheEntry {
+                snapshot: TrackerSnapshot::default(),
+                fetched_at: Instant::now() - MMR_CACHE_TTL - Duration::from_secs(1),
+            },
+        )]);
+        // Match the worker's eviction before selection, with a published snapshot
+        // still present (including the empty snapshot used for a cached 404).
+        cache.retain(|_, entry| entry.fetched_at.elapsed() < MMR_CACHE_TTL);
+        let mut fetching = std::collections::HashSet::new();
+        let failures = HashMap::new();
+        let (_, next) = select_next_player(&players, &mut cache, &mut fetching, &failures);
+        assert_eq!(next.unwrap().1, cache_key);
+        cache.insert(
+            cache_key,
+            MmrCacheEntry {
+                snapshot: TrackerSnapshot::default(),
+                fetched_at: Instant::now(),
+            },
+        );
+        let (_, next) = select_next_player(&players, &mut cache, &mut fetching, &failures);
+        assert!(next.is_none());
     }
 
     #[test]

@@ -720,9 +720,18 @@ pub fn masquerade(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     fn fixture(id: &str, key: &[u8; 32], guid: u8, licensee: u16) -> Vec<u8> {
+        fixture_with_names(id, key, guid, licensee, &[])
+    }
+    pub(crate) fn fixture_with_names(
+        id: &str,
+        key: &[u8; 32],
+        guid: u8,
+        licensee: u16,
+        extra: &[&str],
+    ) -> Vec<u8> {
         let mut s = Summary {
             tag: MAGIC,
             version: 868,
@@ -733,7 +742,7 @@ mod tests {
                 unicode: false,
             },
             package_flags: 0,
-            name_count: 2,
+            name_count: (2 + extra.len()) as i32,
             name_offset: 0,
             export_count: 0,
             export_offset: 0,
@@ -758,7 +767,10 @@ mod tests {
         let size = s.write().len();
         s.name_offset = size as i32;
         let mut h = Writer::new();
-        for text in [id.into(), format!("{id}_SF")] {
+        for text in [id.into(), format!("{id}_SF")]
+            .into_iter()
+            .chain(extra.iter().map(|name| (*name).to_string()))
+        {
             FString {
                 text,
                 unicode: false,

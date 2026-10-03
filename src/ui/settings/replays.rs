@@ -1,7 +1,7 @@
+use super::library_table::{self, Column, cell_text};
 use crate::state::{AppState, Config};
 use crate::ui::common::{StatusTone, helper_text, setting_row, settings_section, status_text};
 use eframe::egui;
-use egui_extras::{Column, TableBuilder};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
@@ -439,9 +439,11 @@ pub(crate) fn render_replays_settings_tab(
     }
 
     if view == ReplaysView::Library {
-        settings_section(ui, "Replay Library", |ui| {
-            render_replay_cache(ui, state, config_edit, replay_path_valid);
-        });
+        ui.heading("Replay Library");
+        if replay_path_valid {
+            maybe_start_metadata_scan(state, &config_edit.replays_folder);
+        }
+        render_replay_cache(ui, state, config_edit, replay_path_valid);
     }
 
     if view == ReplaysView::Tools {
@@ -562,190 +564,437 @@ fn maybe_start_metadata_scan(state: &Arc<AppState>, folder: &str) {
 fn render_replay_cache(
     ui: &mut egui::Ui,
     state: &Arc<AppState>,
-    config_edit: &Config,
+    config: &Config,
     path_valid: bool,
 ) {
-    let uploaded_replays = state.replays.uploaded_replays.load_full();
+    let uploaded = state.replays.uploaded_replays.load_full();
     let snapshot = crate::replay_metadata::merged_metadata_snapshot(state);
     let scan_running = state.replays.metadata_scan_running.load(Ordering::SeqCst);
-    let metadata_status = state
-        .replays
-        .metadata_status
-        .lock()
-        .map(|status| status.clone())
-        .unwrap_or_else(|_| "Metadata status unavailable".to_string());
-    let cloud_count = state.replays.ballchasing_cloud_count.load(Ordering::SeqCst);
-
+    let all_rows = cached_replay_cache_rows(ui, state, uploaded.as_ref(), snapshot.clone(), "");
     ui.horizontal_wrapped(|ui| {
-        ui.label(helper_text(format!(
-            "{} upload-cache entries",
-            uploaded_replays.len()
-        )));
-        if cloud_count > 0 {
-            ui.label(helper_text(format!("{} on Ballchasing.com", cloud_count)));
-        }
-        if snapshot.total_files > 0 {
-            ui.label(helper_text(format!(
-                "{} local metadata entries",
-                snapshot.parsed
-            )));
-        }
-        if scan_running {
-            ui.add(egui::Spinner::new());
-        }
-        ui.label(helper_text(metadata_status));
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let refresh = ui
-                .add_enabled(
-                    path_valid && !scan_running,
-                    egui::Button::new("Refresh Metadata"),
-                )
-                .on_disabled_hover_text(
-                    "Configure a valid replay folder before refreshing metadata.",
-                );
-            if refresh.clicked() {
-                crate::replay_metadata::start_metadata_scan(
-                    state.clone(),
-                    config_edit.replays_folder.clone(),
-                );
-            }
-        });
-    });
-
-    let cached_count = uploaded_replays.len();
-    if cached_count == 0 && snapshot.entries.is_empty() {
-        ui.add_space(4.0);
-        ui.label(helper_text(
-            "No replays found. Select a replay folder or sync your uploads to populate this library.",
+        ui.strong(format!("{} replays", all_rows.len()));
+        ui.weak(format!(
+            "{} local · {} cloud",
+            all_rows.iter().filter(|r| r.has_local).count(),
+            all_rows.iter().filter(|r| !r.cloud_ids.is_empty()).count()
         ));
-        return;
+        if ui
+            .add_enabled(
+                path_valid && !scan_running,
+                egui::Button::new("Refresh Metadata"),
+            )
+            .on_disabled_hover_text("Choose a replay folder, or wait for the current scan.")
+            .clicked()
+        {
+            crate::replay_metadata::start_metadata_scan(
+                state.clone(),
+                config.replays_folder.clone(),
+            );
+        }
+        if ui
+            .add_enabled(
+                !config.ballchasing_api_key.trim().is_empty()
+                    && !state.replays.sync_running.load(Ordering::SeqCst),
+                egui::Button::new("Sync Cloud"),
+            )
+            .clicked()
+        {
+            crate::replays::start_sync_replays_task(state.clone());
+        }
+    });
+    if scan_running {
+        ui.horizontal(|ui| {
+            ui.spinner();
+            ui.weak("Refreshing local replays…");
+        });
+    } else if snapshot.failed > 0 {
+        status_text(
+            ui,
+            StatusTone::Warning,
+            format!(
+                "{} local replay files could not be read. Expand their rows for details.",
+                snapshot.failed
+            ),
+        );
     }
-
+    if let Ok(status) = state.replays.ballchasing_status.lock()
+        && !status.is_empty()
+    {
+        ui.add(egui::Label::new(helper_text(&*status)).truncate())
+            .on_hover_text(&*status);
+    }
     let search_id = ui.make_persistent_id("replay_cache_search");
     let mut search = ui
-        .data(|data| data.get_temp::<String>(search_id))
+        .data(|d| d.get_temp::<String>(search_id))
         .unwrap_or_default();
     ui.add_space(6.0);
     ui.horizontal(|ui| {
-        ui.label(helper_text("Search"));
-        if ui
-            .add_sized(
-                [ui.available_width(), 28.0],
-                egui::TextEdit::singleline(&mut search).hint_text("name, map, date, filename"),
-            )
-            .changed()
-        {
-            ui.data_mut(|data| data.insert_temp(search_id, search.clone()));
+        ui.add_sized(
+            [(ui.available_width() - 78.0).max(40.0), 28.0],
+            egui::TextEdit::singleline(&mut search)
+                .hint_text("Search replays, players, maps, dates…"),
+        );
+        if ui.button("Clear").clicked() {
+            search.clear();
         }
     });
-
-    let rows = cached_replay_cache_rows(ui, state, uploaded_replays.as_ref(), snapshot, &search);
-    ui.add_space(4.0);
-    let table_height = (rows.len() as f32 * 24.0 + 24.0).min(210.0);
-    let download_active = state.replays.download_active.load(Ordering::SeqCst);
-    let download_enabled =
-        !download_active && !config_edit.ballchasing_api_key.trim().is_empty() && path_valid;
+    ui.data_mut(|d| d.insert_temp(search_id, search.clone()));
+    let filter_id = ui.make_persistent_id("replay_source_filter");
+    let mut filter = ui.data(|d| d.get_temp::<usize>(filter_id)).unwrap_or(0);
+    ui.horizontal(|ui| {
+        for (value, label) in [(0, "All"), (1, "Local"), (2, "Cloud")] {
+            ui.selectable_value(&mut filter, value, label);
+        }
+    });
+    ui.data_mut(|d| d.insert_temp(filter_id, filter));
+    let query = search.trim().to_lowercase();
+    let mut rows: Vec<_> = all_rows
+        .iter()
+        .filter(|r| {
+            (query.is_empty() || row_matches_query(r, &query))
+                && match filter {
+                    1 => r.has_local,
+                    2 => !r.cloud_ids.is_empty(),
+                    _ => true,
+                }
+        })
+        .collect();
+    let sort_id = ui.make_persistent_id("replay_sort");
+    let mut sort = ui
+        .data(|d| d.get_temp::<(usize, bool)>(sort_id))
+        .unwrap_or((1, true));
+    rows.sort_by(|a, b| {
+        let ordering = match sort.0 {
+            0 => a.primary.to_lowercase().cmp(&b.primary.to_lowercase()),
+            2 => a.map.cmp(&b.map),
+            3 => a.score_value.cmp(&b.score_value),
+            4 => a.source_label.cmp(b.source_label),
+            _ => a.date_key.cmp(&b.date_key),
+        };
+        (if sort.1 { ordering.reverse() } else { ordering }).then_with(|| a.key.cmp(&b.key))
+    });
+    ui.weak(format!("{} shown · Click a row for details", rows.len()));
     if rows.is_empty() {
-        ui.label("No replays match your search.");
+        ui.label(if all_rows.is_empty() {
+            "No replays found. Choose a replay folder or sync cloud uploads."
+        } else {
+            "No replays match these filters."
+        });
         return;
     }
-    if ui.available_width() < 1000.0 {
-        egui::ScrollArea::vertical()
-            .id_salt("replay_library_results")
-            .auto_shrink([false, true])
-            .max_height(360.0)
-            .show(ui, |ui| {
-                for row in rows.iter() {
-                    ui.push_id(&row.filename, |ui| {
-                        ui.collapsing(format!("{} · {}", row.primary, row.date), |ui| {
-                            ui.label(format!("Map: {} · Score: {}", row.map, row.score));
-                            ui.label(format!("Players: {}", row.players));
-                            ui.label(format!(
-                                "Source: {} · Upload status: {}",
-                                row.source_label, row.upload_status
-                            ));
-                            ui.label(&row.filename).on_hover_text(&row.hover);
-                            if row.source_label == "Cloud metadata"
-                                && ui
-                                    .add_enabled(download_enabled, egui::Button::new("Download"))
-                                    .clicked()
-                            {
-                                crate::replays::start_download_replay_task(
-                                    state.clone(),
-                                    row.filename.trim_end_matches(".replay").to_owned(),
-                                );
-                            }
-                        });
-                    });
+    let width = (ui.available_width() - 20.0).max(1.0);
+    let wide = width >= 900.0;
+    let mut columns = vec![
+        Column {
+            label: "Replay",
+            sort: 0,
+            width: width - if wide { 534.0 } else { 354.0 },
+            numeric: false,
+        },
+        Column {
+            label: "Date",
+            sort: 1,
+            width: 142.0,
+            numeric: false,
+        },
+    ];
+    if wide {
+        columns.push(Column {
+            label: "Map",
+            sort: 2,
+            width: 180.0,
+            numeric: false,
+        });
+    }
+    columns.push(Column {
+        label: "Score",
+        sort: 3,
+        width: 62.0,
+        numeric: true,
+    });
+    columns.push(Column {
+        label: "Availability",
+        sort: 4,
+        width: 150.0,
+        numeric: false,
+    });
+    let keys: Vec<_> = rows.iter().map(|r| r.key.clone()).collect();
+    let download_enabled = !state.replays.download_active.load(Ordering::SeqCst)
+        && !config.ballchasing_api_key.trim().is_empty()
+        && path_valid;
+    library_table::show(
+        ui,
+        "replay_table",
+        &columns,
+        &keys,
+        &mut sort,
+        36.0,
+        |ui, index, column, expanded| {
+            let row = rows[index];
+            match columns[column].sort {
+                0 => cell_text(
+                    ui,
+                    format!("{} {}", if expanded { "▾" } else { "▸" }, row.primary),
+                ),
+                1 => cell_text(ui, &row.date),
+                2 => cell_text(ui, &row.map),
+                3 => cell_text(ui, &row.score),
+                _ => {
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(row.source_label).color(row.source_color),
+                        )
+                        .truncate(),
+                    )
+                    .on_hover_text(&row.hover);
+                }
+            }
+        },
+        |ui, index| {
+            let row = rows[index];
+            render_replay_details(ui, row);
+            ui.collapsing("Files & identifiers", |ui| {
+                for filename in &row.filenames {
+                    ui.label(filename);
+                }
+                ui.label(&row.key);
+                for id in &row.cloud_ids {
+                    ui.label(format!("Ballchasing: {id}"));
+                }
+                ui.collapsing("Source metadata", |ui| {
+                    ui.label(&row.hover);
+                });
+                if ui.button("Copy filenames").clicked() {
+                    ui.ctx().copy_text(row.filenames.join("\n"));
                 }
             });
-        return;
-    }
-    TableBuilder::new(ui)
-        .striped(true)
-        .resizable(false)
-        .min_scrolled_height(table_height)
-        .max_scroll_height(table_height)
-        .column(Column::remainder().at_least(120.0))
-        .column(Column::auto().at_least(70.0))
-        .column(Column::auto().at_least(70.0))
-        .column(Column::auto().at_least(48.0))
-        .column(Column::auto().at_least(85.0))
-        .column(Column::auto().at_least(65.0))
-        .column(Column::auto().at_least(90.0))
-        .column(Column::auto().at_least(75.0))
-        .header(22.0, |mut header| {
-            for label in [
-                "Replay",
-                "Date",
-                "Map",
-                "Score",
-                "Players",
-                "Source",
-                "Upload status",
-                "Actions",
-            ] {
-                header.col(|ui| {
-                    ui.strong(label);
-                });
-            }
-        })
-        .body(|body| {
-            body.rows(24.0, rows.len(), |mut table_row| {
-                let row = &rows[table_row.index()];
-                table_row.col(|ui| {
-                    ui.label(row.primary.as_str())
-                        .on_hover_text(row.hover.as_str());
-                });
-                for value in [&row.date, &row.map, &row.score, &row.players] {
-                    table_row.col(|ui| {
-                        ui.label(
-                            egui::RichText::new(value.as_str())
-                                .size(13.0)
-                                .color(egui::Color32::from_gray(178)),
-                        )
-                        .on_hover_text(row.hover.as_str());
-                    });
-                }
-                table_row.col(|ui| {
-                    ui.colored_label(row.source_color, row.source_label)
-                        .on_hover_text(&row.hover);
-                });
-                table_row.col(|ui| {
-                    ui.label(row.upload_status);
-                });
-                table_row.col(|ui| {
-                    if row.source_label == "Cloud metadata" {
-                        let btn =
-                            ui.add_enabled(download_enabled, egui::Button::new("Download").small());
-                        if btn.clicked() {
-                            let id = row.filename.trim_end_matches(".replay").to_string();
-                            crate::replays::start_download_replay_task(state.clone(), id);
-                        }
+            for cloud_id in &row.cloud_ids {
+                ui.horizontal_wrapped(|ui| {
+                    ui.hyperlink_to("Open on Ballchasing",format!("https://ballchasing.com/replay/{cloud_id}"));
+                    if !row.has_local && ui.add_enabled(download_enabled,egui::Button::new("Download")).on_disabled_hover_text("Choose a valid replay folder and API key, and wait for any active download.").clicked() {
+                        crate::replays::start_download_replay_task(state.clone(),cloud_id.clone());
                     }
                 });
+            }
+        },
+    );
+    ui.data_mut(|d| d.insert_temp(sort_id, sort));
+}
+
+fn replay_team_color(team: Option<i32>) -> egui::Color32 {
+    match team {
+        Some(0) => egui::Color32::from_rgb(105, 180, 255),
+        Some(1) => egui::Color32::from_rgb(255, 175, 90),
+        _ => egui::Color32::from_gray(218),
+    }
+}
+
+fn render_replay_details(ui: &mut egui::Ui, row: &ReplayCacheRow) {
+    ui.strong(&row.primary);
+    ui.horizontal_wrapped(|ui| {
+        ui.label(&row.map);
+        ui.separator();
+        ui.weak(&row.date);
+        ui.colored_label(row.source_color, row.source_label);
+    });
+    let Some(entry) = &row.metadata else {
+        ui.weak(&row.hover);
+        return;
+    };
+    ui.add_space(6.0);
+    egui::Frame::NONE
+        .fill(egui::Color32::from_gray(27))
+        .corner_radius(5)
+        .inner_margin(10.0)
+        .show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.colored_label(replay_team_color(Some(0)), "BLUE");
+                ui.label(
+                    egui::RichText::new(
+                        entry
+                            .team0_score
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| "—".into()),
+                    )
+                    .size(24.0)
+                    .strong()
+                    .color(replay_team_color(Some(0))),
+                );
+                ui.weak("–");
+                ui.label(
+                    egui::RichText::new(
+                        entry
+                            .team1_score
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| "—".into()),
+                    )
+                    .size(24.0)
+                    .strong()
+                    .color(replay_team_color(Some(1))),
+                );
+                ui.colored_label(replay_team_color(Some(1)), "ORANGE");
+                if let Some(seconds) = entry.duration_seconds {
+                    ui.separator();
+                    ui.label(replay_time_label(seconds))
+                        .on_hover_text("Match duration");
+                }
+                if !entry.match_type.is_empty() {
+                    ui.weak(&entry.match_type);
+                }
             });
         });
+    ui.add_space(6.0);
+    if !entry.players.is_empty() {
+        ui.strong("Players");
+        let mut players: Vec<_> = entry.players.iter().collect();
+        players.sort_by_key(|p| match p.team {
+            Some(0) => 0,
+            Some(1) => 1,
+            _ => 2,
+        });
+        if ui.available_width() >= 560.0 {
+            let name_width = (ui.available_width() - 354.0).max(100.0);
+            egui::Grid::new("replay_player_stats")
+                .striped(true)
+                .min_col_width(52.0)
+                .spacing([14.0, 6.0])
+                .show(ui, |ui| {
+                    for label in [
+                        "Player / team",
+                        "Points",
+                        "Goals",
+                        "Assists",
+                        "Saves",
+                        "Shots",
+                    ] {
+                        ui.add(egui::Label::new(egui::RichText::new(label).weak()).truncate());
+                    }
+                    ui.end_row();
+                    for player in players {
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(name_width, 20.0),
+                            egui::Layout::left_to_right(egui::Align::Center),
+                            |ui| {
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(replay_player_name(player))
+                                            .color(replay_team_color(player.team)),
+                                    )
+                                    .truncate(),
+                                );
+                            },
+                        )
+                        .response
+                        .on_hover_text(player_stats_label(player));
+                        for value in [
+                            player.score,
+                            player.goals,
+                            player.assists,
+                            player.saves,
+                            player.shots,
+                        ] {
+                            ui.label(value.map(|v| v.to_string()).unwrap_or_else(|| "—".into()));
+                        }
+                        ui.end_row();
+                    }
+                });
+        } else {
+            for player in players {
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(replay_player_name(player))
+                            .color(replay_team_color(player.team)),
+                    )
+                    .truncate(),
+                )
+                .on_hover_text(&player.name);
+                ui.horizontal_wrapped(|ui| {
+                    for (value, label) in [
+                        (player.score, "pts"),
+                        (player.goals, "goals"),
+                        (player.assists, "assists"),
+                        (player.saves, "saves"),
+                        (player.shots, "shots"),
+                    ] {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{} {label}",
+                                value.map(|v| v.to_string()).unwrap_or_else(|| "—".into())
+                            ))
+                            .size(11.0),
+                        );
+                    }
+                });
+                ui.add_space(4.0);
+            }
+        }
+    } else if !entry.player_names.is_empty() {
+        ui.strong("Players");
+        ui.label(entry.player_names.join(", "));
+    }
+    if !entry.goals.is_empty() {
+        ui.add_space(6.0);
+        ui.collapsing(format!("Goals · {}", entry.goals.len()), |ui| {
+            egui::ScrollArea::vertical()
+                .id_salt("replay_goals")
+                .max_height(180.0)
+                .show_rows(ui, 22.0, entry.goals.len(), |ui, range| {
+                    for goal in &entry.goals[range] {
+                        ui.horizontal(|ui| {
+                            let time = goal
+                                .elapsed_seconds
+                                .map(replay_time_label)
+                                .or_else(|| goal.frame.map(|f| format!("frame {f}")))
+                                .unwrap_or_else(|| "—".into());
+                            ui.add_sized(
+                                [72.0, 22.0],
+                                egui::Label::new(egui::RichText::new(time).monospace()),
+                            );
+                            let scorer = if goal.player_name.trim().is_empty() {
+                                "Unknown scorer"
+                            } else {
+                                &goal.player_name
+                            };
+                            let team = match goal.team {
+                                Some(0) => "Blue",
+                                Some(1) => "Orange",
+                                _ => "Unknown team",
+                            };
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(format!("{scorer} · {team}"))
+                                        .color(replay_team_color(goal.team)),
+                                )
+                                .truncate(),
+                            )
+                            .on_hover_text(goal_label(goal));
+                        });
+                    }
+                });
+        });
+    }
+    ui.add_space(6.0);
+    ui.weak(format!("Upload record: {}", row.upload_status));
+    if !entry.error.is_empty() {
+        status_text(ui, StatusTone::Error, &entry.error);
+    }
+}
+
+fn replay_player_name(player: &crate::replay_metadata::ReplayPlayerMetadata) -> String {
+    let team = match player.team {
+        Some(0) => "Blue",
+        Some(1) => "Orange",
+        _ => "Unknown team",
+    };
+    format!(
+        "{} · {team}{}",
+        player.name,
+        if player.is_bot == Some(true) {
+            " · Bot"
+        } else {
+            ""
+        }
+    )
 }
 
 #[derive(Clone)]
@@ -795,12 +1044,19 @@ fn cached_replay_cache_rows(
 
 #[derive(Clone, Debug, PartialEq)]
 struct ReplayCacheRow {
+    metadata: Option<crate::replay_metadata::ReplayMetadataEntry>,
+    key: String,
     upload_status: &'static str,
     filename: String,
+    filenames: Vec<String>,
+    cloud_ids: Vec<String>,
+    has_local: bool,
     primary: String,
     date: String,
+    date_key: Option<[u32; 6]>,
     map: String,
     score: String,
+    score_value: Option<(i32, i32)>,
     players: String,
     search_text: String,
     source_label: &'static str,
@@ -809,88 +1065,201 @@ struct ReplayCacheRow {
 }
 
 fn replay_cache_rows(
-    uploaded_replays: &[String],
+    uploaded: &[String],
     metadata: &std::collections::HashMap<String, crate::replay_metadata::ReplayMetadataEntry>,
     search: &str,
 ) -> Vec<ReplayCacheRow> {
-    let metadata_by_lower_filename: std::collections::HashMap<
-        String,
-        &crate::replay_metadata::ReplayMetadataEntry,
-    > = metadata
-        .iter()
-        .map(|(filename, entry)| (filename.to_ascii_lowercase(), entry))
-        .collect();
-    let query = search.trim().to_ascii_lowercase();
-    let cached: std::collections::HashSet<_> = uploaded_replays
-        .iter()
-        .map(|name| name.to_ascii_lowercase())
-        .collect();
-    let mut filenames: std::collections::BTreeMap<String, String> = metadata
-        .keys()
-        .map(|name| (name.to_ascii_lowercase(), name.clone()))
-        .collect();
-    for name in uploaded_replays {
-        filenames.insert(name.to_ascii_lowercase(), name.clone());
+    use crate::replay_metadata::{fill_missing_metadata, normalized_replay_id};
+    use std::collections::{BTreeMap, HashMap};
+    let mut groups: BTreeMap<String, Vec<&crate::replay_metadata::ReplayMetadataEntry>> =
+        BTreeMap::new();
+    // A cloud ID and the game's replay ID belong to different namespaces.
+    let mut cloud_games: HashMap<String, std::collections::BTreeSet<String>> = HashMap::new();
+    for entry in metadata.values() {
+        if let (Some(cloud), Some(game)) = (
+            normalized_replay_id(&entry.cloud_replay_id),
+            normalized_replay_id(&entry.game_replay_id),
+        ) {
+            cloud_games.entry(cloud).or_default().insert(game);
+        }
     }
-    let mut rows: Vec<_> = filenames
-        .values()
-        .filter_map(|filename| {
-            let entry = metadata_by_lower_filename
-                .get(&filename.to_ascii_lowercase())
-                .copied();
-            let mut row = replay_cache_row(filename, entry);
-            row.upload_status = if cached.contains(&filename.to_ascii_lowercase()) {
-                "In upload cache"
-            } else {
-                "Not cached"
-            };
-            if query.is_empty() || row_matches_query(&row, &query) {
-                Some(row)
-            } else {
-                None
-            }
+    let cloud_to_game: HashMap<_, _> = cloud_games
+        .into_iter()
+        .filter_map(|(cloud, games)| {
+            (games.len() == 1).then(|| (cloud, games.into_iter().next().unwrap()))
         })
         .collect();
-    rows.sort_by(|a, b| {
-        replay_date_key(&b.date)
-            .cmp(&replay_date_key(&a.date))
-            .then_with(|| a.filename.cmp(&b.filename))
-    });
+    for entry in metadata.values() {
+        let cloud = normalized_replay_id(&entry.cloud_replay_id);
+        let game = normalized_replay_id(&entry.game_replay_id)
+            .or_else(|| cloud.as_ref().and_then(|id| cloud_to_game.get(id).cloned()));
+        let key = if let Some(id) = game {
+            format!("game:{id}")
+        } else if let Some(id) = cloud {
+            format!("cloud:{id}")
+        } else {
+            format!("file:{}", entry.filename.to_ascii_lowercase())
+        };
+        groups.entry(key).or_default().push(entry);
+    }
+    let mut rows = Vec::new();
+    let mut aliases = HashMap::new();
+    for (key, mut entries) in groups {
+        // Deterministic local-first selection; never overwrite file identity.
+        entries.sort_by_key(|e| {
+            (
+                !e.has_metadata(),
+                e.file_size == 0,
+                e.filename.to_ascii_lowercase(),
+            )
+        });
+        let mut combined = entries[0].clone();
+        for entry in &entries[1..] {
+            fill_missing_metadata(&mut combined, entry);
+        }
+        let mut row = replay_cache_row(&combined.filename, Some(&combined));
+        row.key = key;
+        row.has_local = entries
+            .iter()
+            .any(|e| e.file_size > 0 || e.cloud_replay_id.is_empty());
+        row.filenames = entries.iter().map(|e| e.filename.clone()).collect();
+        row.filenames.sort();
+        row.filenames.dedup();
+        row.cloud_ids = entries
+            .iter()
+            .filter_map(|e| normalized_replay_id(&e.cloud_replay_id))
+            .map(|id| {
+                format!(
+                    "{}-{}-{}-{}-{}",
+                    &id[..8],
+                    &id[8..12],
+                    &id[12..16],
+                    &id[16..20],
+                    &id[20..]
+                )
+            })
+            .collect();
+        row.cloud_ids.sort();
+        row.cloud_ids.dedup();
+        let errors: Vec<_> = entries
+            .iter()
+            .filter(|e| !e.error.is_empty())
+            .map(|e| format!("{}: {}", e.filename, e.error))
+            .collect();
+        row.source_label = if !errors.is_empty() {
+            "Parse error"
+        } else if row.has_local && !row.cloud_ids.is_empty() {
+            "Local + Cloud"
+        } else if row.has_local {
+            "Local"
+        } else {
+            "Cloud"
+        };
+        row.source_color = if !errors.is_empty() {
+            egui::Color32::from_rgb(230, 95, 85)
+        } else if row.has_local {
+            egui::Color32::from_rgb(105, 210, 165)
+        } else {
+            egui::Color32::from_rgb(100, 180, 240)
+        };
+        for error in errors {
+            row.hover.push_str(&format!("\n{error}"));
+        }
+        for entry in &entries {
+            if entry.display_name != combined.display_name && !entry.display_name.is_empty() {
+                row.hover
+                    .push_str(&format!("\nAlternate title: {}", entry.display_name));
+            }
+            if entry.date != combined.date {
+                row.hover
+                    .push_str(&format!("\nSource date: {}", entry.date));
+            }
+        }
+        for filename in &row.filenames {
+            aliases.insert(filename.to_ascii_lowercase(), rows.len());
+        }
+        for id in &row.cloud_ids {
+            aliases.insert(format!("{id}.replay"), rows.len());
+            aliases.insert(format!("{}.replay", id.replace('-', "")), rows.len());
+        }
+        rows.push(row);
+    }
+    for filename in uploaded {
+        let alias = filename.to_ascii_lowercase();
+        if let Some(&index) = aliases.get(&alias) {
+            rows[index].upload_status = "Recorded";
+            if !rows[index]
+                .filenames
+                .iter()
+                .any(|f| f.eq_ignore_ascii_case(filename))
+            {
+                rows[index].filenames.push(filename.clone());
+            }
+        } else {
+            let mut row = replay_cache_row(filename, None);
+            row.upload_status = "Recorded";
+            aliases.insert(alias, rows.len());
+            rows.push(row);
+        }
+    }
+    let query = search.trim().to_lowercase();
+    for row in &mut rows {
+        row.search_text = format!(
+            "{} {} {}",
+            replay_row_search_text(row),
+            row.filenames.join(" "),
+            row.cloud_ids.join(" ")
+        )
+        .to_lowercase();
+    }
+    rows.retain(|row| query.is_empty() || row_matches_query(row, &query));
+    rows.sort_by(|a, b| b.date_key.cmp(&a.date_key).then_with(|| a.key.cmp(&b.key)));
     rows
 }
 
+fn parsed_replay_date(value: &str) -> Option<chrono::NaiveDateTime> {
+    if let Ok(date) = chrono::DateTime::parse_from_rfc3339(value.trim()) {
+        return Some(date.with_timezone(&chrono::Local).naive_local());
+    }
+    for format in [
+        "%Y-%m-%d:%H-%M-%S",
+        "%Y-%m-%d:%H-%M",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%Y-%m-%dT%H:%M:%S",
+    ] {
+        if let Ok(date) = chrono::NaiveDateTime::parse_from_str(value.trim(), format) {
+            return Some(date);
+        }
+    }
+    chrono::NaiveDate::parse_from_str(value.trim(), "%Y-%m-%d")
+        .ok()?
+        .and_hms_opt(0, 0, 0)
+}
+
 fn replay_date_key(value: &str) -> Option<[u32; 6]> {
-    let parts: Vec<_> = value
-        .split(|c: char| !c.is_ascii_digit())
-        .filter(|s| !s.is_empty())
-        .collect();
-    if parts.len() < 3 || parts[0].len() != 4 {
-        return None;
-    }
-    let mut key = [0; 6];
-    for (index, part) in parts.iter().take(6).enumerate() {
-        key[index] = part.parse().ok()?;
-    }
-    if !(1..=12).contains(&key[1])
-        || !(1..=31).contains(&key[2])
-        || key[3] > 23
-        || key[4] > 59
-        || key[5] > 59
-    {
-        return None;
-    }
-    Some(key)
+    use chrono::{Datelike, Timelike};
+    let date = parsed_replay_date(value)?;
+    Some([
+        u32::try_from(date.year()).ok()?,
+        date.month(),
+        date.day(),
+        date.hour(),
+        date.minute(),
+        date.second(),
+    ])
 }
 
 fn display_replay_date(value: &str) -> String {
-    // Preserve explicitly zoned timestamps; never assign a timezone to game-local dates.
-    if value.contains('T') {
-        return display_or_dash(value);
-    }
-    match replay_date_key(value) {
-        Some([y, m, d, h, min, sec]) => format!("{y:04}-{m:02}-{d:02} {h:02}:{min:02}:{sec:02}"),
-        None => display_or_dash(value),
-    }
+    parsed_replay_date(value)
+        .map(|d| d.format("%Y-%m-%d %H:%M").to_string())
+        .unwrap_or_else(|| {
+            if value.trim().is_empty() {
+                "—".into()
+            } else {
+                value.to_owned()
+            }
+        })
 }
 
 fn display_arena(value: &str) -> String {
@@ -913,58 +1282,32 @@ fn replay_cache_row(
     filename: &str,
     entry: Option<&crate::replay_metadata::ReplayMetadataEntry>,
 ) -> ReplayCacheRow {
-    let mut row = match entry {
-        Some(entry) if entry.has_metadata() => {
-            let primary = shorten_text(&entry.display_name, 36);
-            let is_cloud = entry.file_size == 0;
-            ReplayCacheRow {
-                upload_status: "Unknown",
-                filename: filename.to_string(),
-                primary,
-                date: display_replay_date(&entry.date),
-                map: display_arena(&entry.map_name),
-                score: score_label(entry),
-                players: players_label(entry),
-                source_label: if is_cloud {
-                    "Cloud metadata"
-                } else {
-                    "Local metadata"
-                },
-                source_color: if is_cloud {
-                    egui::Color32::from_rgb(100, 180, 240)
-                } else {
-                    egui::Color32::from_rgb(100, 220, 120)
-                },
-                hover: metadata_hover(filename, entry),
-                search_text: String::new(),
-            }
-        }
-        Some(entry) => ReplayCacheRow {
-            upload_status: "Unknown",
-            filename: filename.to_string(),
-            primary: shorten_text(filename.trim_end_matches(".replay"), 36),
-            date: "-".to_string(),
-            map: "-".to_string(),
-            score: "-".to_string(),
-            players: "-".to_string(),
-            source_label: "Parse failed",
-            source_color: egui::Color32::from_rgb(230, 95, 85),
-            hover: format!("{}\n{}", filename, entry.error),
-            search_text: String::new(),
-        },
-        None => ReplayCacheRow {
-            upload_status: "Unknown",
-            filename: filename.to_string(),
-            primary: shorten_text(filename.trim_end_matches(".replay"), 36),
-            date: "-".to_string(),
-            map: "-".to_string(),
-            score: "-".to_string(),
-            players: "-".to_string(),
-            source_label: "Cache only",
-            source_color: egui::Color32::from_gray(165),
-            hover: format!("{filename}\nNo matching local replay file for metadata."),
-            search_text: String::new(),
-        },
+    let has_local = entry.is_some_and(|e| e.file_size > 0 || e.cloud_replay_id.is_empty());
+    let primary = entry
+        .filter(|e| !e.display_name.trim().is_empty())
+        .map(|e| e.display_name.clone())
+        .unwrap_or_else(|| filename.trim_end_matches(".replay").to_owned());
+    let source_label = match entry {
+        Some(e) if !e.error.is_empty() => "Parse error",
+        Some(_) if has_local => "Local",
+        Some(_) => "Cloud",
+        None => "Upload record only",
+    };
+    let mut row=ReplayCacheRow {
+        metadata:entry.cloned(),
+        key:format!("file:{}",filename.to_ascii_lowercase()),
+        upload_status:"Not recorded",
+        filename:filename.to_owned(),filenames:vec![filename.to_owned()],cloud_ids:vec![],has_local,
+        primary,
+        date:entry.map(|e| display_replay_date(&e.date)).unwrap_or_else(|| "—".into()),
+        date_key:entry.and_then(|e| replay_date_key(&e.date)),
+        map:entry.map(|e| display_arena(&e.map_name)).unwrap_or_else(|| "-".into()),
+        score:entry.map(score_label).unwrap_or_else(|| "-".into()),
+        score_value:entry.and_then(|e| Some((e.team0_score?,e.team1_score?))),
+        players:entry.map(players_label).unwrap_or_else(|| "-".into()),
+        source_label,source_color:egui::Color32::from_gray(175),
+        hover:entry.map(|e| metadata_hover(filename,e)).unwrap_or_else(|| "No matching local replay file or cloud metadata. Upload membership does not verify local file contents.".into()),
+        search_text:String::new(),
     };
     row.search_text = replay_row_search_text(&row);
     row
@@ -975,7 +1318,7 @@ fn display_or_dash(value: &str) -> String {
     if value.is_empty() {
         "-".to_string()
     } else {
-        shorten_text(value, 22)
+        value.to_owned()
     }
 }
 
@@ -1005,9 +1348,15 @@ fn players_label(entry: &crate::replay_metadata::ReplayMetadataEntry) -> String 
 }
 
 fn metadata_hover(filename: &str, entry: &crate::replay_metadata::ReplayMetadataEntry) -> String {
-    let mut lines = vec![format!("File: {filename}")];
-    if !entry.replay_id.trim().is_empty() {
-        lines.push(format!("Replay ID: {}", entry.replay_id));
+    let mut lines = vec![
+        format!("Original date: {}", entry.date),
+        format!("File: {filename}"),
+    ];
+    if !entry.game_replay_id.trim().is_empty() {
+        lines.push(format!("Game replay ID: {}", entry.game_replay_id));
+    }
+    if !entry.cloud_replay_id.trim().is_empty() {
+        lines.push(format!("Cloud replay ID: {}", entry.cloud_replay_id));
     }
     if !entry.match_type.trim().is_empty() {
         lines.push(format!("Match type: {}", entry.match_type));
@@ -1184,6 +1533,161 @@ mod tests {
     use super::*;
 
     #[test]
+    fn library_groups_game_identity_preserving_files_cloud_actions_and_search() {
+        let game = "ECAF212F4E9154C5F5C2F681C5D891EE";
+        let remote = "969c37e6-f5c7-41bf-a0c0-21922df74469";
+        let remote2 = "969c37e6-f5c7-41bf-a0c0-21922df74468";
+        let mut local = metadata_entry("local-name.replay", "My saved title");
+        local.game_replay_id = game.into();
+        let mut cloud = metadata_entry(&format!("{remote}.replay"), "Cloud title");
+        cloud.file_size = 0;
+        cloud.cloud_replay_id = remote.into();
+        cloud.game_replay_id = "ecaf212f-4e91-54c5-f5c2-f681c5d891ee".into();
+        let mut cloud2 = cloud.clone();
+        cloud2.cloud_replay_id = remote2.into();
+        cloud2.filename = format!("{remote2}.replay");
+        let metadata = HashMap::from([
+            (local.filename.clone(), local),
+            (cloud.filename.clone(), cloud),
+            (cloud2.filename.clone(), cloud2),
+        ]);
+        let uploaded = vec![format!("{}.replay", remote.replace('-', "")).to_uppercase()];
+        let rows = replay_cache_rows(&uploaded, &metadata, "");
+        assert_eq!(rows.len(), 1);
+        let row = &rows[0];
+        assert_eq!(row.primary, "My saved title");
+        assert_eq!(row.source_label, "Local + Cloud");
+        assert_eq!(row.cloud_ids, vec![remote2.to_string(), remote.to_string()]);
+        assert!(row.filenames.contains(&"local-name.replay".to_string()));
+        assert_eq!(row.upload_status, "Recorded");
+        assert_eq!(
+            replay_cache_rows(&uploaded, &metadata, "local-name").len(),
+            1
+        );
+        assert_eq!(replay_cache_rows(&uploaded, &metadata, remote2).len(), 1);
+        assert!(
+            replay_cache_rows(&[], &metadata, "")
+                .iter()
+                .all(|r| r.upload_status == "Not recorded")
+        );
+    }
+
+    #[test]
+    fn library_does_not_group_similar_titles_dates_or_invalid_ids() {
+        let mut a = metadata_entry("a.replay", "Same title");
+        a.game_replay_id = "invalid".into();
+        let mut b = a.clone();
+        b.filename = "b.replay".into();
+        let metadata = HashMap::from([(a.filename.clone(), a), (b.filename.clone(), b)]);
+        assert_eq!(replay_cache_rows(&[], &metadata, "").len(), 2);
+        assert_eq!(
+            replay_cache_rows(&[], &metadata, "nothing matches").len(),
+            0
+        );
+    }
+
+    #[test]
+    fn replay_dates_validate_and_normalize_without_assuming_naive_timezone() {
+        assert_eq!(
+            display_replay_date("2026-07-12:03-42-37"),
+            "2026-07-12 03:42"
+        );
+        assert_eq!(
+            replay_date_key("2026-07-12T03:42:37+02:00"),
+            replay_date_key("2026-07-12T01:42:37Z")
+        );
+        assert!(replay_date_key("2026-02-30 12:00").is_none());
+        assert_eq!(display_replay_date("unknown"), "unknown");
+    }
+
+    #[tokio::test]
+    async fn replay_library_layout() {
+        let state = AppState::new();
+        let mut entries = HashMap::new();
+        for i in 0..80 {
+            let mut entry = metadata_entry(
+                &format!("match-{i:03}.replay"),
+                if i == 0 {
+                    "A very long replay title with Unicode 漢字 and extra details"
+                } else {
+                    "Ranked Doubles"
+                },
+            );
+            entry.game_replay_id = format!("{i:032x}");
+            if i == 0 {
+                entry.duration_seconds = Some(416);
+                entry.match_type = "Offline".into();
+                entry.team0_score = Some(8);
+                entry.team1_score = Some(7);
+                entry.players = vec![
+                    crate::replay_metadata::ReplayPlayerMetadata {
+                        name: "cyberPeng with a very long name 漢字".into(),
+                        team: Some(0),
+                        score: Some(1441),
+                        goals: Some(8),
+                        assists: Some(0),
+                        saves: Some(2),
+                        shots: Some(12),
+                        is_bot: Some(false),
+                    },
+                    crate::replay_metadata::ReplayPlayerMetadata {
+                        name: "Nexto".into(),
+                        team: Some(1),
+                        score: Some(1332),
+                        goals: Some(7),
+                        assists: Some(0),
+                        saves: Some(3),
+                        shots: Some(10),
+                        is_bot: Some(true),
+                    },
+                ];
+                entry.goals = (0..15)
+                    .map(|g| crate::replay_metadata::ReplayGoalMetadata {
+                        player_name: if g % 2 == 0 {
+                            "cyberPeng".into()
+                        } else {
+                            "Nexto".into()
+                        },
+                        team: Some(g % 2),
+                        elapsed_seconds: Some(g as u32 * 27),
+                        ..Default::default()
+                    })
+                    .collect();
+            }
+            if i % 3 == 0 {
+                entry.cloud_replay_id = format!("{i:08x}-1234-5678-abcd-123456789012");
+            }
+            if i % 3 == 1 {
+                entry.file_size = 0;
+                entry.cloud_replay_id = format!("{i:08x}-1234-5678-abcd-123456789012");
+            }
+            entries.insert(entry.filename.clone(), entry);
+        }
+        state.replays.merged_metadata_cache.store(Arc::new(
+            crate::replay_metadata::ReplayMetadataSnapshot {
+                entries,
+                ..Default::default()
+            },
+        ));
+        let mut config = Config {
+            replays_folder: String::new(),
+            ballchasing_api_key: String::new(),
+            ..Default::default()
+        };
+        let mut changed = false;
+        let mut confirm = None;
+        library_table::assert_page_layout("replays", |ui, expanded| {
+            let view_id = ui.make_persistent_id("replays_view");
+            ui.data_mut(|d| d.insert_temp(view_id, ReplaysView::Library));
+            if expanded {
+                let id = ui.make_persistent_id("replay_table").with("selected");
+                ui.data_mut(|d| d.insert_temp(id, format!("game:{:032x}", 0)));
+            }
+            render_replays_settings_tab(ui, &state, &mut config, &mut changed, &mut confirm);
+        });
+    }
+
+    #[test]
     fn verification_discards_old_results_even_after_input_changes_back() {
         let mut verification = TokenVerification::default();
         verification.update_input("first");
@@ -1221,16 +1725,20 @@ mod tests {
             "",
         );
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].upload_status, "Not cached");
+        assert_eq!(rows[0].upload_status, "Not recorded");
         assert_eq!(rows[0].map, "FutureArena_P");
         assert_eq!(rows[0].date, "unknown date");
         assert_eq!(
             display_replay_date("2026-09-05:12-48-00"),
-            "2026-09-05 12:48:00"
+            "2026-09-05 12:48"
         );
         assert_eq!(
             display_replay_date("2026-09-05T12:48:00Z"),
-            "2026-09-05T12:48:00Z"
+            chrono::DateTime::parse_from_rfc3339("2026-09-05T12:48:00Z")
+                .unwrap()
+                .with_timezone(&chrono::Local)
+                .format("%Y-%m-%d %H:%M")
+                .to_string()
         );
     }
     use std::collections::HashMap;
@@ -1295,7 +1803,7 @@ mod tests {
         let row = replay_cache_row("match.replay", Some(&entry));
 
         assert_eq!(row.primary, "Ranked Doubles");
-        assert_eq!(row.source_label, "Local metadata");
+        assert_eq!(row.source_label, "Local");
         assert_eq!(row.map, "DFH Stadium");
         assert_eq!(row.score, "3-2");
         assert_eq!(row.players, "One + 1");
@@ -1309,7 +1817,7 @@ mod tests {
         let row = replay_cache_row("abcdef.replay", None);
 
         assert_eq!(row.primary, "abcdef");
-        assert_eq!(row.source_label, "Cache only");
+        assert_eq!(row.source_label, "Upload record only");
         assert_eq!(row.map, "-");
         assert!(row.hover.contains("No matching local replay"));
     }

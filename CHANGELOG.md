@@ -8,6 +8,27 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [0.1.54] - 2026-10-02
+
+### Added
+- **Engine Audio Swaps**: Copy one installed engine sound onto another from Item Swapper's Engine Audio category, with backups, reapply, and restore. Unsupported packages are shown as unavailable.
+
+### Changed
+- **Replay Library & Player History**: Browse sortable tables that fill the available space, with details expanding beneath each row. Replay filters distinguish local and cloud copies, dates use a consistent format, and matching local/cloud replays appear together.
+- **History Records**: See total wins, losses, and win rate beside your match count, plus colored player win rates at every window size and win-rate bars in expanded details.
+- **Replay Details**: Expanded replays show a blue/orange scoreboard, readable player stats, and a collapsible goal list.
+
+### Fixed
+- **Dashboard Players**: Hide bots, including replacements for players who leave early, while keeping departed players' recorded stats.
+- **Shared Boost Sounds**: Standard and its painted variants can now use matching replacement sounds together. Restoring one appearance keeps the shared sound until the last swap is restored.
+- **Sound Reapply**: Shared boost swaps now pick up changes to the source audio when reapplied.
+- **Stats API Setup**: Repair mismatched ports so setup and the overlay connect through port 49123.
+- **Session Results**: Clear stale match state when a new match is detected after a missed reset.
+- **Replay Uploads**: Cloud sync no longer causes modified local replays to be skipped as already uploaded.
+- **Lobby Ranks**: Refresh expired ratings even when players remain in the lobby.
+
+---
+
 ## [0.1.53] - 2026-09-26
 
 ### Added

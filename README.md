@@ -63,9 +63,14 @@ You can also edit `TAGame/Config/DefaultStatsAPI.ini` yourself and set
   For boosts, keep the target's original sound, match the chosen appearance, or
   pick another installed boost sound. Select the same appearance and target for
   a sound-only swap. Shared sound banks also affect other boosts using that bank;
-  conflicting swaps are blocked. Unsupported sound banks are disabled in the picker.
-  Appearance and audio backups are restored together. Turn off Rocket League's
+  matching sound choices can share a bank, while conflicting choices are blocked.
+  Unsupported sound banks are disabled in the picker. Restoring an appearance keeps
+  shared audio until the last swap using it is restored. Turn off Rocket League's
   Standard Boost audio override to hear individual boost sounds.
+  The **Engine Audio** category replaces one selectable engine sound with another.
+  Choose a source sound and a target you own, apply, then equip the target under
+  Engine Audio in Rocket League. Engine swaps use installed audio-profile packages
+  and can be reapplied or restored independently; unsupported packages are disabled.
 
 The app changes local Rocket League files only when you choose the Gold Rush
 preset, Item Swapper, or Hoops replay fixer.

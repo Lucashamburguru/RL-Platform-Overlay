@@ -5,7 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const STATS_API_SECTION: &str = "TAGame.MatchStatsExporter_TA";
 pub const PACKET_SEND_RATE_OPTIONS: [u16; 4] = [0, 5, 15, 30];
-const DEFAULT_PORT: u16 = 49123;
+pub(crate) const DEFAULT_PORT: u16 = 49123;
 
 pub fn ensure_stats_api_enabled_on_startup(
     rocket_league_root: &str,
@@ -40,7 +40,13 @@ pub fn ensure_stats_api_enabled_on_startup(
         });
     }
 
-    ensure_stats_api_setup_with_rate(rocket_league_root, packet_send_rate)
+    ensure_stats_api_setup_with_rate(
+        rocket_league_root,
+        status
+            .packet_send_rate
+            .filter(|rate| *rate > 0)
+            .unwrap_or(packet_send_rate),
+    )
 }
 
 #[derive(Clone, Debug, Default)]
@@ -101,9 +107,11 @@ pub fn inspect_stats_api_setup(rocket_league_root: &str) -> StatsApiSetupStatus 
 
     let packet_send_rate = read_u16_in_section(&content, "PacketSendRate", true);
     let port = read_u16_in_section(&content, "Port", false);
-    let configured = packet_send_rate.is_some_and(|rate| rate > 0);
+    let configured = packet_send_rate.is_some_and(|rate| rate > 0) && port == Some(DEFAULT_PORT);
     let message = if configured {
         "Stats API appears enabled.".to_string()
+    } else if packet_send_rate.is_some_and(|rate| rate > 0) {
+        format!("Stats API port must be {DEFAULT_PORT}. Run setup to repair the port.")
     } else {
         "Stats API is disabled or missing PacketSendRate.".to_string()
     };
@@ -138,7 +146,7 @@ pub fn ensure_stats_api_setup_with_rate(
 
     let original = fs::read_to_string(&ini_path).unwrap_or_default();
     let existed = ini_path.exists();
-    let selected_port = read_u16_in_section(&original, "Port", false).unwrap_or(DEFAULT_PORT);
+    let selected_port = DEFAULT_PORT;
     let updated = upsert_stats_api_ini_content(&original, selected_port, packet_send_rate);
 
     if existed && original.trim_end() == updated.trim_end() {
@@ -359,7 +367,7 @@ mod tests {
     }
 
     #[test]
-    fn updates_packet_send_rate_and_preserves_port() {
+    fn updates_packet_send_rate_and_repairs_port() {
         let _guard = backup_lock();
         let _config_dir_cleanup = TestConfigDirCleanup;
         let root = temp_root("update");
@@ -376,7 +384,7 @@ mod tests {
         assert!(!backup_path.starts_with(root.join("TAGame").join("Config")));
         let content = fs::read_to_string(ini).unwrap();
         assert!(content.contains("PacketSendRate=30"));
-        assert!(content.contains("Port=12345"));
+        assert!(content.contains("Port=49123"));
         let _ = fs::remove_dir_all(root);
     }
 
@@ -470,6 +478,30 @@ mod tests {
                 .contains("PacketSendRate=15")
         );
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn startup_repairs_nondefault_port_preserving_positive_rate() {
+        let _guard = backup_lock();
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("TAGame/Config");
+        fs::create_dir_all(&dir).unwrap();
+        let ini = dir.join("DefaultStatsAPI.ini");
+        fs::write(
+            &ini,
+            "[TAGame.MatchStatsExporter_TA]\nPacketSendRate=5\nPort=50000\n",
+        )
+        .unwrap();
+        let install = root.path().to_str().unwrap();
+        let status = inspect_stats_api_setup(install);
+        assert!(!status.configured);
+        assert!(status.message.contains("49123"));
+        let result = ensure_stats_api_enabled_on_startup(install, 30).unwrap();
+        assert!(result.changed && result.restart_required);
+        let status = inspect_stats_api_setup(install);
+        assert!(status.configured);
+        assert_eq!(status.port, Some(DEFAULT_PORT));
+        assert_eq!(status.packet_send_rate, Some(5));
     }
 
     #[test]

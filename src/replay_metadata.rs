@@ -34,6 +34,8 @@ pub struct ReplayMetadataEntry {
     pub date: String,
     pub match_type: String,
     pub replay_id: String,
+    pub game_replay_id: String,
+    pub cloud_replay_id: String,
     pub team0_score: Option<i32>,
     pub team1_score: Option<i32>,
     pub duration_seconds: Option<u32>,
@@ -200,19 +202,86 @@ pub(crate) fn refresh_merged_metadata_cache(state: &AppState) {
     let cloud = state.replays.cloud_metadata_cache.load();
     let mut merged = (**local).clone();
 
+    let local_names: HashMap<_, _> = local
+        .entries
+        .keys()
+        .map(|name| (name.to_ascii_lowercase(), name))
+        .collect();
     for (filename, cloud_entry) in cloud.iter() {
-        let mut entry = cloud_entry.clone();
-        if let Some(local_entry) = local.entries.get(filename) {
-            entry.file_size = local_entry.file_size;
-            entry.modified_unix_secs = local_entry.modified_unix_secs;
-            entry.players = local_entry.players.clone();
-            entry.goals = local_entry.goals.clone();
-            entry.duration_seconds = local_entry.duration_seconds;
-            entry.frame_count = local_entry.frame_count;
+        let local_entry = local_names
+            .get(&filename.to_ascii_lowercase())
+            .and_then(|name| local.entries.get(*name));
+        let conflicting_ids = local_entry.is_some_and(|entry| {
+            matches!((normalized_replay_id(&entry.game_replay_id), normalized_replay_id(&cloud_entry.game_replay_id)), (Some(a),Some(b)) if a != b)
+        });
+        if conflicting_ids {
+            // A downloaded filename may have been reused for another local match.
+            // Retain both entries; matching filenames cannot override explicit IDs.
+            merged.entries.insert(
+                format!("cloud:{}", cloud_entry.cloud_replay_id),
+                cloud_entry.clone(),
+            );
+            continue;
         }
-        merged.entries.insert(filename.clone(), entry);
+        let entry = if let Some(local_entry) = local_entry {
+            let mut entry = local_entry.clone();
+            entry.cloud_replay_id = cloud_entry.cloud_replay_id.clone();
+            if entry.game_replay_id.is_empty() {
+                entry.game_replay_id = cloud_entry.game_replay_id.clone();
+            }
+            fill_missing_metadata(&mut entry, cloud_entry);
+            entry
+        } else {
+            cloud_entry.clone()
+        };
+        merged.entries.insert(entry.filename.clone(), entry);
     }
     state.replays.merged_metadata_cache.store(Arc::new(merged));
+}
+
+/// Fill display fields without replacing local parse errors or file fingerprints.
+pub(crate) fn fill_missing_metadata(
+    entry: &mut ReplayMetadataEntry,
+    fallback: &ReplayMetadataEntry,
+) {
+    for (value, other) in [
+        (&mut entry.display_name, &fallback.display_name),
+        (&mut entry.map_name, &fallback.map_name),
+        (&mut entry.date, &fallback.date),
+        (&mut entry.match_type, &fallback.match_type),
+    ] {
+        if value.trim().is_empty() {
+            value.clone_from(other);
+        }
+    }
+    if entry.player_names.is_empty() {
+        entry.player_names = fallback.player_names.clone();
+    }
+    if entry.players.is_empty() {
+        entry.players = fallback.players.clone();
+    }
+    if entry.goals.is_empty() {
+        entry.goals = fallback.goals.clone();
+    }
+    entry.team0_score = entry.team0_score.or(fallback.team0_score);
+    entry.team1_score = entry.team1_score.or(fallback.team1_score);
+    entry.duration_seconds = entry.duration_seconds.or(fallback.duration_seconds);
+}
+
+/// Strictly normalize the game's 32 hex ID or a UUID representation. Invalid
+/// identifiers must never make unrelated library entries collapse into one.
+pub(crate) fn normalized_replay_id(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.len() == 36 {
+        if ![8, 13, 18, 23].iter().all(|i| value.as_bytes()[*i] == b'-') {
+            return None;
+        }
+    } else if value.len() != 32 {
+        return None;
+    }
+    let normalized: String = value.chars().filter(|c| *c != '-').collect();
+    (normalized.len() == 32 && normalized.bytes().all(|b| b.is_ascii_hexdigit()))
+        .then(|| normalized.to_ascii_lowercase())
 }
 
 pub fn merged_metadata_snapshot(state: &AppState) -> Arc<ReplayMetadataSnapshot> {
@@ -643,6 +712,7 @@ pub fn apply_properties(entry: &mut ReplayMetadataEntry, properties: &[(String, 
     entry.date = string_property(properties, "Date").unwrap_or_default();
     entry.match_type = string_property(properties, "MatchType").unwrap_or_default();
     entry.replay_id = string_property(properties, "Id").unwrap_or_default();
+    entry.game_replay_id = entry.replay_id.clone();
     entry.team0_score = int_property(properties, "Team0Score");
     entry.team1_score = int_property(properties, "Team1Score");
     entry.frame_count = int_property(properties, "ReplayLastFrame")
@@ -781,6 +851,54 @@ mod tests {
 
     fn int_prop(key: &str, value: i32) -> (String, HeaderProp) {
         (key.to_string(), HeaderProp::Int(value))
+    }
+
+    #[test]
+    fn replay_id_normalization_rejects_ambiguous_or_malformed_values() {
+        assert_eq!(
+            normalized_replay_id("ECAF212F4E9154C5F5C2F681C5D891EE"),
+            normalized_replay_id("ecaf212f-4e91-54c5-f5c2-f681c5d891ee")
+        );
+        for value in [
+            "",
+            "same title",
+            "-ECAF212F4E9154C5F5C2F681C5D891EE---",
+            "ECAF212F4E9154C5F5C2F681C5D891EX",
+        ] {
+            assert!(normalized_replay_id(value).is_none());
+        }
+    }
+
+    #[test]
+    fn merged_snapshot_keeps_conflicting_game_ids_separate() {
+        let state = AppState::new();
+        let local = ReplayMetadataEntry {
+            filename: "same.replay".into(),
+            game_replay_id: format!("{:032x}", 1),
+            file_size: 100,
+            ..Default::default()
+        };
+        let cloud = ReplayMetadataEntry {
+            filename: "same.replay".into(),
+            game_replay_id: format!("{:032x}", 2),
+            cloud_replay_id: format!("{:032x}", 3),
+            ..Default::default()
+        };
+        state
+            .replays
+            .metadata_cache
+            .store(Arc::new(ReplayMetadataSnapshot {
+                entries: HashMap::from([("same.replay".into(), local)]),
+                ..Default::default()
+            }));
+        state
+            .replays
+            .cloud_metadata_cache
+            .store(Arc::new(HashMap::from([("same.replay".into(), cloud)])));
+        refresh_merged_metadata_cache(&state);
+        let merged = merged_metadata_snapshot(&state);
+        assert_eq!(merged.entries.len(), 2);
+        assert!(merged.entries["same.replay"].cloud_replay_id.is_empty());
     }
 
     #[test]
@@ -1033,6 +1151,7 @@ mod tests {
                     filename: "match.replay".to_string(),
                     display_name: "Cloud title".to_string(),
                     replay_id: "cloud-id".to_string(),
+                    cloud_replay_id: "cloud-id".to_string(),
                     ..Default::default()
                 },
             )])));
@@ -1042,8 +1161,9 @@ mod tests {
         let same_snapshot = merged_metadata_snapshot(&state);
         assert!(Arc::ptr_eq(&merged, &same_snapshot));
         let entry = &merged.entries["match.replay"];
-        assert_eq!(entry.display_name, "Cloud title");
-        assert_eq!(entry.replay_id, "cloud-id");
+        assert_eq!(entry.display_name, "Local");
+        assert_eq!(entry.cloud_replay_id, "cloud-id");
+        assert_eq!(entry.replay_id, "");
         assert_eq!(entry.file_size, 42);
         assert_eq!(entry.modified_unix_secs, Some(7));
     }

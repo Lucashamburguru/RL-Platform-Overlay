@@ -118,7 +118,11 @@ fn parse_cloud_metadata(
         players: Vec::new(),
         goals: Vec::new(),
         replay_id: id.to_string(),
-        duration_seconds: None,
+        cloud_replay_id: id.to_string(),
+        game_replay_id: item["rocket_league_id"].as_str().unwrap_or("").to_string(),
+        duration_seconds: item["duration"]
+            .as_u64()
+            .and_then(|v| u32::try_from(v).ok()),
         frame_count: None,
         file_size: 0, // Mark as cloud entry
         modified_unix_secs: None,
@@ -255,6 +259,17 @@ async fn run_sync_replays(state: Arc<AppState>) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cloud_metadata_keeps_game_identity_separate_from_download_identity() {
+        let entry=parse_cloud_metadata(&serde_json::json!({"id":"969c37e6-f5c7-41bf-a0c0-21922df74469","rocket_league_id":"ECAF212F4E9154C5F5C2F681C5D891EE","duration":394})).unwrap();
+        assert_eq!(
+            entry.cloud_replay_id,
+            "969c37e6-f5c7-41bf-a0c0-21922df74469"
+        );
+        assert_eq!(entry.game_replay_id, "ECAF212F4E9154C5F5C2F681C5D891EE");
+        assert_eq!(entry.duration_seconds, Some(394));
+    }
 
     #[test]
     fn parse_cloud_metadata_ignores_scores_that_do_not_fit_i32() {

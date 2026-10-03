@@ -1446,6 +1446,13 @@ mod tests {
                 .is_empty()
         );
 
+        mark_replays_uploaded(&state, &["match1.replay".to_string()]).unwrap();
+        assert!(
+            pending_replay_files(&state, &root)
+                .await
+                .unwrap()
+                .is_empty()
+        );
         fs::write(&replay_path, b"changed-replay-data").unwrap();
         assert_eq!(pending_replay_files(&state, &root).await.unwrap().len(), 1);
 

@@ -776,6 +776,8 @@ fn restore_standard_boost(rocket_league_path: &str) -> Result<(), String> {
     let game_dir = cooked_pc_console_path(rocket_league_path)?;
     let conf_dir =
         config_dir().ok_or_else(|| "Error: Could not resolve config directory.".to_string())?;
+    #[cfg(not(feature = "microsoft-store"))]
+    crate::item_swapper::check_legacy_standard_restore(&conf_dir)?;
     let metadata = load_backup_metadata(&conf_dir)?
         .ok_or_else(|| "Error: Backup metadata not found. Cannot restore safely.".to_string())?;
     let targets = boost_targets(&game_dir);

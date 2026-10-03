@@ -1803,7 +1803,7 @@ fn build_dashboard_rows(
         });
     let mut rows: Vec<_> = players
         .into_iter()
-        .filter(|player| context.config.show_bots || !player.is_bot)
+        .filter(|player| !player.is_bot)
         .map(|player| {
             let is_local = super::lobby_overlay::is_local_lobby_player(
                 &player,
@@ -2088,28 +2088,37 @@ mod tests {
     }
 
     #[test]
-    fn dashboard_rows_filter_bots_when_config_hides_bots() {
-        let config = Config {
-            show_bots: false,
-            ..Default::default()
-        };
-        let mut bot = player("Bot", 0, 0, false);
-        bot.is_bot = true;
+    fn dashboard_rows_exclude_replacement_bots_regardless_of_lobby_setting() {
+        for show_bots in [false, true] {
+            let config = Config {
+                show_bots,
+                ..Default::default()
+            };
+            let mut bot = player("Replacement Bot", 1, 50, false);
+            bot.is_bot = true;
 
-        let rows = build_dashboard_rows(
-            vec![player("Human", 0, 0, false), bot],
-            rows_context(
-                &config,
-                SessionMode::Twos,
-                Some(0),
-                false,
-                None,
-                &HashMap::new(),
-            ),
-        );
+            // The match snapshot retains the human after they leave, alongside
+            // subsequent live players. Only humans belong in dashboard rows.
+            let rows = build_dashboard_rows(
+                vec![
+                    player("Local", 0, 200, true),
+                    player("Departed Human", 1, 100, false),
+                    bot,
+                ],
+                rows_context(
+                    &config,
+                    SessionMode::Twos,
+                    Some(0),
+                    false,
+                    None,
+                    &HashMap::new(),
+                ),
+            );
 
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].name, "Human");
+            let names: Vec<_> = rows.iter().map(|row| row.name.as_str()).collect();
+            assert_eq!(names, vec!["Local", "Departed Human"]);
+            assert_eq!(rows[1].score, 100);
+        }
     }
 
     #[test]

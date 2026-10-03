@@ -187,6 +187,8 @@ mod tests {
             .store(Arc::new(crate::history::HistoryTotals {
                 matches: 18,
                 players: 1,
+                wins: 10,
+                losses: 8,
             }));
         *state.history.status.lock().unwrap() = "History ready.".into();
         state.replays.merged_metadata_cache.store(Arc::new(

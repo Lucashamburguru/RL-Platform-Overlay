@@ -67,6 +67,8 @@ fn player_history_summary_from_row(
 pub struct HistoryTotals {
     pub matches: u32,
     pub players: u32,
+    pub wins: u32,
+    pub losses: u32,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -466,9 +468,20 @@ pub fn load_totals(state: &AppState) -> Result<HistoryTotals, HistoryError> {
 }
 
 fn load_totals_on_conn(conn: &Connection) -> Result<HistoryTotals, HistoryError> {
-    let matches = conn.query_row("SELECT COUNT(*) FROM matches", [], |row| {
-        row.get::<_, u32>(0)
-    })?;
+    let (matches, wins, losses) = conn.query_row(
+        "SELECT COUNT(*),
+                COUNT(CASE WHEN result = 'win' THEN 1 END),
+                COUNT(CASE WHEN result = 'loss' THEN 1 END)
+         FROM matches",
+        [],
+        |row| {
+            Ok((
+                row.get::<_, u32>(0)?,
+                row.get::<_, u32>(1)?,
+                row.get::<_, u32>(2)?,
+            ))
+        },
+    )?;
     let players = conn.query_row(
         "SELECT COUNT(DISTINCT p.id)
              FROM players p
@@ -477,7 +490,12 @@ fn load_totals_on_conn(conn: &Connection) -> Result<HistoryTotals, HistoryError>
         [],
         |row| row.get::<_, u32>(0),
     )?;
-    Ok(HistoryTotals { matches, players })
+    Ok(HistoryTotals {
+        matches,
+        players,
+        wins,
+        losses,
+    })
 }
 
 pub fn clear_history(state: &AppState) -> Result<(), HistoryError> {
@@ -1148,6 +1166,49 @@ mod tests {
         assert_eq!(opponent.games_against, 1);
         assert_eq!(opponent.wins_against, 1);
         assert!(query_summary(&conn, "steam:steam|me|0").unwrap().is_none());
+    }
+
+    #[test]
+    fn totals_count_results_once_per_match() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        assert_eq!(
+            load_totals_on_conn(&conn).unwrap(),
+            HistoryTotals::default()
+        );
+        let players = [
+            player("Me", "Steam|me|0", 0, true),
+            player("Friend", "Steam|friend|0", 0, false),
+            player("Opponent", "Steam|opponent|0", 1, false),
+        ];
+        let mut session = SessionState::default();
+        session.local_team = Some(0);
+        session.active_mode = SessionMode::Twos;
+        for (index, result) in [MatchResult::Win, MatchResult::Loss, MatchResult::Win]
+            .into_iter()
+            .enumerate()
+        {
+            session.active_match_id = format!("match-{index}");
+            session.last_result = result;
+            assert!(
+                insert_completed_match_on_conn(&mut conn, &session, players.iter(), 1000).unwrap()
+            );
+            assert!(
+                !insert_completed_match_on_conn(&mut conn, &session, players.iter(), 1000).unwrap()
+            );
+        }
+        // Legacy unknown results count as matches, but never as wins or losses.
+        conn.execute("INSERT INTO matches (match_guid, mode, result, blue_score, orange_score, local_team, ended_unix_ms)
+                      VALUES ('unknown', 'twos', 'unknown', 0, 0, 0, 1000)", []).unwrap();
+        assert_eq!(
+            load_totals_on_conn(&conn).unwrap(),
+            HistoryTotals {
+                matches: 4,
+                players: 2,
+                wins: 2,
+                losses: 1,
+            }
+        );
     }
 
     #[test]

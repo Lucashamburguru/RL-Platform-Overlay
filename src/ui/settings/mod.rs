@@ -11,6 +11,7 @@ mod dashboard;
 mod history;
 #[cfg(not(feature = "microsoft-store"))]
 mod item_swapper;
+mod library_table;
 mod overlay;
 mod replays;
 mod session;
