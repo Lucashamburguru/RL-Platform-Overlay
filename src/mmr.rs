@@ -28,15 +28,16 @@ pub struct MmrPlayer {
     pub primary_id: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MmrPlaylistSnapshot {
     pub name: String,
     pub rating: i32,
-    pub matches: i32,
+    #[serde(default)]
+    pub matches: Option<i32>,
     pub tier_name: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MmrPeakRating {
     pub playlist_name: String,
     pub rating: i32,
@@ -44,7 +45,7 @@ pub struct MmrPeakRating {
     pub season: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MmrSnapshot {
     pub playlists: HashMap<i32, MmrPlaylistSnapshot>,
     #[serde(default)]
@@ -136,6 +137,40 @@ fn tracker_api_url(player: &TrackerPlayer) -> String {
     format!(
         "{MMR_TRACKER_API_HOST}/api/v2/rocket-league/standard/profile/{tracker_platform}/{encoded}"
     )
+}
+
+pub(crate) fn tracker_profile_url(info: &PlayerInfo) -> Option<String> {
+    if info.is_bot {
+        return None;
+    }
+    let (platform, account) = match info.platform.to_ascii_lowercase().as_str() {
+        "steam" => {
+            let mut parts = info.primary_id.split('|');
+            if !parts.next()?.eq_ignore_ascii_case("steam") {
+                return None;
+            }
+            let id = parts.next()?.trim();
+            if id.len() != 17
+                || !id.bytes().all(|b| b.is_ascii_digit())
+                || id.parse::<u64>().ok()? == 0
+            {
+                return None;
+            }
+            ("steam", id)
+        }
+        "epic" => ("epic", info.name.trim()),
+        "ps4" | "ps5" | "psn" | "playstation" => ("psn", info.name.trim()),
+        "xbox" | "xbl" | "xboxone" | "xboxseries" => ("xbl", info.name.trim()),
+        "switch" | "nintendo" => ("switch", info.name.trim()),
+        _ => return None,
+    };
+    if account.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "https://rocketleague.tracker.network/rocket-league/profile/{platform}/{}/overview",
+        urlencoding::encode(account)
+    ))
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -384,7 +419,7 @@ fn extract_tracker_stats(payload: &Value) -> Option<TrackerSnapshot> {
             .and_then(|v| v.get("value"))
             .and_then(Value::as_i64)
             .and_then(|v| i32::try_from(v).ok())
-            .unwrap_or(0);
+            .filter(|matches| *matches >= 0);
         let name = segment
             .get("metadata")
             .and_then(|v| v.get("name"))
@@ -581,7 +616,7 @@ fn mmr_api_v2_snapshot(response: MmrApiV2Response) -> Result<TrackerSnapshot, Mm
             TrackerPlaylistSnapshot {
                 name: playlist_name(playlist.id).to_string(),
                 rating: playlist.mmr,
-                matches: 0,
+                matches: None,
                 tier_name: tier_name(playlist.tier).to_string(),
             },
         );
@@ -1183,6 +1218,77 @@ mod tests {
     use super::*;
     use crate::state::{LocalPlayerIdentity, PlayerInfo, PlayerKey, PlayerMap};
 
+    #[test]
+    fn tracker_profile_links_use_platform_identity_and_encode_names() {
+        let steam = PlayerInfo {
+            name: "Renamed player".into(),
+            platform: "Steam".into(),
+            primary_id: "Steam|76561198000000000|0".into(),
+            is_local: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            tracker_profile_url(&steam).unwrap(),
+            "https://rocketleague.tracker.network/rocket-league/profile/steam/76561198000000000/overview"
+        );
+        for (platform, slug) in [
+            ("Epic", "epic"),
+            ("PS5", "psn"),
+            ("Xbox", "xbl"),
+            ("Nintendo", "switch"),
+        ] {
+            let info = PlayerInfo {
+                platform: platform.into(),
+                name: "Name / 漢字?".into(),
+                ..Default::default()
+            };
+            assert_eq!(
+                tracker_profile_url(&info).unwrap(),
+                format!(
+                    "https://rocketleague.tracker.network/rocket-league/profile/{slug}/Name%20%2F%20%E6%BC%A2%E5%AD%97%3F/overview"
+                )
+            );
+        }
+        for primary_id in [
+            "",
+            "Steam|display-name|0",
+            "Epic|76561198000000000|0",
+            "Steam|00000000000000000|0",
+        ] {
+            assert!(
+                tracker_profile_url(&PlayerInfo {
+                    primary_id: primary_id.into(),
+                    ..steam.clone()
+                })
+                .is_none()
+            );
+        }
+        assert!(
+            tracker_profile_url(&PlayerInfo {
+                is_bot: true,
+                ..steam
+            })
+            .is_none()
+        );
+        for platform in ["Unknown", "Other"] {
+            assert!(
+                tracker_profile_url(&PlayerInfo {
+                    platform: platform.into(),
+                    name: "Player".into(),
+                    ..Default::default()
+                })
+                .is_none()
+            );
+        }
+        assert!(
+            tracker_profile_url(&PlayerInfo {
+                platform: "Epic".into(),
+                ..Default::default()
+            })
+            .is_none()
+        );
+    }
+
     fn insert_player(players: &mut PlayerMap, player: PlayerInfo) -> PlayerKey {
         let key = PlayerKey::from_account(&player).expect("test player needs account identity");
         players.insert(key.clone(), player);
@@ -1204,7 +1310,7 @@ mod tests {
             TrackerPlaylistSnapshot {
                 name: "Ranked Doubles 2v2".to_string(),
                 rating,
-                matches: 0,
+                matches: Some(0),
                 tier_name: String::new(),
             },
         );
@@ -1236,10 +1342,34 @@ mod tests {
 
         assert_eq!(snapshot.playlists.len(), 2);
         assert_eq!(snapshot.playlists[&11].rating, 1234);
+        assert_eq!(snapshot.playlists[&11].matches, None);
         assert_eq!(snapshot.playlists[&11].name, "Ranked Doubles 2v2");
         assert_eq!(snapshot.playlists[&11].tier_name, "Champion I");
         assert_eq!(snapshot.playlists[&27].tier_name, "Diamond II");
         assert!(snapshot.peak_rating.is_none());
+    }
+
+    #[test]
+    fn tracker_match_counts_preserve_zero_and_missing_values() {
+        for (value, expected) in [
+            (serde_json::json!(null), None),
+            (serde_json::json!(-1), None),
+            (serde_json::json!(0), Some(0)),
+            (serde_json::json!(42), Some(42)),
+        ] {
+            let payload = serde_json::json!({"data": {"segments": [{
+                "type": "playlist", "attributes": {"playlistId": 11},
+                "stats": {"rating": {"value": 1000}, "matchesPlayed": {"value": value}}
+            }]}});
+            let snapshot = extract_tracker_stats(&payload).unwrap();
+            assert_eq!(snapshot.playlists[&11].matches, expected);
+        }
+        let old_snapshot = serde_json::json!({
+            "name": "Ranked Doubles 2v2", "rating": 1000,
+            "tier_name": "Diamond I", "matches": 42
+        });
+        let parsed: MmrPlaylistSnapshot = serde_json::from_value(old_snapshot).unwrap();
+        assert_eq!(parsed.matches, Some(42));
     }
 
     #[test]

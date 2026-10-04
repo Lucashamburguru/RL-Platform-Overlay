@@ -4,7 +4,21 @@ This file describes changes to the app.
 
 <!-- Use short sentences and consistent technical terms. Keep release notes about changes that affect users. Put implementation details in commits and review documents. -->
 
-## [Unreleased]
+## [0.1.55] - 2026-10-04
+
+### Added
+
+- **Dashboard Player Details**: Select a player name to open details below the player. Select the name again to close the details. The table shows rank, MMR, and available match counts for each mode. The current mode uses a highlight color. Details include the recorded peak and season, encounter history, and a link to the player's Tracker profile.
+- **App Page Tour**: The README includes an animated tour of the app pages and record details. The tour uses sample data. Setup shows a sample game folder and an active Stats API connection.
+
+### Changed
+
+- **README**: Screenshots appear before Quick Start. Windows instructions identify the executable file to download and open. Setup instructions use the current button name.
+
+### Fixed
+
+- **Dashboard Preview**: Player details stay open when the dashboard shows sample players before a live match.
+- **Missing Match Counts**: Unavailable playlist match counts show a dash. A recorded count of zero still shows zero.
 
 ---
 

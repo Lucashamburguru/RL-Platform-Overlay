@@ -353,7 +353,13 @@ fn run_mmr_provider_debug(state: Arc<AppState>, platform: String, player_name_or
                 for (id, playlist) in snapshot.playlists {
                     lines.push(format!(
                         "  * {} (ID {}): {} MMR | Tier: {} | Matches: {}",
-                        playlist.name, id, playlist.rating, playlist.tier_name, playlist.matches
+                        playlist.name,
+                        id,
+                        playlist.rating,
+                        playlist.tier_name,
+                        playlist
+                            .matches
+                            .map_or_else(|| "—".into(), |n| n.to_string())
                     ));
                 }
                 lines.join("\n")

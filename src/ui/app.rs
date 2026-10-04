@@ -149,6 +149,10 @@ fn should_poll_rocket_league_process(
     now.duration_since(last_check) >= std::time::Duration::from_secs(2)
 }
 
+#[cfg(all(test, not(feature = "microsoft-store")))]
+#[path = "page_tour.rs"]
+mod page_tour;
+
 #[cfg(test)]
 mod tests {
     use super::*;

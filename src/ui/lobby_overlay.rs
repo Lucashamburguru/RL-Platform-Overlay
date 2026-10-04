@@ -118,7 +118,7 @@ fn preview_mmr(rating: i32, tier_name: &str) -> TrackerSnapshot {
         crate::mmr::TrackerPlaylistSnapshot {
             name: "Ranked Duel 1v1".to_string(),
             rating: one_v_one_rating,
-            matches: 30,
+            matches: Some(30),
             tier_name: one_v_one_tier.to_string(),
         },
     );
@@ -127,7 +127,7 @@ fn preview_mmr(rating: i32, tier_name: &str) -> TrackerSnapshot {
         crate::mmr::TrackerPlaylistSnapshot {
             name: "Ranked Doubles 2v2".to_string(),
             rating,
-            matches: 120,
+            matches: Some(120),
             tier_name: tier_name.to_string(),
         },
     );
@@ -136,7 +136,7 @@ fn preview_mmr(rating: i32, tier_name: &str) -> TrackerSnapshot {
         crate::mmr::TrackerPlaylistSnapshot {
             name: "Ranked Standard 3v3".to_string(),
             rating: rating - 80,
-            matches: 50,
+            matches: Some(50),
             tier_name: tier_name.to_string(),
         },
     );
@@ -145,7 +145,7 @@ fn preview_mmr(rating: i32, tier_name: &str) -> TrackerSnapshot {
         crate::mmr::TrackerPlaylistSnapshot {
             name: "Ranked Hoops".to_string(),
             rating: rating - 35,
-            matches: 40,
+            matches: Some(40),
             tier_name: tier_name.to_string(),
         },
     );
@@ -154,7 +154,7 @@ fn preview_mmr(rating: i32, tier_name: &str) -> TrackerSnapshot {
         crate::mmr::TrackerPlaylistSnapshot {
             name: "Ranked Dropshot".to_string(),
             rating: rating - 55,
-            matches: 25,
+            matches: Some(25),
             tier_name: tier_name.to_string(),
         },
     );
@@ -890,7 +890,7 @@ pub(super) fn select_display_rank(
         playlist_name: &playlist.name,
         tier_name: &playlist.tier_name,
         rating: playlist.rating,
-        matches: Some(playlist.matches),
+        matches: playlist.matches,
         season: None,
         is_peak: false,
     })
@@ -917,7 +917,7 @@ fn select_lobby_playlist(
     best_playlist(mmr)
 }
 
-fn lobby_playlist_id(session_mode: SessionMode) -> Option<i32> {
+pub(super) fn lobby_playlist_id(session_mode: SessionMode) -> Option<i32> {
     match session_mode {
         SessionMode::Ones => Some(10),
         SessionMode::Twos => Some(11),
@@ -1190,7 +1190,7 @@ mod tests {
             crate::mmr::TrackerPlaylistSnapshot {
                 name: "Ranked Doubles 2v2".to_string(),
                 rating: 1234,
-                matches: 20,
+                matches: Some(20),
                 tier_name: "Champion II".to_string(),
             },
         );
@@ -1223,7 +1223,7 @@ mod tests {
             crate::mmr::TrackerPlaylistSnapshot {
                 name: "Ranked Doubles 2v2".to_string(),
                 rating: 1420,
-                matches: 40,
+                matches: Some(40),
                 tier_name: "Grand Champion I".to_string(),
             },
         );
@@ -1290,7 +1290,7 @@ mod tests {
             crate::mmr::TrackerPlaylistSnapshot {
                 name: "Ranked Duel 1v1".to_string(),
                 rating: 800,
-                matches: 10,
+                matches: Some(10),
                 tier_name: "Gold III".to_string(),
             },
         );
@@ -1300,7 +1300,7 @@ mod tests {
             crate::mmr::TrackerPlaylistSnapshot {
                 name: "Ranked Doubles 2v2".to_string(),
                 rating: 1200,
-                matches: 15,
+                matches: Some(15),
                 tier_name: "Diamond II".to_string(),
             },
         );
@@ -1310,7 +1310,7 @@ mod tests {
             crate::mmr::TrackerPlaylistSnapshot {
                 name: "Ranked Hoops".to_string(),
                 rating: 950,
-                matches: 20,
+                matches: Some(20),
                 tier_name: "Platinum III".to_string(),
             },
         );
@@ -1320,7 +1320,7 @@ mod tests {
             crate::mmr::TrackerPlaylistSnapshot {
                 name: "Ranked Dropshot".to_string(),
                 rating: 875,
-                matches: 8,
+                matches: Some(8),
                 tier_name: "Platinum I".to_string(),
             },
         );
@@ -1330,7 +1330,7 @@ mod tests {
             crate::mmr::TrackerPlaylistSnapshot {
                 name: "Un-Ranked".to_string(),
                 rating: 2000,
-                matches: 50,
+                matches: Some(50),
                 tier_name: "Unranked".to_string(),
             },
         );
@@ -1389,7 +1389,7 @@ mod tests {
                 crate::mmr::TrackerPlaylistSnapshot {
                     name: format!("Playlist {id}"),
                     rating,
-                    matches: 10,
+                    matches: Some(10),
                     tier_name: rank.to_string(),
                 },
             );

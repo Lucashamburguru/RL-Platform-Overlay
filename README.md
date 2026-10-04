@@ -4,8 +4,6 @@ RL Platform Overlay shows Rocket League player names, ranks, MMR, teammate boost
 and session statistics while you play. You can see this information without
 leaving the game.
 
-![Program Preview](assets/program-preview.png)
-
 The app reads the built-in Rocket League Stats API and draws panels over the
 game. You can also use a larger dashboard on a second monitor.
 
@@ -14,11 +12,33 @@ game. You can also use a larger dashboard on a second monitor.
 > read or change game memory, or attach to the game renderer. This design does
 > not guarantee compliance with future game rules or anti-cheat policies.
 
+## Screenshots
+
+The GIF shows the main pages, subpages, and record details. The pages use sample data.
+
+![App page tour with sample data](assets/page-tour.gif)
+
+<details>
+<summary>Open the static screenshots</summary>
+
+Use the compact overlay during a match. For a larger display, keep the dashboard
+open on another monitor.
+
+![Program Preview](assets/program-preview.png)
+
+![Overlay Preview](assets/overlay-preview-small.png)
+
+![Dashboard Preview](assets/dashboard-preview-small.png)
+
+</details>
+
+---
+
 ## Quick Start
 
-1. Download and open the latest version from [Releases](https://github.com/Lucashamburguru/RL-Platform-Overlay/releases).
+1. Open the latest version on [Releases](https://github.com/Lucashamburguru/RL-Platform-Overlay/releases). For Windows, download **rl-platform-overlay.exe** from the **Assets** list. Double-click the downloaded `.exe` file to open the app.
 2. Open **Setup**. Select **Auto-detect** to find your Rocket League folder.
-3. Select **Enable Stats API**. If Rocket League is open, restart it.
+3. Select **30 Hz Smooth** to enable the Stats API. If Rocket League is open, restart it.
 4. Select your hotkeys. Use **Arrange HUD** to put the panels in position.
 5. Select **Launch Overlay**. Then start a match.
 
@@ -97,17 +117,6 @@ unavailable in the selection list.
 
 The Gold Rush preset, Item Swapper, and Hoops replay repair tool change local
 game files or replay files when you use these tools.
-
----
-
-## Screenshots
-
-Use the compact overlay during a match. For a larger display, keep the dashboard
-open on another monitor.
-
-![Overlay Preview](assets/overlay-preview-small.png)
-
-![Dashboard Preview](assets/dashboard-preview-small.png)
 
 ---
 
@@ -199,6 +208,17 @@ Use this command to save raw game output for parser diagnostics:
 ```bash
 cargo run --locked --bin debug_game_output -- --seconds 30 --output rl_game_output_debug.txt
 ```
+
+### Update the Page Tour
+
+Install ImageMagick 7. Then run this command from the project folder:
+
+```bash
+bash scripts/make-page-tour.sh
+```
+
+The script captures the actual user interface with sample data and makes
+`assets/page-tour.gif`. It does not require a game installation or API credentials.
 
 ### Stats API Detection Problems
 

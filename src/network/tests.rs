@@ -105,7 +105,7 @@ fn store_players_preserves_existing_mmr_when_update_omits_it() {
         crate::mmr::TrackerPlaylistSnapshot {
             name: "Ranked Doubles 2v2".to_string(),
             rating: 1234,
-            matches: 10,
+            matches: Some(10),
             tier_name: "Champion I".to_string(),
         },
     );

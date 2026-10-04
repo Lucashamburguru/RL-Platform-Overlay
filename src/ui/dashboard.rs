@@ -21,6 +21,9 @@ pub(crate) struct DashboardViewportState {
 
 #[derive(Clone, Debug, PartialEq)]
 struct DashboardPlayerRow {
+    key: String,
+    primary_id: String,
+    tracker_url: Option<String>,
     name: String,
     platform: String,
     team: u8,
@@ -42,6 +45,8 @@ struct DashboardPlayerRow {
     matches_played: Option<i32>,
     rank_note: Option<String>,
     history_summary: Option<PlayerHistorySummary>,
+    rank_snapshot: Option<TrackerSnapshot>,
+    active_playlist: Option<i32>,
 }
 
 pub(crate) fn render_dashboard_viewport(
@@ -204,7 +209,21 @@ pub(crate) fn render_dashboard(ui: &mut egui::Ui, state: &Arc<AppState>, config:
         ui.allocate_ui_with_layout(
             egui::vec2(main_width, available.y),
             egui::Layout::top_down(egui::Align::Min),
-            |ui| render_team_columns(ui, state, config, &rows, team_bumps, &dashboard_session),
+            |ui| {
+                egui::ScrollArea::vertical()
+                    .id_salt("dashboard_players")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        render_team_columns(
+                            ui,
+                            state,
+                            config,
+                            &rows,
+                            team_bumps,
+                            &dashboard_session,
+                        );
+                    });
+            },
         );
         ui.add_space(gap);
         ui.allocate_ui_with_layout(
@@ -226,6 +245,186 @@ pub(crate) fn render_dashboard(ui: &mut egui::Ui, state: &Arc<AppState>, config:
             },
         );
     });
+}
+
+fn player_details_id() -> egui::Id {
+    egui::Id::new("dashboard_player_details")
+}
+
+fn player_details_open(ctx: &egui::Context, row: &DashboardPlayerRow) -> bool {
+    ctx.data(|d| d.get_temp::<String>(player_details_id()))
+        .is_some_and(|key| key == row.key)
+}
+
+fn render_player_details(ui: &mut egui::Ui, row: &DashboardPlayerRow) {
+    if !player_details_open(ui.ctx(), row) {
+        return;
+    }
+    ui.push_id((&row.key, "details"), |ui| {
+        egui::Frame::default()
+            .fill(egui::Color32::from_rgb(20, 26, 34))
+            .stroke(egui::Stroke::new(
+                1.0_f32,
+                team_color(row.team).gamma_multiply(0.4),
+            ))
+            .corner_radius(6)
+            .inner_margin(egui::Margin::same(14))
+            .show(ui, |ui| {
+                ui.set_width((ui.available_width() - 28.0).max(180.0));
+                ui.weak("Player details");
+                ui.heading(&row.name);
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(crate::stats_api_parser::format_platform(&row.platform));
+                    ui.separator();
+                    ui.colored_label(
+                        team_color(row.team),
+                        match row.team {
+                            0 => "Blue",
+                            1 => "Orange",
+                            _ => "Unknown team",
+                        },
+                    );
+                    if row.is_local {
+                        ui.strong("YOU");
+                    }
+                });
+                ui.add_space(6.0);
+                render_player_ranks(ui, row);
+                ui.add_space(10.0);
+                if let Some(history) = &row.history_summary {
+                    ui.strong(format!("{} encounters", history.total_games()));
+                    for (label, games, wins, losses) in [
+                        (
+                            "Together",
+                            history.games_with,
+                            history.wins_with,
+                            history.losses_with,
+                        ),
+                        (
+                            "Against",
+                            history.games_against,
+                            history.wins_against,
+                            history.losses_against,
+                        ),
+                    ] {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(format!("{label}: {games} games"));
+                            let total = u64::from(wins) + u64::from(losses);
+                            if let Some(percent) =
+                                (u64::from(wins) * 100 + total / 2).checked_div(total)
+                            {
+                                let color = if wins > losses {
+                                    super::common::overlay_success_color()
+                                } else if wins < losses {
+                                    super::common::overlay_danger_color()
+                                } else {
+                                    super::common::overlay_text_color()
+                                };
+                                ui.colored_label(
+                                    color,
+                                    format!("{percent}% · {wins} wins / {losses} losses"),
+                                );
+                            } else {
+                                ui.weak("No results recorded");
+                            }
+                        });
+                    }
+                    let last_seen =
+                        chrono::DateTime::from_timestamp_millis(history.last_seen_unix_ms)
+                            .map(|date| {
+                                date.with_timezone(&chrono::Local)
+                                    .format("%Y-%m-%d %H:%M")
+                                    .to_string()
+                            })
+                            .unwrap_or_else(|| "—".into());
+                    ui.weak(format!("Last seen {last_seen}"));
+                } else if !row.is_local {
+                    ui.weak("No encounter history recorded.");
+                }
+                ui.add_space(8.0);
+                ui.horizontal_wrapped(|ui| {
+                    if let Some(url) = &row.tracker_url {
+                        ui.hyperlink_to("Open Tracker profile ↗", url);
+                    } else {
+                        ui.weak("Tracker profile unavailable for this account.");
+                    }
+                    if ui.button("Copy name").clicked() {
+                        ui.ctx().copy_text(row.name.clone());
+                    }
+                });
+                if !row.primary_id.is_empty() {
+                    ui.collapsing("Account", |ui| {
+                        ui.label(&row.primary_id);
+                    });
+                }
+            });
+    });
+}
+
+fn render_player_ranks(ui: &mut egui::Ui, row: &DashboardPlayerRow) {
+    ui.strong("Ranks by mode");
+    let Some(snapshot) = &row.rank_snapshot else {
+        ui.weak("Rank data is not available yet.");
+        return;
+    };
+    if let Some(season) = snapshot.current_season {
+        ui.weak(format!("Season {season}"));
+    }
+    let mut playlists: Vec<_> = snapshot.playlists.iter().collect();
+    playlists.sort_by_key(|(id, playlist)| (playlist_sort_priority(**id, &playlist.name), **id));
+    if playlists.is_empty() {
+        ui.weak("No playlist ranks available.");
+    } else {
+        egui::Grid::new("player_playlist_ranks")
+            .num_columns(4)
+            .spacing([24.0, 7.0])
+            .striped(true)
+            .show(ui, |ui| {
+                for heading in ["Mode", "Rank", "MMR", "Matches"] {
+                    ui.weak(heading);
+                }
+                ui.end_row();
+                for (id, playlist) in playlists {
+                    let active = row.active_playlist == Some(*id);
+                    let color = if active {
+                        egui::Color32::from_rgb(110, 195, 245)
+                    } else {
+                        super::common::overlay_text_color()
+                    };
+                    let mode = compact_playlist_name(&playlist.name);
+                    for text in [
+                        if active {
+                            format!("{mode} · Current")
+                        } else {
+                            mode
+                        },
+                        clean_rank_label(&playlist.tier_name),
+                        playlist.rating.to_string(),
+                        playlist
+                            .matches
+                            .map_or_else(|| "—".into(), |n| n.to_string()),
+                    ] {
+                        ui.label(egui::RichText::new(text).color(color));
+                    }
+                    ui.end_row();
+                }
+            });
+    }
+    if let Some(peak) = &snapshot.peak_rating {
+        ui.add_space(8.0);
+        ui.horizontal_wrapped(|ui| {
+            ui.colored_label(egui::Color32::from_rgb(235, 195, 110), "Recorded peak");
+            ui.strong(format!(
+                "{} · {} MMR",
+                clean_rank_label(&peak.tier_name),
+                peak.rating
+            ));
+            ui.label(compact_playlist_name(&peak.playlist_name));
+            if let Some(season) = &peak.season {
+                ui.weak(season);
+            }
+        });
+    }
 }
 
 const SCOREBOARD_TEAM_NAME_MAX_CHARS: usize = 16;
@@ -515,6 +714,15 @@ fn render_team_columns(
     if rows.is_empty() {
         render_empty_state(ui, state, config);
         return;
+    }
+
+    if ui
+        .ctx()
+        .data(|d| d.get_temp::<String>(player_details_id()))
+        .is_some_and(|key| !rows.iter().any(|row| row.key == key))
+    {
+        ui.ctx()
+            .data_mut(|d| d.remove::<String>(player_details_id()));
     }
 
     ui.set_min_size(ui.available_size());
@@ -991,55 +1199,65 @@ fn render_player_grid(
 
     let player_width = (target_width - total_spacing - fixed_width_sum).max(180.0);
 
-    egui::Grid::new(format!("dashboard_table_{title}"))
-        .num_columns(columns)
-        .spacing(egui::vec2(spacing_x, 14.0))
-        .striped(true)
-        .show(ui, |ui| {
-            table_header(ui, "Player", player_width);
-            table_header(ui, "Score", col_score);
-            table_header(ui, "Goals", col_goals);
-            table_header(ui, "Assists", col_assists);
-            table_header(ui, "Saves", col_saves);
-            table_header(ui, "Shots", col_shots);
-            table_header(ui, "Touches", col_touches);
-            table_header(ui, "Car Touches", col_car_touches);
-            table_header(ui, "Demos", col_demos);
-            if config.dashboard_show_boost {
-                table_header(ui, "Boost", col_boost);
-            }
-            if config.dashboard_show_ranks {
-                table_header(ui, "Rank", col_rank);
-            }
-            ui.end_row();
-
-            for row in rows {
-                render_player_name(ui, row, player_width);
-                number_cell(ui, row.score, col_score);
-                number_cell(ui, row.goals, col_goals);
-                number_cell(ui, row.assists, col_assists);
-                number_cell(ui, row.saves, col_saves);
-                number_cell(ui, row.shots, col_shots);
-                number_cell(ui, row.touches, col_touches);
-                number_cell(ui, row.car_touches, col_car_touches);
-                number_cell(ui, row.demos, col_demos);
-                if config.dashboard_show_boost {
-                    ui.allocate_ui_with_layout(
-                        egui::vec2(col_boost, 24.0),
-                        egui::Layout::left_to_right(egui::Align::Center),
-                        |ui| render_boost(ui, row.boost_available.then_some(row.boost)),
-                    );
+    let mut start = 0;
+    while start < rows.len() {
+        let end = rows[start..]
+            .iter()
+            .position(|row| player_details_open(ui.ctx(), row))
+            .map_or(rows.len(), |offset| start + offset + 1);
+        egui::Grid::new(format!("dashboard_table_{title}_{start}"))
+            .num_columns(columns)
+            .spacing(egui::vec2(spacing_x, 14.0))
+            .striped(true)
+            .show(ui, |ui| {
+                if start == 0 {
+                    table_header(ui, "Player", player_width);
+                    table_header(ui, "Score", col_score);
+                    table_header(ui, "Goals", col_goals);
+                    table_header(ui, "Assists", col_assists);
+                    table_header(ui, "Saves", col_saves);
+                    table_header(ui, "Shots", col_shots);
+                    table_header(ui, "Touches", col_touches);
+                    table_header(ui, "Car Touches", col_car_touches);
+                    table_header(ui, "Demos", col_demos);
+                    if config.dashboard_show_boost {
+                        table_header(ui, "Boost", col_boost);
+                    }
+                    if config.dashboard_show_ranks {
+                        table_header(ui, "Rank", col_rank);
+                    }
+                    ui.end_row();
                 }
-                if config.dashboard_show_ranks {
-                    ui.allocate_ui_with_layout(
-                        egui::vec2(col_rank, 48.0),
-                        egui::Layout::left_to_right(egui::Align::Center),
-                        |ui| render_rank(ui, row),
-                    );
+                for row in &rows[start..end] {
+                    render_player_name(ui, row, player_width);
+                    number_cell(ui, row.score, col_score);
+                    number_cell(ui, row.goals, col_goals);
+                    number_cell(ui, row.assists, col_assists);
+                    number_cell(ui, row.saves, col_saves);
+                    number_cell(ui, row.shots, col_shots);
+                    number_cell(ui, row.touches, col_touches);
+                    number_cell(ui, row.car_touches, col_car_touches);
+                    number_cell(ui, row.demos, col_demos);
+                    if config.dashboard_show_boost {
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(col_boost, 24.0),
+                            egui::Layout::left_to_right(egui::Align::Center),
+                            |ui| render_boost(ui, row.boost_available.then_some(row.boost)),
+                        );
+                    }
+                    if config.dashboard_show_ranks {
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(col_rank, 48.0),
+                            egui::Layout::left_to_right(egui::Align::Center),
+                            |ui| render_rank(ui, row),
+                        );
+                    }
+                    ui.end_row();
                 }
-                ui.end_row();
-            }
-        });
+            });
+        render_player_details(ui, rows[end - 1]);
+        start = end;
+    }
 }
 
 fn table_header(ui: &mut egui::Ui, text: &str, width: f32) {
@@ -1093,7 +1311,7 @@ fn render_player_row(ui: &mut egui::Ui, row: &DashboardPlayerRow, config: &Confi
         .show(ui, |ui| {
             ui.set_min_width(ui.available_width());
             ui.set_min_height(row_height);
-            ui.set_max_height(row_height);
+
             ui.horizontal_top(|ui| {
                 let row_width = ui.available_width();
                 let name_width = (row_width * 0.22).clamp(210.0, 330.0);
@@ -1148,6 +1366,7 @@ fn render_player_row(ui: &mut egui::Ui, row: &DashboardPlayerRow, config: &Confi
                     );
                 }
             });
+            render_player_details(ui, row);
         });
 }
 
@@ -1164,16 +1383,45 @@ fn render_player_name(ui: &mut egui::Ui, row: &DashboardPlayerRow, max_width: f3
         |ui| {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(6.0, 0.0);
-                ui.label(
-                    egui::RichText::new(&row.name)
-                        .strong()
-                        .color(if row.is_local {
-                            egui::Color32::from_rgb(120, 220, 155)
+                let response = ui
+                    .push_id(&row.key, |ui| {
+                        ui.spacing_mut().button_padding = egui::Vec2::ZERO;
+                        ui.add(
+                            egui::Button::new(
+                                egui::RichText::new(format!(
+                                    "{} {}",
+                                    if player_details_open(ui.ctx(), row) {
+                                        "−"
+                                    } else {
+                                        "+"
+                                    },
+                                    row.name
+                                ))
+                                .strong()
+                                .color(if row.is_local {
+                                    egui::Color32::from_rgb(120, 220, 155)
+                                } else {
+                                    egui::Color32::from_rgb(230, 232, 238)
+                                })
+                                .size(19.0),
+                            )
+                            .frame(false)
+                            .truncate(),
+                        )
+                    })
+                    .inner
+                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                    .on_hover_text("Expand or collapse player details");
+                if response.clicked() {
+                    let was_open = player_details_open(ui.ctx(), row);
+                    ui.ctx().data_mut(|d| {
+                        if was_open {
+                            d.remove::<String>(player_details_id());
                         } else {
-                            egui::Color32::from_rgb(230, 232, 238)
-                        })
-                        .size(19.0),
-                );
+                            d.insert_temp(player_details_id(), row.key.clone());
+                        }
+                    });
+                }
 
                 if row.is_local {
                     let badge_frame = egui::Frame::default()
@@ -1841,7 +2089,20 @@ fn build_dashboard_rows(
             } else {
                 ("Unranked".to_string(), None, None, None)
             };
+            let rank_snapshot = mmr_snapshot.cloned();
             DashboardPlayerRow {
+                rank_snapshot,
+                active_playlist: super::lobby_overlay::lobby_playlist_id(context.mode),
+                key: player_key(&player)
+                    .map(|key| key.as_str().to_owned())
+                    .unwrap_or_else(|| {
+                        format!(
+                            "{}|{}|{}|{}",
+                            player.platform, player.primary_id, player.name, player.team
+                        )
+                    }),
+                tracker_url: crate::mmr::tracker_profile_url(&player),
+                primary_id: player.primary_id,
                 name: if player.name.trim().is_empty() {
                     "Unknown".to_string()
                 } else {
@@ -1999,6 +2260,256 @@ fn short_match_id(match_id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn player_names_open_details_in_complete_dashboard_layouts() {
+        for preview in [false, true] {
+            for layout in [DashboardPlayerLayout::Cards, DashboardPlayerLayout::Table] {
+                let state = AppState::new();
+                let mut info = player("Clickable player", 0, 500, true);
+                info.primary_id = "Steam|76561198000000000|0".into();
+                if preview {
+                    info = preview_lobby_players(&state).remove(0);
+                }
+                let name = info.name.clone();
+                let key = crate::state::PlayerKey::from_account(&info).unwrap();
+                if !preview {
+                    state
+                        .game
+                        .players
+                        .store(Arc::new(HashMap::from([(key.clone(), info)])));
+                }
+                let config = Config {
+                    dashboard_player_layout: layout,
+                    ..Default::default()
+                };
+                let ctx = egui::Context::default();
+                ctx.style_mut(|style| style.animation_time = 0.0);
+                egui_extras::install_image_loaders(&ctx);
+                let mut position = None;
+                for frame in 0..8 {
+                    let mut input = egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(1920.0, 1080.0),
+                        )),
+                        ..Default::default()
+                    };
+                    if let Some(pos) = position.filter(|_| matches!(frame, 2 | 3 | 5 | 6)) {
+                        input.events.push(egui::Event::PointerMoved(pos));
+                        input.events.push(egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed: frame == 2 || frame == 5,
+                            modifiers: egui::Modifiers::default(),
+                        });
+                    }
+                    let output = ctx.run(input, |ctx| {
+                        egui::CentralPanel::default()
+                            .show(ctx, |ui| render_dashboard(ui, &state, &config));
+                    });
+                    if frame == 1 {
+                        position = output.shapes.iter().find_map(|shape| {
+                            if let egui::epaint::Shape::Text(text) = &shape.shape
+                                && text.galley.text().ends_with(&name)
+                            {
+                                Some(text.visual_bounding_rect().center())
+                            } else {
+                                None
+                            }
+                        });
+                        assert!(position.is_some(), "missing name in {layout:?}");
+                    }
+                    if frame == 4 {
+                        assert_eq!(
+                            ctx.data(|d| d.get_temp::<String>(player_details_id()))
+                                .as_deref(),
+                            Some(key.as_str()),
+                            "name click failed in {layout:?}"
+                        );
+                        assert!(output.shapes.iter().any(|shape| matches!(&shape.shape, egui::epaint::Shape::Text(text) if text.galley.text() == "Player details")), "inline details missing in {layout:?}");
+                        if !preview {
+                            assert!(output.shapes.iter().any(|shape| matches!(&shape.shape, egui::epaint::Shape::Text(text) if text.galley.text() == "Open Tracker profile ↗")));
+                        }
+                    }
+                    if frame == 7 {
+                        assert!(
+                            ctx.data(|d| d.get_temp::<String>(player_details_id()))
+                                .is_none(),
+                            "name click must collapse details in {layout:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn clicking_player_name_keeps_account_selection_across_row_updates() {
+        let ctx = egui::Context::default();
+        ctx.style_mut(|style| style.animation_time = 0.0);
+        egui_extras::install_image_loaders(&ctx);
+        let config = Config::default();
+        let mut first = player("Same name", 0, 150, false);
+        first.goals = 3;
+        first.shots = 6;
+        first.saves = 2;
+        first.primary_id = "Steam|76561198000000000|0".into();
+        let mut second = first.clone();
+        second.primary_id = "Steam|76561198000000001|0".into();
+        second.score = 200;
+        let mut rows = build_dashboard_rows(
+            vec![first, second],
+            rows_context(
+                &config,
+                SessionMode::Twos,
+                Some(0),
+                false,
+                None,
+                &HashMap::new(),
+            ),
+        );
+        let selected_key = rows[1].key.clone();
+        rows[1].rank_label = "Champion I".into();
+        rows[1].mmr = Some(1195);
+        rows[1].rank_snapshot = Some(TrackerSnapshot {
+            playlists: HashMap::from([(
+                11,
+                crate::mmr::TrackerPlaylistSnapshot {
+                    name: "Ranked Doubles 2v2".into(),
+                    rating: 1195,
+                    tier_name: "Champion I".into(),
+                    matches: Some(42),
+                },
+            )]),
+            ..Default::default()
+        });
+        let snapshot = rows[1].rank_snapshot.as_mut().unwrap();
+        for (id, name, matches) in [
+            (10, "Ranked Duel 1v1", Some(0)),
+            (13, "Ranked Standard 3v3", None),
+        ] {
+            snapshot.playlists.insert(
+                id,
+                crate::mmr::TrackerPlaylistSnapshot {
+                    name: name.into(),
+                    rating: 1050,
+                    tier_name: "Diamond III".into(),
+                    matches,
+                },
+            );
+        }
+        snapshot.peak_rating = Some(crate::mmr::MmrPeakRating {
+            playlist_name: "Ranked Doubles 2v2".into(),
+            rating: 1500,
+            tier_name: "Champion III".into(),
+            season: Some("Season 14".into()),
+        });
+        rows[1].history_summary = Some(PlayerHistorySummary {
+            games_with: 12,
+            wins_with: 7,
+            losses_with: 5,
+            games_against: 4,
+            wins_against: 1,
+            losses_against: 3,
+            last_seen_unix_ms: 1_791_000_000_000,
+            ..Default::default()
+        });
+        let mut click_position = None;
+        let mut renderer = crate::ui::review_renderer::ReviewRenderer::default();
+        for frame in 0..6 {
+            if frame == 4 {
+                rows[1]
+                    .rank_snapshot
+                    .as_mut()
+                    .unwrap()
+                    .playlists
+                    .get_mut(&11)
+                    .unwrap()
+                    .rating = 1477;
+                rows.reverse();
+            }
+            if frame == 5 {
+                rows.retain(|row| row.key != selected_key);
+            }
+            let mut input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(900.0, 650.0),
+                )),
+                ..Default::default()
+            };
+            if let Some(pos) = click_position.filter(|_| frame == 2 || frame == 3) {
+                input.events.push(egui::Event::PointerMoved(pos));
+                input.events.push(egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: frame == 2,
+                    modifiers: egui::Modifiers::default(),
+                });
+            }
+            let output = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    for row in &rows {
+                        render_player_name(ui, row, 420.0);
+                        render_player_details(ui, row);
+                    }
+                    if !rows.iter().any(|row| row.key == selected_key) {
+                        ctx.data_mut(|d| d.remove::<String>(player_details_id()));
+                    }
+                });
+            });
+            if frame == 1 {
+                click_position = output
+                    .shapes
+                    .iter()
+                    .filter_map(|shape| {
+                        if let egui::epaint::Shape::Text(text) = &shape.shape
+                            && text.galley.text().ends_with("Same name")
+                        {
+                            Some(text.visual_bounding_rect().center())
+                        } else {
+                            None
+                        }
+                    })
+                    .nth(1);
+                assert!(click_position.is_some());
+            }
+            if frame == 3 || frame == 4 {
+                assert_eq!(
+                    ctx.data(|d| d.get_temp::<String>(player_details_id()))
+                        .as_deref(),
+                    Some(selected_key.as_str())
+                );
+            }
+            if frame == 4 {
+                for expected in [
+                    "1477",
+                    "0",
+                    "—",
+                    "2v2 · Current",
+                    "Recorded peak",
+                    "Season 14",
+                ] {
+                    assert!(output.shapes.iter().any(|shape| matches!(&shape.shape, egui::epaint::Shape::Text(text) if text.galley.text() == expected)), "missing detail: {expected}");
+                }
+            }
+            if frame == 5 {
+                assert!(
+                    ctx.data(|d| d.get_temp::<String>(player_details_id()))
+                        .is_none()
+                );
+            }
+            let path = std::env::var_os("RL_DASHBOARD_REVIEW_DIR")
+                .filter(|_| frame == 4)
+                .map(|dir| {
+                    let dir = std::path::PathBuf::from(dir);
+                    std::fs::create_dir_all(&dir).unwrap();
+                    dir.join("player-details.png")
+                });
+            renderer.capture(&ctx, &output, [900.0, 650.0], path.as_deref());
+        }
+    }
     use crate::mmr::TrackerPlaylistSnapshot;
 
     #[test]
@@ -2133,7 +2644,7 @@ mod tests {
             TrackerPlaylistSnapshot {
                 name: "Ranked Doubles 2v2".to_string(),
                 rating: 1100,
-                matches: 20,
+                matches: Some(20),
                 tier_name: "Diamond III".to_string(),
             },
         );
@@ -2142,7 +2653,7 @@ mod tests {
             TrackerPlaylistSnapshot {
                 name: "Ranked Standard 3v3".to_string(),
                 rating: 900,
-                matches: 15,
+                matches: Some(15),
                 tier_name: "Platinum III".to_string(),
             },
         );
@@ -2263,7 +2774,7 @@ mod tests {
             TrackerPlaylistSnapshot {
                 name: "Ranked Hoops".to_string(),
                 rating: 989,
-                matches: 42,
+                matches: Some(42),
                 tier_name: "Champion II".to_string(),
             },
         );
@@ -2298,7 +2809,7 @@ mod tests {
                 TrackerPlaylistSnapshot {
                     name: format!("Playlist {id}"),
                     rating,
-                    matches: 10,
+                    matches: Some(10),
                     tier_name: rank.to_string(),
                 },
             );
@@ -2341,7 +2852,7 @@ mod tests {
             TrackerPlaylistSnapshot {
                 name: "Ranked Doubles 2v2".to_string(),
                 rating: 1234,
-                matches: 20,
+                matches: Some(20),
                 tier_name: "Champion I".to_string(),
             },
         );
