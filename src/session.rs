@@ -4,7 +4,7 @@ use crate::json_utils::{
 };
 use crate::state::standard_team;
 use crate::stats_api_parser::{
-    ResultSignature, result_from_score, result_from_winner, result_signature, team_scores,
+    ResultSignature, result_from_score, result_from_winner, team_scores,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -44,13 +44,135 @@ pub enum SessionMode {
     Dropshot,
     Snowday,
     Knockout,
+    BulletBall,
+    Quads,
+    Rumble,
+    Heatseeker,
+    OtherPlaylist(i64),
     Freeplay,
     #[default]
     Unknown,
 }
 
+// Known public modes only; container IDs (private, tournament, training), unknown
+// IDs and internal codenames intentionally fall through to payload hints.
+// https://bakkesplugins.com/wiki/bakkesmod-sdk/code-snippets/playlist-id
+// Legacy Solo Standard (12): python-rocket-league's rlapi.constants.
+// Bullet Ball (92): observed Stats API capture, confirmed by the player.
+const PLAYLIST_MODES: &[(i64, SessionMode, &str, &str)] = &[
+    (1, SessionMode::Ones, "1v1", "ones"),
+    (2, SessionMode::Twos, "2v2", "twos"),
+    (3, SessionMode::Threes, "3v3", "threes"),
+    (4, SessionMode::Quads, "4v4", "quads"),
+    (10, SessionMode::Ones, "1v1", "ones"),
+    (11, SessionMode::Twos, "2v2", "twos"),
+    (12, SessionMode::Threes, "3v3", "threes"),
+    (13, SessionMode::Threes, "3v3", "threes"),
+    (15, SessionMode::Snowday, "Snow Day", "snowday"),
+    (
+        16,
+        SessionMode::OtherPlaylist(16),
+        "Rocket Labs",
+        "rocket_labs",
+    ),
+    (17, SessionMode::Hoops, "Hoops", "hoops"),
+    (18, SessionMode::Rumble, "Rumble", "rumble"),
+    (23, SessionMode::Dropshot, "Dropshot", "dropshot"),
+    (27, SessionMode::Hoops, "Hoops", "hoops"),
+    (28, SessionMode::Rumble, "Rumble", "rumble"),
+    (29, SessionMode::Dropshot, "Dropshot", "dropshot"),
+    (30, SessionMode::Snowday, "Snow Day", "snowday"),
+    (
+        31,
+        SessionMode::OtherPlaylist(31),
+        "Ghost Hunt",
+        "ghost_hunt",
+    ),
+    (
+        32,
+        SessionMode::OtherPlaylist(32),
+        "Beach Ball",
+        "beach_ball",
+    ),
+    (
+        33,
+        SessionMode::OtherPlaylist(33),
+        "Spike Rush",
+        "spike_rush",
+    ),
+    (
+        35,
+        SessionMode::OtherPlaylist(16),
+        "Rocket Labs",
+        "rocket_labs",
+    ),
+    (
+        37,
+        SessionMode::OtherPlaylist(37),
+        "Dropshot Rumble",
+        "dropshot_rumble",
+    ),
+    (38, SessionMode::Heatseeker, "Heatseeker", "heatseeker"),
+    (
+        41,
+        SessionMode::OtherPlaylist(41),
+        "Boomer Ball",
+        "boomer_ball",
+    ),
+    (43, SessionMode::Heatseeker, "Heatseeker", "heatseeker"),
+    (
+        44,
+        SessionMode::OtherPlaylist(44),
+        "Winter Breakaway",
+        "winter_breakaway",
+    ),
+    (46, SessionMode::OtherPlaylist(46), "Gridiron", "gridiron"),
+    (
+        47,
+        SessionMode::OtherPlaylist(47),
+        "Super Cube",
+        "super_cube",
+    ),
+    (
+        48,
+        SessionMode::OtherPlaylist(48),
+        "Tactical Rumble",
+        "tactical_rumble",
+    ),
+    (
+        49,
+        SessionMode::OtherPlaylist(49),
+        "Spring Loaded",
+        "spring_loaded",
+    ),
+    (
+        50,
+        SessionMode::OtherPlaylist(50),
+        "Speed Demon",
+        "speed_demon",
+    ),
+    (
+        52,
+        SessionMode::OtherPlaylist(52),
+        "Gotham City Rumble",
+        "gotham_city_rumble",
+    ),
+    (54, SessionMode::Knockout, "Knockout", "knockout"),
+    (61, SessionMode::Quads, "4v4", "quads"),
+    (
+        68,
+        SessionMode::OtherPlaylist(68),
+        "G-Force Frenzy",
+        "g_force_frenzy",
+    ),
+    (73, SessionMode::Freeplay, "Freeplay", "freeplay"),
+    (88, SessionMode::OtherPlaylist(88), "Jump Jam", "jump_jam"),
+    (92, SessionMode::BulletBall, "Bullet Ball", "bullet_ball"),
+];
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SessionModeSource {
+    PlaylistId,
     PlaylistMetadata,
     MapIdentifier,
     TeamCapacity,
@@ -65,6 +187,7 @@ pub enum SessionModeSource {
 impl SessionModeSource {
     pub fn label(self) -> &'static str {
         match self {
+            Self::PlaylistId => "playlist_id",
             Self::PlaylistMetadata => "playlist_metadata",
             Self::MapIdentifier => "map_identifier",
             Self::TeamCapacity => "team_capacity",
@@ -82,19 +205,65 @@ impl SessionModeSource {
 
     fn authority(self) -> u8 {
         match self {
+            Self::PlaylistId => 7,
             Self::PlaylistMetadata => 6,
             Self::MapIdentifier => 5,
             Self::TeamCapacity => 4,
             Self::ActivePlayerCount => 3,
             Self::PlayerCount => 2,
             Self::PreviousLocked => 1,
-            Self::FreeplayShape => 7,
+            Self::FreeplayShape => 8,
             Self::Unknown => 0,
         }
     }
 }
 
 impl SessionMode {
+    pub(crate) fn is_free_for_all(self) -> bool {
+        matches!(self, Self::BulletBall | Self::Knockout)
+    }
+
+    pub(crate) fn from_playlist_id(id: i64) -> Option<Self> {
+        PLAYLIST_MODES
+            .iter()
+            .find(|entry| entry.0 == id)
+            .map(|entry| entry.1)
+    }
+
+    pub(crate) fn ranked_playlist_id(self) -> Option<i32> {
+        match self {
+            Self::Ones => Some(10),
+            Self::Twos => Some(11),
+            Self::Threes => Some(13),
+            Self::Hoops => Some(27),
+            Self::Rumble => Some(28),
+            Self::Dropshot => Some(29),
+            Self::Snowday => Some(30),
+            Self::Quads => Some(61),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn other_playlist_key(self) -> &'static str {
+        PLAYLIST_MODES
+            .iter()
+            .find(|entry| entry.1 == self)
+            .map_or("unknown", |entry| entry.3)
+    }
+
+    #[cfg(test)]
+    fn validate_playlist_table() {
+        let mut ids = std::collections::HashSet::new();
+        for &(id, mode, _, _) in PLAYLIST_MODES {
+            assert!(ids.insert(id), "duplicate playlist {id}");
+            assert_eq!(Self::from_playlist_id(id), Some(mode));
+            assert_eq!(Self::from_hint(mode.label()), Some(mode));
+        }
+        for id in [-2, 0, 6, 8, 9, 19, 22, 24, 26, 34, 999] {
+            assert_eq!(Self::from_playlist_id(id), None);
+        }
+    }
+
     pub fn infer(arena: Option<&str>, player_count: Option<usize>) -> Self {
         arena
             .and_then(Self::from_hint)
@@ -117,6 +286,33 @@ impl SessionMode {
             .to_ascii_lowercase()
             .replace(['-', ' ', '.'], "_");
 
+        // Longer names first: Dropshot Rumble and Tactical Rumble are distinct modes.
+        if let Some(entry) = PLAYLIST_MODES
+            .iter()
+            .filter(|entry| matches!(entry.1, Self::OtherPlaylist(_)))
+            .find(|entry| {
+                normalized.contains(&entry.2.to_ascii_lowercase().replace(['-', ' ', '.'], "_"))
+            })
+        {
+            return Some(entry.1);
+        }
+        if normalized.contains("freeplay") {
+            return Some(Self::Freeplay);
+        }
+        if normalized.contains("heatseeker") {
+            return Some(Self::Heatseeker);
+        }
+        if normalized.contains("rumble") {
+            return Some(Self::Rumble);
+        }
+        if normalized.contains("4v4") || normalized.contains("quads") || normalized == "chaos" {
+            return Some(Self::Quads);
+        }
+
+        if normalized.contains("bulletball") || normalized.contains("bullet_ball") {
+            return Some(Self::BulletBall);
+        }
+
         if normalized.contains("hoops")
             || normalized.contains("dunkhouse")
             || normalized.contains("basket")
@@ -124,7 +320,10 @@ impl SessionMode {
             return Some(Self::Hoops);
         }
 
-        if normalized.contains("shattershot") || normalized.contains("core707") {
+        if normalized.contains("dropshot")
+            || normalized.contains("shattershot")
+            || normalized.contains("core707")
+        {
             return Some(Self::Dropshot);
         }
 
@@ -171,6 +370,14 @@ impl SessionMode {
             Self::Dropshot => "Dropshot",
             Self::Snowday => "Snow Day",
             Self::Knockout => "Knockout",
+            Self::BulletBall => "Bullet Ball",
+            Self::Quads => "4v4",
+            Self::Rumble => "Rumble",
+            Self::Heatseeker => "Heatseeker",
+            Self::OtherPlaylist(_) => PLAYLIST_MODES
+                .iter()
+                .find(|entry| entry.1 == self)
+                .map_or("Unknown", |entry| entry.2),
             Self::Freeplay => "Freeplay",
             Self::Unknown => "Unknown",
         }
@@ -211,6 +418,8 @@ pub struct SessionState {
     pub overtime: bool,
     pub round_started: bool,
     pub is_watching_replay: bool,
+    pub is_goal_replay: bool,
+    pub(crate) replay_file_confirmed: bool,
     result_recorded_for_match: bool,
     last_recorded_match_id: String,
     last_recorded_result: Option<ResultSignature>,
@@ -240,6 +449,11 @@ impl SessionState {
         }
 
         if let Some(game) = real_data.get("Game").or_else(|| real_data.get("game")) {
+            if !self.replay_file_confirmed
+                && (game.get("Frame").is_some() || game.get("Elapsed").is_some())
+            {
+                return true;
+            }
             if let Some(time_seconds) = time_seconds_field(game)
                 && self.time_seconds != Some(time_seconds)
             {
@@ -271,7 +485,7 @@ impl SessionState {
             }
 
             if let Some(b_replay) = bool_field(game, &["bReplay", "b_replay", "replay"])
-                && self.is_watching_replay != b_replay
+                && (self.is_watching_replay || self.is_goal_replay) != b_replay
             {
                 return true;
             }
@@ -333,31 +547,42 @@ impl SessionState {
 
             // A reset event may have been missed while disconnected. Clear all
             // per-match state, preserving session totals and result deduplication.
+            let replay_file_confirmed = self.replay_file_confirmed;
             self.handle_reset_event();
+            self.replay_file_confirmed = replay_file_confirmed;
             self.active_match_id = match_guid.to_string();
             self.last_result = MatchResult::Unknown;
-
-            let b_replay = real_data
-                .get("Game")
-                .or_else(|| real_data.get("game"))
-                .and_then(|game| bool_field(game, &["bReplay", "b_replay", "replay"]))
-                .unwrap_or(false);
-            self.is_watching_replay = b_replay;
         }
 
-        let effective_mode_hint = self.effective_mode_hint(&real_data, mode_hint);
+        let more_authoritative = mode_source == SessionModeSource::PlaylistId
+            && mode_source.is_more_authoritative_than(self.active_mode_source);
+        let effective_mode_hint = if self.active_mode_source == SessionModeSource::PlaylistId
+            && mode_source != SessionModeSource::PlaylistId
+        {
+            self.active_mode
+        } else if more_authoritative {
+            mode_hint
+        } else {
+            self.effective_mode_hint(&real_data, mode_hint)
+        };
         if effective_mode_hint != SessionMode::Unknown
             && (!self.round_started
                 || self.active_mode == SessionMode::Unknown
+                || more_authoritative
                 || should_replace_active_mode(self.active_mode, effective_mode_hint))
         {
             self.active_mode = effective_mode_hint;
             self.active_mode_source = if effective_mode_hint == mode_hint {
                 mode_source
+            } else if self.active_mode_source == SessionModeSource::PlaylistId {
+                SessionModeSource::PlaylistId
             } else {
                 SessionModeSource::PreviousLocked
             };
-        } else if mode_hint != SessionMode::Unknown && mode_hint != self.active_mode {
+        } else if mode_hint != SessionMode::Unknown
+            && mode_hint != self.active_mode
+            && self.active_mode_source != SessionModeSource::PlaylistId
+        {
             self.active_mode_source = SessionModeSource::PreviousLocked;
         } else if mode_hint == self.active_mode
             && mode_source.is_more_authoritative_than(self.active_mode_source)
@@ -370,8 +595,24 @@ impl SessionState {
         }
 
         if let Some(game) = real_data.get("Game").or_else(|| real_data.get("game")) {
-            if let Some(b_replay) = bool_field(game, &["bReplay", "b_replay", "replay"]) {
-                self.is_watching_replay = b_replay;
+            let b_replay = bool_field(game, &["bReplay", "b_replay", "replay"]);
+            if game.get("Frame").is_some() || game.get("Elapsed").is_some() {
+                self.replay_file_confirmed = true;
+            }
+            if self.replay_file_confirmed {
+                self.is_watching_replay = true;
+                self.is_goal_replay = false;
+            } else if b_replay == Some(true) {
+                // A mid-playback connection is ambiguous until lifecycle evidence arrives.
+                self.is_goal_replay =
+                    self.is_goal_replay || (self.round_started && !self.is_watching_replay);
+                self.is_watching_replay = !self.is_goal_replay;
+            } else if b_replay == Some(false) {
+                self.is_goal_replay = false;
+                self.is_watching_replay = false;
+            }
+            if self.is_goal_replay {
+                return;
             }
 
             if let Some(time_seconds) = time_seconds_field(game) {
@@ -443,6 +684,10 @@ impl SessionState {
             return;
         };
 
+        if self.active_mode.is_free_for_all() {
+            self.record_unknown_ffa_result();
+            return;
+        }
         let result = result_from_score(self.blue_score, self.orange_score, local_team)
             .unwrap_or(MatchResult::Loss);
 
@@ -477,6 +722,11 @@ impl SessionState {
             return;
         };
 
+        if self.active_mode.is_free_for_all() {
+            self.record_unknown_ffa_result();
+            return;
+        }
+
         let mut result = number_field(
             &real_data,
             &["WinnerTeamNum", "winnerTeamNum", "WinnerTeam", "winnerTeam"],
@@ -498,7 +748,9 @@ impl SessionState {
                 &["Winner", "winner", "WinnerTeam", "winnerTeam"],
             )
         {
-            result = result_from_winner(winner_str, local_team).unwrap_or(MatchResult::Unknown);
+            result = self
+                .named_winner_result(winner_str, local_team)
+                .unwrap_or(MatchResult::Unknown);
         }
 
         if result == MatchResult::Unknown {
@@ -536,6 +788,8 @@ impl SessionState {
         self.result_recorded_for_match = false;
         self.round_started = false;
         self.is_watching_replay = false;
+        self.is_goal_replay = false;
+        self.replay_file_confirmed = false;
     }
 
     pub fn team_name(&self, team: u8) -> &str {
@@ -548,6 +802,38 @@ impl SessionState {
         }
     }
 
+    fn named_winner_result(&self, winner: &str, local_team: u8) -> Option<MatchResult> {
+        let winner = winner.trim();
+        if winner.is_empty() {
+            return None;
+        }
+        let blue = winner.eq_ignore_ascii_case(self.team_name(0));
+        let orange = winner.eq_ignore_ascii_case(self.team_name(1));
+        if blue != orange {
+            let team = if blue { 0 } else { 1 };
+            return Some(if team == local_team {
+                MatchResult::Win
+            } else {
+                MatchResult::Loss
+            });
+        }
+        result_from_winner(winner, local_team)
+    }
+
+    fn record_unknown_ffa_result(&mut self) {
+        if self.has_recorded_current_match()
+            || self.local_team.is_none()
+            || self.active_match_id.is_empty()
+        {
+            return;
+        }
+        self.last_result = MatchResult::Unknown;
+        self.result_recorded_for_match = true;
+        self.last_recorded_match_id = self.active_match_id.clone();
+        self.last_recorded_result = None;
+        self.matches_played += 1;
+    }
+
     fn record_result(&mut self, winner: &str) {
         if self.has_recorded_current_match() {
             return;
@@ -558,8 +844,19 @@ impl SessionState {
             return;
         };
 
-        let result = result_from_winner(winner, local_team)
-            .or_else(|| result_from_score(self.blue_score, self.orange_score, local_team))
+        if self.active_mode.is_free_for_all() {
+            self.record_unknown_ffa_result();
+            return;
+        }
+        let result = self
+            .named_winner_result(winner, local_team)
+            .or_else(|| {
+                winner
+                    .trim()
+                    .is_empty()
+                    .then(|| result_from_score(self.blue_score, self.orange_score, local_team))
+                    .flatten()
+            })
             .unwrap_or(MatchResult::Unknown);
 
         self.apply_match_result(result);
@@ -666,7 +963,23 @@ impl SessionState {
         };
 
         let winner = string_field(game, &["Winner", "winner"]).unwrap_or("");
-        result_signature(mode, Some(local_team), blue_score, orange_score, winner)
+        if mode.is_free_for_all() {
+            return None;
+        }
+        let result = self.named_winner_result(winner, local_team).or_else(|| {
+            winner
+                .trim()
+                .is_empty()
+                .then(|| result_from_score(blue_score, orange_score, local_team))
+                .flatten()
+        })?;
+        Some(ResultSignature {
+            mode,
+            local_team,
+            blue_score,
+            orange_score,
+            result,
+        })
     }
 
     fn effective_mode_hint(&self, real_data: &Value, mode_hint: SessionMode) -> SessionMode {
@@ -696,11 +1009,25 @@ impl SessionState {
 fn should_replace_active_mode(current: SessionMode, next: SessionMode) -> bool {
     let next_is_extra = matches!(
         next,
-        SessionMode::Hoops | SessionMode::Dropshot | SessionMode::Snowday | SessionMode::Knockout
+        SessionMode::Hoops
+            | SessionMode::Dropshot
+            | SessionMode::Snowday
+            | SessionMode::Knockout
+            | SessionMode::BulletBall
+            | SessionMode::Rumble
+            | SessionMode::Heatseeker
+            | SessionMode::OtherPlaylist(_)
     );
     let current_is_extra = matches!(
         current,
-        SessionMode::Hoops | SessionMode::Dropshot | SessionMode::Snowday | SessionMode::Knockout
+        SessionMode::Hoops
+            | SessionMode::Dropshot
+            | SessionMode::Snowday
+            | SessionMode::Knockout
+            | SessionMode::BulletBall
+            | SessionMode::Rumble
+            | SessionMode::Heatseeker
+            | SessionMode::OtherPlaylist(_)
     );
 
     if next_is_extra && !current_is_extra {
@@ -717,6 +1044,7 @@ fn standard_mode_size(mode: SessionMode) -> Option<u8> {
         SessionMode::Ones => Some(1),
         SessionMode::Twos => Some(2),
         SessionMode::Threes => Some(3),
+        SessionMode::Quads => Some(4),
         _ => None,
     }
 }
@@ -793,6 +1121,11 @@ pub fn format_win_rate(wins: u32, losses: u32) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn known_playlist_table_is_consistent() {
+        super::SessionMode::validate_playlist_table();
+    }
+
     use super::*;
     use serde_json::json;
 
@@ -1592,5 +1925,55 @@ mod tests {
         assert_eq!(session.wins, 0);
         assert_eq!(session.losses, 0);
         assert_eq!(session.matches_played, 0);
+    }
+    #[test]
+    fn custom_team_forfeit_winner_overrides_score() {
+        let mut session = SessionState::default();
+        session.handle_update_state(
+            &json!({
+                "MatchGuid": "forfeit", "Game": {
+                    "Teams": [{"TeamNum": 0, "Name": "Comets", "Score": 0},
+                              {"TeamNum": 1, "Name": "Rockets", "Score": 2}],
+                    "bReplay": false, "bHasWinner": true, "Winner": "Comets"
+                }
+            }),
+            Some(0),
+            SessionMode::Twos,
+        );
+        session.handle_match_ended(
+            &json!({"MatchGuid": "forfeit", "WinnerTeamNum": 0}),
+            Some(0),
+        );
+        assert_eq!(session.last_result, MatchResult::Win);
+        assert_eq!(
+            (session.matches_played, session.wins, session.losses),
+            (1, 1, 0)
+        );
+    }
+
+    #[test]
+    fn ffa_team_winner_and_early_leave_do_not_invent_results() {
+        for mode in [SessionMode::BulletBall, SessionMode::Knockout] {
+            for early_leave in [false, true] {
+                let mut session = SessionState {
+                    active_match_id: "ffa".into(),
+                    active_mode: mode,
+                    local_team: Some(0),
+                    round_started: true,
+                    ..Default::default()
+                };
+                if early_leave {
+                    session.record_early_leave();
+                }
+                session
+                    .handle_match_ended(&json!({"MatchGuid": "ffa", "WinnerTeamNum": 0}), Some(0));
+                session.record_early_leave();
+                assert_eq!(session.last_result, MatchResult::Unknown);
+                assert_eq!(
+                    (session.matches_played, session.wins, session.losses),
+                    (1, 0, 0)
+                );
+            }
+        }
     }
 }

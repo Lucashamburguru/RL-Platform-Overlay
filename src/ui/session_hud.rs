@@ -266,15 +266,7 @@ fn stat_row(ui: &mut egui::Ui, label: &str, value: &str, scale: f32) {
 }
 
 fn session_mode_playlist_id(session_mode: SessionMode) -> Option<i32> {
-    match session_mode {
-        SessionMode::Ones => Some(10),
-        SessionMode::Twos => Some(11),
-        SessionMode::Threes => Some(13),
-        SessionMode::Hoops => Some(27),
-        SessionMode::Dropshot => Some(29),
-        SessionMode::Snowday => Some(30),
-        SessionMode::Knockout | SessionMode::Freeplay | SessionMode::Unknown => None,
-    }
+    session_mode.ranked_playlist_id()
 }
 
 fn playlist_rating(snapshot: Option<&TrackerSnapshot>, playlist_id: i32) -> Option<i32> {

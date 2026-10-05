@@ -4,6 +4,22 @@ This file describes changes to the app.
 
 <!-- Use short sentences and consistent technical terms. Keep release notes about changes that affect users. Put implementation details in commits and review documents. -->
 
+## [0.1.56] - 2026-10-04
+
+### Changed
+
+- **Game Mode Detection**: Improved game mode detection.
+
+### Fixed
+
+- **Goal Replays**: Goal replays no longer block live match results. Player statistics update when live play resumes. Saved replay files do not change live results.
+- **Your Account**: Camera focus no longer selects your account. Select your player in Setup if the app has no saved account.
+- **Free-for-All History**: Bullet Ball and Knockout players count as opponents. Results stay unknown when the API does not identify the winning player.
+- **Custom Teams**: Match results use the winning team name. A team can win by forfeit when its score is lower.
+- **Bullet Ball Detection**: The app recognizes Bullet Ball from its playlist identifier. The mode stays correct as players leave the arena.
+
+---
+
 ## [0.1.55] - 2026-10-04
 
 ### Added

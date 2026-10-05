@@ -39,8 +39,9 @@ open on another monitor.
 1. Open the latest version on [Releases](https://github.com/Lucashamburguru/RL-Platform-Overlay/releases). For Windows, download **rl-platform-overlay.exe** from the **Assets** list. Double-click the downloaded `.exe` file to open the app.
 2. Open **Setup**. Select **Auto-detect** to find your Rocket League folder.
 3. Select **30 Hz Smooth** to enable the Stats API. If Rocket League is open, restart it.
-4. Select your hotkeys. Use **Arrange HUD** to put the panels in position.
-5. Select **Launch Overlay**. Then start a match.
+4. Enter **Free Play** in Rocket League. In **Setup**, open **Your account** and select your account.
+5. Select your hotkeys. Use **Arrange HUD** to put the panels in position.
+6. Select **Launch Overlay**. Then start a match.
 
 If Auto-detect cannot find the game, select the Rocket League folder manually.
 You can also change `TAGame/Config/DefaultStatsAPI.ini` manually.

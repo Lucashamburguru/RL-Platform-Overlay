@@ -321,8 +321,8 @@ fn replay_update_state_does_not_overwrite_match_player_stats() {
         }),
     );
 
-    assert!(state.flags.is_watching_replay.load(Ordering::SeqCst));
-    assert!(state.game.session.load().is_watching_replay);
+    assert!(!state.flags.is_watching_replay.load(Ordering::SeqCst));
+    assert!(state.game.session.load().is_goal_replay);
 
     let players = state.game.players.load();
     assert_eq!(player_named(&players, "Me").score, 300);
@@ -549,7 +549,7 @@ fn partial_new_match_frame_does_not_preserve_previous_local_team() {
 }
 
 #[test]
-fn test_update_state_uses_game_target_for_local_player() {
+fn test_camera_target_does_not_persist_an_unconfirmed_account() {
     let state = AppState::new();
     let data = json!({
         "Players": [
@@ -584,9 +584,21 @@ fn test_update_state_uses_game_target_for_local_player() {
     handle_update_state_payload(&state, &data);
 
     let players = state.game.players.load();
-    assert_eq!(&**state.game.local_player_name.load(), "cyberPeng");
-    assert_eq!(state.game.local_team.load(Ordering::SeqCst), 0);
-    assert!(player_named(&players, "cyberPeng").is_local);
+    assert!(state.game.local_player_name.load().is_empty());
+    assert!(!state.game.local_player_identity.load().is_known());
+    assert!(
+        !state
+            .system
+            .config
+            .load()
+            .cached_local_player_identity
+            .is_known()
+    );
+    assert_eq!(
+        state.game.local_team.load(Ordering::SeqCst),
+        crate::state::NO_TEAM
+    );
+    assert!(!player_named(&players, "cyberPeng").is_local);
     assert_eq!(player_named(&players, "C-Block").team, 0);
     assert_eq!(player_named(&players, "C-Block").boost, 88);
 }
@@ -803,6 +815,76 @@ fn test_early_leave_offline_match_ignored() {
     assert_eq!(session.matches_played, 0);
 }
 
+// Sanitized shape from the Bullet Ball issue capture: playlist 92 on a shared
+// Labs arena, with every surviving player assigned TeamNum 0.
+#[test]
+fn bullet_ball_playlist_stays_detected_as_players_are_eliminated() {
+    let state = AppState::new();
+    for count in [5, 4, 3, 2, 1] {
+        let players: Vec<_> = (0..count)
+            .map(|index| {
+                json!({
+                    "Name": format!("Player{index}"), "PrimaryId": format!("Epic|test{index}|0"),
+                    "TeamNum": 0, "IsLocalPlayer": index == 0,
+                })
+            })
+            .collect();
+        handle_update_state_payload(
+            &state,
+            &json!({
+                "MatchGuid": "bullet-ball-test", "Players": players,
+                "Game": {
+                    "PlaylistId": 92, "Arena": "Labs_Octagon_Vent_P", "TimeSeconds": 142,
+                    "Teams": [{"Name": "Blue", "TeamNum": 0, "Score": 0},
+                              {"Name": "Orange", "TeamNum": 1, "Score": 0}],
+                    "bReplay": false, "bHasWinner": false, "Winner": ""
+                }
+            }),
+        );
+        let session = state.game.session.load();
+        assert_eq!(session.active_mode, crate::session::SessionMode::BulletBall);
+        assert_eq!(session.active_mode.label(), "Bullet Ball");
+        assert_eq!(
+            session.active_mode_source,
+            crate::session::SessionModeSource::PlaylistId
+        );
+        assert_eq!(session.matches_played, 0);
+    }
+}
+
+#[test]
+fn playlist_ids_override_roster_guesses_and_keep_fallbacks_for_private_matches() {
+    let state = AppState::new();
+    let data = json!({"MatchGuid": "playlist-test", "Players": [
+        {"Name": "Me", "PrimaryId": "Steam|1|0", "TeamNum": 0, "IsLocalPlayer": true},
+        {"Name": "Other", "PrimaryId": "Epic|2|0", "TeamNum": 1}
+    ], "Game": {"Arena": "Stadium_P", "PlaylistId": 6}});
+    handle_update_state_payload(&state, &data);
+    assert_eq!(
+        state.game.session.load().active_mode,
+        crate::session::SessionMode::Ones
+    );
+    handle_event(&state, &json!({"Event": "RoundStarted"}));
+    let mut data = data;
+    data["Game"]["PlaylistId"] = json!(13);
+    data["Game"]["Teams"] = json!([{"TeamNum": 0, "Score": 1}, {"TeamNum": 1, "Score": 0}]);
+    handle_update_state_payload(&state, &data);
+    assert_eq!(
+        state.game.session.load().active_mode,
+        crate::session::SessionMode::Threes
+    );
+    // Missing metadata and a misleading arena must not replace a known ID.
+    data["Game"].as_object_mut().unwrap().remove("PlaylistId");
+    data["Game"]["Arena"] = json!("DunkHouse_P");
+    handle_update_state_payload(&state, &data);
+    let session = state.game.session.load();
+    assert_eq!(session.active_mode, crate::session::SessionMode::Threes);
+    assert_eq!(
+        session.active_mode_source,
+        crate::session::SessionModeSource::PlaylistId
+    );
+}
+
 // Session mode inference and correction
 
 #[test]
@@ -990,6 +1072,14 @@ fn test_update_state_without_players_uses_unknown_session_mode() {
 #[test]
 fn test_update_state_detects_freeplay_capture_shape() {
     let state = AppState::new();
+    state
+        .game
+        .local_player_identity
+        .store(Arc::new(crate::state::LocalPlayerIdentity {
+            name: "cyberPeng".into(),
+            primary_id: "Steam|76561197981997358|0".into(),
+            platform: "Steam".into(),
+        }));
     handle_update_state_payload(
         &state,
         &json!({
@@ -1025,7 +1115,7 @@ fn test_private_match_with_target_records_update_state_winner() {
     let state = AppState::new();
     let base_players = json!([
         {
-            "Name": "cyberPeng",
+            "Name": "cyberPeng", "IsLocalPlayer": true,
             "PrimaryId": "Steam|76561197981997358|0",
             "TeamNum": 0,
             "Score": 124,
@@ -1090,6 +1180,14 @@ fn test_private_match_with_target_records_update_state_winner() {
 #[test]
 fn test_target_shortcut_sets_local_team_before_session_result() {
     let state = AppState::new();
+    state
+        .game
+        .local_player_identity
+        .store(Arc::new(crate::state::LocalPlayerIdentity {
+            name: "WindowsPlayer".into(),
+            primary_id: "Steam|76561197981997358|0".into(),
+            platform: "Steam".into(),
+        }));
 
     handle_update_state_payload(
         &state,
@@ -1739,4 +1837,46 @@ fn test_replay_auto_detection_from_first_frame() {
     let session = state.game.session.load();
     assert_eq!(session.wins, 0);
     assert_eq!(session.matches_played, 0);
+}
+
+#[tokio::test]
+async fn goal_replay_keeps_live_result_and_processes_first_return_frame() {
+    let state = AppState::new();
+    let frame = |replay, score| {
+        json!({
+            "MatchGuid": "live-goal", "Game": {"bReplay": replay,
+                "Teams": [{"TeamNum": 0, "Score": 1}, {"TeamNum": 1, "Score": 0}]},
+            "Players": [{"Name": "Me", "PrimaryId": "Steam|1|0", "TeamNum": 0,
+                "Score": score, "IsLocalPlayer": true}]
+        })
+    };
+    handle_update_state_payload(&state, &frame(false, 100));
+    handle_event(&state, &json!({"Event": "GoalReplayStart"}));
+    handle_update_state_payload(&state, &frame(true, 20));
+    assert!(state.game.session.load().is_goal_replay);
+    assert!(!state.flags.is_watching_replay.load(Ordering::SeqCst));
+    handle_update_state_payload(&state, &frame(false, 123));
+    assert!(!state.game.session.load().is_goal_replay);
+    assert_eq!(player_named(&state.game.players.load(), "Me").score, 123);
+    handle_event(&state, &json!({"Event": "GoalReplayStart"}));
+    handle_event(
+        &state,
+        &json!({"Event": "MatchEnded", "Data": {"MatchGuid": "live-goal", "WinnerTeamNum": 0}}),
+    );
+    assert_eq!(state.game.session.load().wins, 1);
+}
+
+#[test]
+fn replay_created_remains_playback_when_frame_reports_false() {
+    let state = AppState::new();
+    handle_event(&state, &json!({"Event": "ReplayCreated"}));
+    handle_update_state_payload(
+        &state,
+        &json!({
+            "MatchGuid": "loaded-replay", "Game": {"bReplay": false, "bHasWinner": true, "Winner": "Blue"},
+            "Players": [{"Name": "Me", "PrimaryId": "Steam|1|0", "TeamNum": 0, "IsLocalPlayer": true}]
+        }),
+    );
+    assert!(state.game.session.load().is_watching_replay);
+    assert_eq!(state.game.session.load().matches_played, 0);
 }

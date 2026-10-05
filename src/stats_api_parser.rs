@@ -115,7 +115,6 @@ pub fn parse_stats_api_data(
     };
     let preserve_previous_teams = player_scope == context.previous_match_scope;
     let hints = game.as_ref().map(extract_game_hints).unwrap_or_default();
-    let target_player_name = target_player_name(&data, &hints);
     let effective_local_name = hints
         .local_name
         .as_deref()
@@ -123,7 +122,6 @@ pub fn parse_stats_api_data(
             let name = context.current_local_name.trim();
             (!name.is_empty()).then_some(name)
         })
-        .or(target_player_name.as_deref())
         .unwrap_or("");
     let players = parse_players(
         &data,
@@ -368,47 +366,6 @@ fn extract_game_hints(game: &Value) -> GameHints {
     hints
 }
 
-fn target_player_name(data: &Value, hints: &GameHints) -> Option<String> {
-    let target_name = hints
-        .target_name
-        .as_deref()
-        .map(str::trim)
-        .filter(|name| !name.is_empty());
-    let target_shortcut = hints.target_shortcut;
-    if target_name.is_none() && target_shortcut.is_none() {
-        return None;
-    }
-
-    data.get("Players")
-        .or_else(|| data.get("players"))
-        .and_then(Value::as_array)
-        .and_then(|players| {
-            players.iter().find_map(|player| {
-                let name = string_field(player, &["Name", "name"])?.trim();
-                if name.is_empty() {
-                    return None;
-                }
-
-                if let Some(target_team) = hints.target_team {
-                    let team = number_field_u8(player, &["TeamNum", "teamNum", "Team", "team"])
-                        .and_then(standard_team)?;
-                    if team != target_team {
-                        return None;
-                    }
-                }
-
-                let name_matches =
-                    target_name.is_some_and(|target| name.eq_ignore_ascii_case(target));
-                let shortcut_matches = target_shortcut.is_some_and(|target| {
-                    number_field(player, &["Shortcut", "shortcut"])
-                        .is_some_and(|shortcut| shortcut == target)
-                });
-
-                (name_matches || shortcut_matches).then(|| name.to_string())
-            })
-        })
-}
-
 fn parse_players(
     data: &Value,
     current_local_name: &str,
@@ -545,7 +502,9 @@ fn parse_player_info(
     };
     let mut is_local = bool_field(player_payload, &["IsLocalPlayer", "isLocalPlayer", "isMe"])
         .unwrap_or(false)
-        || (!current_local_name.is_empty() && name.eq_ignore_ascii_case(current_local_name))
+        || (!cached_identity.is_known()
+            && !current_local_name.is_empty()
+            && name.eq_ignore_ascii_case(current_local_name))
         || (cached_identity.is_known() && cached_identity.same_account(&player_identity));
 
     if has_target && cached_identity.is_known() && !cached_identity.same_account(&player_identity) {
@@ -585,6 +544,15 @@ pub fn session_mode_hint_from_game(game: &Value) -> Option<&str> {
 }
 
 fn session_mode_hint_with_source(game: &Value) -> Option<(&str, SessionModeSource)> {
+    if let Some(mode) = number_field(
+        game,
+        &["PlaylistId", "PlaylistID", "playlistId", "playlist_id"],
+    )
+    .and_then(SessionMode::from_playlist_id)
+    {
+        return Some((mode.label(), SessionModeSource::PlaylistId));
+    }
+
     const MODE_FIELDS: &[(&str, SessionModeSource)] = &[
         ("Playlist", SessionModeSource::PlaylistMetadata),
         ("playlist", SessionModeSource::PlaylistMetadata),
@@ -1017,7 +985,7 @@ mod tests {
     }
 
     #[test]
-    fn target_marks_local_player_even_when_has_target_true() {
+    fn spectator_target_does_not_establish_local_player() {
         let identity = LocalPlayerIdentity::default();
         let previous = HashMap::new();
         let event = parse_stats_api_event(
@@ -1037,13 +1005,13 @@ mod tests {
             context(&identity, &previous),
         );
 
-        assert!(player_named(&event.players, "cyberPeng").is_local);
+        assert!(!player_named(&event.players, "cyberPeng").is_local);
         assert!(!player_named(&event.players, "Opponent").is_local);
-        assert_eq!(event.local_player_hint.as_ref().unwrap().name, "cyberPeng");
+        assert!(event.local_player_hint.is_none());
     }
 
     #[test]
-    fn target_shortcut_marks_local_player_when_name_is_missing() {
+    fn spectator_shortcut_does_not_establish_local_player() {
         let identity = LocalPlayerIdentity::default();
         let previous = HashMap::new();
         let event = parse_stats_api_event(
@@ -1073,13 +1041,9 @@ mod tests {
             context(&identity, &previous),
         );
 
-        assert!(player_named(&event.players, "WindowsPlayer").is_local);
+        assert!(!player_named(&event.players, "WindowsPlayer").is_local);
         assert!(!player_named(&event.players, "Opponent").is_local);
-        assert_eq!(
-            event.local_player_hint.as_ref().unwrap().name,
-            "WindowsPlayer"
-        );
-        assert_eq!(event.local_player_hint.as_ref().unwrap().team, 1);
+        assert!(event.local_player_hint.is_none());
     }
 
     #[test]
@@ -1136,6 +1100,32 @@ mod tests {
         assert_eq!(
             event.mode.inference().source,
             SessionModeSource::ActivePlayerCount
+        );
+    }
+
+    #[test]
+    fn bullet_ball_uses_playlist_metadata_without_claiming_shared_labs_arena() {
+        for game in [
+            json!({"PlaylistId": 92, "Arena": "Labs_Octagon_Vent_P"}),
+            json!({"playlistId": "92", "Arena": "Stadium_P"}),
+            json!({"GameMode": "BulletBall", "Arena": "Stadium_P"}),
+            json!({"PlaylistName": "Bullet Ball", "Arena": "Stadium_P"}),
+        ] {
+            let (hint, source) = session_mode_hint_with_source(&game).unwrap();
+            assert_eq!(SessionMode::from_hint(hint), Some(SessionMode::BulletBall));
+            assert_eq!(
+                source,
+                if game.get("PlaylistId").is_some() || game.get("playlistId").is_some() {
+                    SessionModeSource::PlaylistId
+                } else {
+                    SessionModeSource::PlaylistMetadata
+                }
+            );
+        }
+        assert_eq!(SessionMode::from_hint("Labs_Octagon_Vent_P"), None);
+        assert_eq!(
+            SessionMode::from_hint("Bullet-Ball"),
+            Some(SessionMode::BulletBall)
         );
     }
 

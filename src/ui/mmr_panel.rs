@@ -40,7 +40,7 @@ pub(super) fn render_local_mmr_panel(
     } else {
         ui.colored_label(
             egui::Color32::from_gray(190),
-            "Waiting for local player identity.",
+            "Enter Free Play, then select your account in Setup.",
         );
     }
 

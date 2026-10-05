@@ -918,15 +918,7 @@ fn select_lobby_playlist(
 }
 
 pub(super) fn lobby_playlist_id(session_mode: SessionMode) -> Option<i32> {
-    match session_mode {
-        SessionMode::Ones => Some(10),
-        SessionMode::Twos => Some(11),
-        SessionMode::Threes => Some(13),
-        SessionMode::Hoops => Some(27),
-        SessionMode::Dropshot => Some(29),
-        SessionMode::Snowday => Some(30),
-        SessionMode::Knockout | SessionMode::Freeplay | SessionMode::Unknown => None,
-    }
+    session_mode.ranked_playlist_id()
 }
 
 fn playlist_id_from_player_count(player_count: usize) -> Option<i32> {

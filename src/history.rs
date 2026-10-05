@@ -376,7 +376,7 @@ pub fn record_completed_match(state: &Arc<AppState>, session: &SessionState) {
     if !state.system.config.load().history_enabled {
         return;
     }
-    if session.last_result == MatchResult::Unknown
+    if (session.last_result == MatchResult::Unknown && !session.active_mode.is_free_for_all())
         || session.active_match_id.trim().is_empty()
         || session.local_team.and_then(standard_team).is_none()
     {
@@ -676,7 +676,7 @@ fn insert_completed_match_on_conn<'a>(
                 match_id,
                 player_id,
                 player.team,
-                player_role(player, local_team),
+                player_role(player, local_team, session.active_mode),
                 player.score,
                 player.goals,
                 player.saves,
@@ -863,11 +863,13 @@ fn cleanup_local_history_rows(conn: &mut Connection) -> Result<(), HistoryError>
     Ok(())
 }
 
-fn player_role(player: &PlayerInfo, local_team: u8) -> &'static str {
+fn player_role(player: &PlayerInfo, local_team: u8, mode: SessionMode) -> &'static str {
     if player.is_local {
         "local"
     } else if standard_team(player.team).is_none() || standard_team(local_team).is_none() {
         "unknown"
+    } else if mode.is_free_for_all() {
+        "opponent"
     } else if player.team == local_team {
         "teammate"
     } else {
@@ -884,6 +886,11 @@ fn mode_key(mode: SessionMode) -> &'static str {
         SessionMode::Dropshot => "dropshot",
         SessionMode::Snowday => "snowday",
         SessionMode::Knockout => "knockout",
+        SessionMode::BulletBall => "bullet_ball",
+        SessionMode::Quads => "quads",
+        SessionMode::Rumble => "rumble",
+        SessionMode::Heatseeker => "heatseeker",
+        SessionMode::OtherPlaylist(_) => mode.other_playlist_key(),
         SessionMode::Freeplay => "freeplay",
         SessionMode::Unknown => "unknown",
     }
@@ -1033,9 +1040,15 @@ mod tests {
             ..Default::default()
         };
 
-        assert_eq!(player_role(&unknown_player, 0), "unknown");
-        assert_eq!(player_role(&opponent, NO_TEAM), "unknown");
-        assert_eq!(player_role(&opponent, 0), "opponent");
+        assert_eq!(
+            player_role(&unknown_player, 0, SessionMode::Twos),
+            "unknown"
+        );
+        assert_eq!(
+            player_role(&opponent, NO_TEAM, SessionMode::Twos),
+            "unknown"
+        );
+        assert_eq!(player_role(&opponent, 0, SessionMode::Twos), "opponent");
     }
 
     #[test]
@@ -1384,7 +1397,7 @@ mod tests {
                     match_id,
                     player_id,
                     player.team,
-                    player_role(player, local_team),
+                    player_role(player, local_team, session.active_mode),
                     player.score,
                     player.goals,
                     player.saves,
@@ -1515,5 +1528,27 @@ mod tests {
             )
             .unwrap();
         assert_eq!(match_player_pid, remaining_bob_id);
+    }
+    #[test]
+    fn ffa_shared_team_players_are_opponents_with_unknown_result() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let mut session = SessionState::default();
+        session.active_match_id = "ffa".into();
+        session.active_mode = SessionMode::BulletBall;
+        session.local_team = Some(0);
+        session.last_result = MatchResult::Unknown;
+        let players = [
+            player("Me", "Steam|me|0", 0, true),
+            player("Other", "Steam|other|0", 0, false),
+        ];
+        assert!(insert_completed_match_on_conn(&mut conn, &session, players.iter(), 1000).unwrap());
+        let other = query_summary(&conn, "steam:steam|other|0")
+            .unwrap()
+            .unwrap();
+        assert_eq!((other.games_with, other.games_against), (0, 1));
+        assert_eq!((other.wins_against, other.losses_against), (0, 0));
+        let totals = load_totals_on_conn(&conn).unwrap();
+        assert_eq!((totals.matches, totals.wins, totals.losses), (1, 0, 0));
     }
 }

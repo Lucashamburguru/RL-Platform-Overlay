@@ -17,6 +17,63 @@ pub(crate) fn render_setup_settings_tab(
     is_rl_running: bool,
 ) {
     render_setup_readiness(ui, state, is_rl_running);
+    ui.add_space(8.0);
+    ui.collapsing("Your account", |ui| {
+        let identity = state.game.local_player_identity.load();
+        let players = state.game.players.load();
+        let mut choices: Vec<_> = players
+            .values()
+            .filter(|player| !player.is_bot && !player.primary_id.is_empty())
+            .collect();
+        choices.sort_by(|a, b| {
+            a.name
+                .cmp(&b.name)
+                .then_with(|| a.primary_id.cmp(&b.primary_id))
+        });
+        ui.label("Enter Free Play in Rocket League. Then select your account below.");
+        ui.add_enabled_ui(!config_edit.lock_local_player, |ui| {
+            egui::ComboBox::from_id_salt("confirmed_local_account")
+                .selected_text(if identity.is_known() {
+                    identity.name.as_str()
+                } else {
+                    "Select your account"
+                })
+                .show_ui(ui, |ui| {
+                    for player in choices {
+                        let candidate = crate::state::LocalPlayerIdentity {
+                            name: player.name.clone(),
+                            platform: player.platform.clone(),
+                            primary_id: player.primary_id.clone(),
+                        };
+                        if ui
+                            .selectable_label(
+                                identity.same_account(&candidate),
+                                format!("{} · {}", player.name, player.platform),
+                            )
+                            .on_hover_text(&player.primary_id)
+                            .clicked()
+                        {
+                            let refresh = state.update_local_player_identity(candidate.clone());
+                            config_edit.cached_local_player_identity = candidate;
+                            *changed = true;
+                            state
+                                .game
+                                .local_player_name
+                                .store(Arc::new(player.name.clone()));
+                            state.game.local_team.store(player.team, Ordering::SeqCst);
+                            if refresh {
+                                crate::mmr::start_local_mmr_refresh(state.clone());
+                            }
+                        }
+                    }
+                });
+        });
+        if config_edit.lock_local_player {
+            ui.weak("Unlock the detected player in Session settings to change accounts.");
+        } else if players.is_empty() {
+            ui.weak("Enter Free Play to show your account.");
+        }
+    });
     ui.add_space(12.0);
     settings_section(ui, "Stats API Setup", |ui| {
         setting_row(ui, "Rocket League Folder", |ui| {

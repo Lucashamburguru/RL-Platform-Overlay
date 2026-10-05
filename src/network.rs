@@ -86,11 +86,27 @@ fn handle_event(state: &Arc<AppState>, json: &Value) {
                 state.game.session.store(Arc::new(session));
             }
         }
+        "GoalReplayStart" => {
+            state.game.session.rcu(|current| {
+                let mut session = (**current).clone();
+                if !session.replay_file_confirmed {
+                    session.is_goal_replay = true;
+                    session.is_watching_replay = false;
+                }
+                Arc::new(session)
+            });
+            state.flags.is_watching_replay.store(
+                state.game.session.load().is_watching_replay,
+                Ordering::SeqCst,
+            );
+        }
         "ReplayCreated" | "ReplayPlaybackStart" => {
             state.flags.is_watching_replay.store(true, Ordering::SeqCst);
             state.game.session.rcu(|session| {
                 let mut s = (**session).clone();
                 s.is_watching_replay = true;
+                s.replay_file_confirmed = true;
+                s.is_goal_replay = false;
                 Arc::new(s)
             });
         }
@@ -207,15 +223,16 @@ fn parse_event_for_state(state: &Arc<AppState>, json: &Value) -> StatsApiEvent {
 fn handle_update_state(state: &Arc<AppState>, parsed_event: &StatsApiEvent) {
     update_match_guid_diagnostics(state, parsed_event.match_guid.as_deref().unwrap_or(""));
 
-    let was_watching_replay = state.flags.is_watching_replay.load(Ordering::SeqCst);
-    if parsed_event.is_replay {
+    let was_goal_replay = state.game.session.load().is_goal_replay;
+    if parsed_event.is_replay || state.flags.is_watching_replay.load(Ordering::SeqCst) {
         update_session_from_event(state, parsed_event, false);
-        return;
+        let session = state.game.session.load();
+        if session.is_watching_replay || session.is_goal_replay {
+            return;
+        }
     }
-    if was_watching_replay {
+    if was_goal_replay && !parsed_event.is_replay {
         record_replay_touch_offsets(state, parsed_event);
-        update_session_from_event(state, parsed_event, false);
-        return;
     }
 
     let active_match_id = state.game.session.load().active_match_id.clone();
@@ -230,26 +247,7 @@ fn handle_update_state(state: &Arc<AppState>, parsed_event: &StatsApiEvent) {
             .store(crate::state::NO_TEAM, Ordering::SeqCst);
     }
 
-    let has_known_local_name = !state.game.local_player_name.load().trim().is_empty();
     apply_local_player_update(state, parsed_event);
-
-    if !has_known_local_name
-        && parsed_event.local_player_hint.is_none()
-        && !parsed_event.has_target
-        && let Some(target_name) = parsed_event.target_name.as_ref()
-    {
-        state
-            .game
-            .local_player_name
-            .store(Arc::new(target_name.clone()));
-    }
-
-    if standard_team(state.game.local_team.load(Ordering::SeqCst)).is_none()
-        && parsed_event.local_player_hint.is_none()
-        && let Some(target_team) = parsed_event.target_team
-    {
-        state.game.local_team.store(target_team, Ordering::SeqCst);
-    }
 
     if !parsed_event.players.is_empty() {
         // println!("State Updated: {} players in lobby", new_players.len());
