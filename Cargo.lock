@@ -3993,8 +3993,6 @@ dependencies = [
 [[package]]
 name = "rdev"
 version = "0.5.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "00552ca2dc2f93b84cd7b5581de49549411e4e41d89e1c691bcb93dc4be360c3"
 dependencies = [
  "cocoa",
  "core-foundation 0.7.0",
@@ -4078,6 +4076,7 @@ checksum = "47b34b781b31e5d73e9fbc8689c70551fd1ade9a19e3e28cfec8580a79290cc4"
 name = "rl-platform-overlay"
 version = "0.1.56"
 dependencies = [
+ "ab_glyph",
  "aes",
  "arc-swap",
  "base64",

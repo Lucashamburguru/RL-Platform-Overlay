@@ -19,6 +19,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10"
 aes = "0.8"
+ab_glyph = "0.2"
 rdev = "0.5.3"
 arc-swap = "1.7"
 boxcars = "0.11.5"
@@ -41,9 +42,13 @@ semver = "1.0"
 [dev-dependencies]
 tempfile = "3.0"
 
+[patch.crates-io]
+# rdev 0.5.3's Windows listener passes a null MSG pointer to GetMessageA.
+rdev = { path = "vendor/rdev" }
+
 
 [target.'cfg(windows)'.dependencies]
-winapi = { version = "0.3", features = ["windef", "winuser", "dwmapi", "uxtheme"] }
+winapi = { version = "0.3", features = ["windef", "winuser", "dwmapi", "uxtheme", "errhandlingapi", "fileapi", "processthreadsapi", "psapi", "sysinfoapi"] }
 gilrs = { version = "0.11.0", default-features = false, features = ["xinput"] }
 
 [target.'cfg(not(windows))'.dependencies]

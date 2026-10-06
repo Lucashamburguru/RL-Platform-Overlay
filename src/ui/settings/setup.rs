@@ -732,15 +732,22 @@ pub(super) fn render_support_diagnostics_section(
             "Hotkey Log",
             &crate::input::hotkey_debug_log_path().display().to_string(),
         );
-        if ui.button("Copy Log Path").clicked() {
-            ui.ctx()
-                .copy_text(crate::input::hotkey_debug_log_path().display().to_string());
-            ui.data_mut(|data| data.insert_temp(ui.id().with("log_path_copied"), true));
-        }
-        if ui.data(|data| {
-            data.get_temp::<bool>(ui.id().with("log_path_copied"))
-                .unwrap_or(false)
-        }) {
+        let log_path_copied_id = ui.id().with("log_path_copied");
+        ui.horizontal(|ui| {
+            if ui.button("Copy Log Path").clicked() {
+                ui.ctx()
+                    .copy_text(crate::input::hotkey_debug_log_path().display().to_string());
+                ui.data_mut(|data| data.insert_temp(log_path_copied_id, true));
+            }
+            let directory = crate::crash_logging::log_directory().display().to_string();
+            if ui.button("Copy Crash Log Folder")
+                .on_hover_text(format!("Automatic panic reports and runtime logs: {directory}\nReview before sharing; logs can contain paths, names, and error details."))
+                .clicked()
+            {
+                ui.ctx().copy_text(directory);
+            }
+        });
+        if ui.data(|data| data.get_temp::<bool>(log_path_copied_id).unwrap_or(false)) {
             ui.label("Log path copied.");
         }
 

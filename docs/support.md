@@ -20,6 +20,41 @@ not enough.
 
 ## Common fixes
 
+### The app crashes or closes unexpectedly
+
+Crash logging is automatic and does not require `--debug`. In the app data
+folder listed below, open `logs` (or copy the folder path from **Settings →
+Support**):
+
+- Windows: `%APPDATA%\RL-Platform-Overlay\logs`
+- Linux: `$XDG_CONFIG_HOME/rl-platform-overlay/logs` or
+  `~/.config/rl-platform-overlay/logs`
+
+Send `crash.log`, `app.log`, and `app.previous.log` when available, along with
+what you were doing when the crash happened. `crash.log` records the latest Rust
+panic, including version, time, thread, source location, and a forced backtrace.
+It is preserved when the app restarts. Runtime logs include startup progress and
+renderer errors and rotate at 2 MiB, retaining one previous file.
+
+On Windows, also include `native-crash.log` if it is nonempty. This records
+unhandled Windows exceptions (including some access violations) with the fault
+code/address, thread, and time since startup. Older native reports rotate into
+`native-crash.previous.log`. The handler writes to a file opened at startup and
+avoids allocating memory or taking the regular logging lock while reporting a
+fault. Windows Error Reporting still handles the exception normally.
+
+The UI records runtime health every 30 seconds in `app.log`, including overlay,
+dashboard, connection, and replay-upload state. Windows entries also include
+working-set memory, private memory, and process handle count. These measurements
+help investigate failures that happen after extended use.
+
+Review these files before sharing: error messages can contain paths or player
+details. They are separate from redacted diagnostics and are never uploaded
+automatically. Release backtraces may have limited symbol information. Native
+faults that bypass the exception filter, forced termination, and out-of-memory
+aborts may leave only the runtime log; a missing crash report does not mean the
+app closed normally.
+
 ### The overlay will not connect
 
 1. Make sure Rocket League is running.

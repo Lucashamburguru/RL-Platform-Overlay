@@ -11,6 +11,7 @@ pub mod stats_api_parser;
 mod assets;
 #[cfg(not(feature = "microsoft-store"))]
 mod boost_audio;
+pub mod crash_logging;
 mod diagnostics;
 mod input;
 #[cfg(not(feature = "microsoft-store"))]
@@ -33,17 +34,10 @@ pub fn app_version() -> String {
 }
 
 pub async fn run(debug_enabled: bool) -> eframe::Result<()> {
-    let mut builder = env_logger::Builder::new();
-    builder.filter_level(log::LevelFilter::Warn);
-    let level = if debug_enabled {
-        log::LevelFilter::Debug
-    } else {
-        log::LevelFilter::Info
-    };
-    builder.filter_module("rl_platform_overlay", level);
-    let _ = builder.try_init();
+    crash_logging::init(debug_enabled);
 
     let state = AppState::new_with_debug(debug_enabled);
+    log::info!("Application state initialized.");
 
     refresh_stats_api_setup_on_startup(&state);
 
@@ -79,7 +73,8 @@ pub async fn run(debug_enabled: bool) -> eframe::Result<()> {
         ..Default::default()
     };
 
-    eframe::run_native(
+    log::info!("Starting native window and Glow renderer.");
+    let result = eframe::run_native(
         "RL Overlay Settings",
         options,
         Box::new(|cc| {
@@ -100,7 +95,12 @@ pub async fn run(debug_enabled: bool) -> eframe::Result<()> {
             cc.egui_ctx.set_visuals(egui::Visuals::dark());
             Ok(Box::new(ui::MainApp::new(state, hwnd)))
         }),
-    )
+    );
+    match &result {
+        Ok(()) => log::info!("Native UI closed normally."),
+        Err(error) => log::error!("Native UI failed: {error}"),
+    }
+    result
 }
 
 fn refresh_stats_api_setup_on_startup(state: &std::sync::Arc<AppState>) {

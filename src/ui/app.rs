@@ -64,6 +64,7 @@ pub struct MainApp {
     is_rl_running: bool,
     rl_process_detection_detail: String,
     last_rl_check: std::time::Instant,
+    last_runtime_log: Option<std::time::Instant>,
     last_logged_show_settings: Option<bool>,
     #[allow(clippy::type_complexity)]
     last_viewport_state: Option<(bool, bool, bool, bool, Option<egui::Pos2>, [f32; 2])>,
@@ -97,6 +98,7 @@ impl MainApp {
                 .checked_sub(std::time::Duration::from_secs(5))
                 .unwrap_or_else(std::time::Instant::now),
             last_logged_show_settings: None,
+            last_runtime_log: None,
             last_viewport_state: None,
             dashboard_viewport_state: DashboardViewportState::default(),
             hwnd,
@@ -501,6 +503,15 @@ impl eframe::App for MainApp {
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         ctx.set_zoom_factor(1.0);
+
+        let now = std::time::Instant::now();
+        if self
+            .last_runtime_log
+            .is_none_or(|last| now.duration_since(last) >= Duration::from_secs(30))
+        {
+            crate::crash_logging::log_runtime_health(&self.state);
+            self.last_runtime_log = Some(now);
+        }
 
         if self.state.flags.should_exit.load(Ordering::SeqCst) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);

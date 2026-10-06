@@ -423,6 +423,13 @@ pub fn support_diagnostics_bundle_with_privacy(
     lines.push(String::new());
     lines.push("[diagnostics]".to_string());
     lines.push(format!(
+        "crash_log_directory={}",
+        support_private_value(
+            &crate::crash_logging::log_directory().display().to_string(),
+            privacy
+        )
+    ));
+    lines.push(format!(
         "hotkey_log_path={}",
         support_private_value(
             &crate::input::hotkey_debug_log_path().display().to_string(),
