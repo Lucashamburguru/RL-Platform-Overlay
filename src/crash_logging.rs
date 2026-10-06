@@ -217,23 +217,24 @@ mod tests {
                 "--nocapture",
             ])
             .env("RL_TEST_CRASH_HOOK", "1")
-            .output()
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
             .unwrap();
-        assert_eq!(child.status.code(), Some(73));
-        // Test config directories are isolated by the child's PID, recorded in its startup log.
-        let stderr = String::from_utf8_lossy(&child.stderr);
-        let pid = stderr
-            .split("pid=")
-            .nth(1)
-            .unwrap()
-            .split_whitespace()
-            .next()
-            .unwrap();
+        let pid = child.id();
+        let output = child.wait_with_output().unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(73),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        // Test config directories are isolated by the child's actual process ID.
         let dir = std::env::temp_dir().join(format!("rl_platform_overlay_test_{pid}/logs"));
         let report = std::fs::read_to_string(dir.join("crash.log")).unwrap();
         assert!(report.contains("test panic evidence"));
         assert!(report.contains("thread=crash-test-worker"));
-        assert!(report.contains("src/crash_logging.rs"));
+        assert!(report.contains(file!()));
         assert!(report.contains("backtrace:"));
         assert!(report.contains(&format!("version={}", crate::app_version())));
         std::fs::remove_dir_all(dir.parent().unwrap()).unwrap();

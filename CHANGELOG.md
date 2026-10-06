@@ -6,6 +6,16 @@ This file describes changes to the app.
 
 ## [Unreleased]
 
+### Added
+
+- **Crash Logs**: The app automatically saves panic reports and rotating runtime logs. Windows exception reports and periodic memory and handle counts help investigate crashes after extended use. Support can copy the log folder path.
+
+### Fixed
+
+- **Windows Builds**: The crash-report test accepts the source path emitted by the Windows compiler. This fixes the failed Windows checks in v0.1.57.
+- **Windows Keyboard Listener**: Corrected the message loop so messages arriving after startup do not cause it to fail or stop listening.
+- **System Fonts**: Invalid installed fallback fonts are skipped instead of causing a startup panic.
+
 ---
 
 ## [0.1.57] - 2026-10-06
