@@ -6,6 +6,10 @@ This file describes changes to the app.
 
 ## [Unreleased]
 
+---
+
+## [0.1.58] - 2026-10-06
+
 ### Added
 
 - **Crash Logs**: The app automatically saves panic reports and rotating runtime logs. Windows exception reports and periodic memory and handle counts help investigate crashes after extended use. Support can copy the log folder path.
