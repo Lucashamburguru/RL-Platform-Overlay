@@ -12,6 +12,7 @@ pub use cloud_sync::{maybe_start_initial_replay_cache_sync, start_sync_replays_t
 pub use download::{format_uuid_with_dashes, start_download_replay_task};
 
 const BULK_UPLOAD_DELAY_SECS: u64 = 30;
+const AUTO_UPLOAD_MAX_AGE: Duration = Duration::from_secs(15 * 60);
 
 #[derive(Clone)]
 struct ReplayFile {
@@ -90,7 +91,7 @@ pub async fn verify_token(client: &wreq::Client, api_key: &str) -> Result<(), St
 }
 
 /// Helper function to spawn the asynchronous replay uploader trigger.
-pub fn trigger_replay_upload(state: Arc<AppState>, scan_all_as_uploaded: bool) {
+pub fn trigger_replay_upload(state: Arc<AppState>, startup_scan: bool) {
     let Ok(operation_guard) = state.replays.maintenance_gate.clone().try_read_owned() else {
         return;
     };
@@ -105,7 +106,7 @@ pub fn trigger_replay_upload(state: Arc<AppState>, scan_all_as_uploaded: bool) {
             return;
         }
         let state_clone = state.clone();
-        let res = run_replay_upload(state, scan_all_as_uploaded).await;
+        let res = run_replay_upload(state, startup_scan).await;
         state_clone
             .replays
             .auto_upload_running
@@ -117,9 +118,9 @@ pub fn trigger_replay_upload(state: Arc<AppState>, scan_all_as_uploaded: bool) {
     });
 }
 
-/// Scans the replays folder and uploads new files to ballchasing.com.
-/// If `scan_all_as_uploaded` is true, scans all existing files and caches their names to skip uploading them.
-async fn run_replay_upload(state: Arc<AppState>, scan_all_as_uploaded: bool) -> Result<(), String> {
+/// Uploads recent uncached replays. Older files require the explicit bulk uploader.
+/// Startup scans stay quiet when the configured folder is unavailable.
+async fn run_replay_upload(state: Arc<AppState>, startup_scan: bool) -> Result<(), String> {
     let config = state.system.config.load();
     let folder_str = config.replays_folder.trim();
     if folder_str.is_empty() {
@@ -128,21 +129,22 @@ async fn run_replay_upload(state: Arc<AppState>, scan_all_as_uploaded: bool) -> 
 
     let replays_dir = PathBuf::from(folder_str);
     if !replays_dir.exists() || !replays_dir.is_dir() {
-        if !scan_all_as_uploaded && config.ballchasing_enabled {
+        if !startup_scan && config.ballchasing_enabled {
             set_status(&state, "Error: Replays folder does not exist");
         }
         return Ok(());
     }
 
-    let found_files = match replay_files_in_dir(&replays_dir).await {
-        Ok(files) => files,
-        Err(error) => {
-            log::error!("Failed to scan replays directory: {error}");
-            return Ok(());
-        }
-    };
+    let found_files =
+        match automatic_replay_files_in_dir(&replays_dir, std::time::SystemTime::now()).await {
+            Ok(files) => files,
+            Err(error) => {
+                log::error!("Failed to scan replays directory: {error}");
+                return Ok(());
+            }
+        };
 
-    if scan_all_as_uploaded {
+    if startup_scan {
         // Startup mode: only upload files that were modified in the last 15 minutes and are not in cache.
         // We do NOT assume older files are on ballchasing, allowing the user to upload or sync them later.
         let now = std::time::SystemTime::now();
@@ -156,7 +158,7 @@ async fn run_replay_upload(state: Arc<AppState>, scan_all_as_uploaded: bool) -> 
                 if let Ok(metadata) = tokio::fs::metadata(&replay.path).await
                     && let Ok(modified) = metadata.modified()
                     && let Ok(elapsed) = now.duration_since(modified)
-                    && elapsed.as_secs() < 15 * 60
+                    && elapsed < AUTO_UPLOAD_MAX_AGE
                 {
                     set_status(
                         &state,
@@ -200,7 +202,7 @@ async fn run_replay_upload(state: Arc<AppState>, scan_all_as_uploaded: bool) -> 
         return Ok(());
     }
 
-    // Real trigger mode: upload any files not in cache
+    // Post-match mode uses the same recent-file window as startup.
     if !config.ballchasing_enabled {
         return Ok(());
     }
@@ -306,6 +308,23 @@ async fn replay_files_in_dir(replays_dir: &Path) -> Result<Vec<ReplayFile>, std:
         }
     }
     Ok(files)
+}
+
+async fn automatic_replay_files_in_dir(
+    replays_dir: &Path,
+    now: std::time::SystemTime,
+) -> Result<Vec<ReplayFile>, std::io::Error> {
+    let mut recent = Vec::new();
+    for replay in replay_files_in_dir(replays_dir).await? {
+        if let Ok(metadata) = tokio::fs::metadata(&replay.path).await
+            && let Ok(modified) = metadata.modified()
+            && let Ok(age) = now.duration_since(modified)
+            && age < AUTO_UPLOAD_MAX_AGE
+        {
+            recent.push(replay);
+        }
+    }
+    Ok(recent)
 }
 
 async fn pending_replay_files(
@@ -1077,6 +1096,35 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn automatic_upload_skips_backlog_without_hiding_it_from_bulk_upload() {
+        let root = tempfile::tempdir().unwrap();
+        let now = std::time::SystemTime::now();
+        for (filename, modified) in [
+            ("recent.replay", now - Duration::from_secs(60)),
+            ("old.replay", now - Duration::from_secs(24 * 60 * 60)),
+            ("boundary.replay", now - AUTO_UPLOAD_MAX_AGE),
+        ] {
+            let path = root.path().join(filename);
+            std::fs::write(&path, valid_replay_bytes()).unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_times(std::fs::FileTimes::new().set_modified(modified))
+                .unwrap();
+        }
+        let automatic = automatic_replay_files_in_dir(root.path(), now)
+            .await
+            .unwrap();
+        assert_eq!(automatic.len(), 1);
+        assert_eq!(automatic[0].filename, "recent.replay");
+        let state = AppState::new();
+        let pending = pending_replay_files(&state, root.path()).await.unwrap();
+        assert_eq!(pending.len(), 3);
+        assert!(state.replays.uploaded_replays.load().is_empty());
+    }
+
+    #[tokio::test]
     async fn content_claim_waits_for_ledger_publication_and_releases_on_cancel() {
         let state = AppState::new();
         let bytes = valid_replay_bytes();
@@ -1161,6 +1209,22 @@ mod tests {
                             .parse()
                             .unwrap();
                         if request.len() >= end + 4 + length {
+                            assert!(headers.starts_with("post /upload?visibility=private "));
+                            assert!(headers.contains("authorization: test\r\n"));
+                            assert!(
+                                headers.contains("content-type: multipart/form-data; boundary=")
+                            );
+                            let body = &request[end + 4..end + 4 + length];
+                            let text = String::from_utf8_lossy(body);
+                            assert!(text.contains("name=\"file\""));
+                            assert!(text.contains(if code == 500 {
+                                "filename=\"one.replay\""
+                            } else {
+                                "filename=\"two.replay\""
+                            }));
+                            assert!(text.contains("application/octet-stream"));
+                            let replay = valid_replay_bytes();
+                            assert!(body.windows(replay.len()).any(|part| part == replay));
                             break;
                         }
                     }
@@ -1188,7 +1252,7 @@ mod tests {
         let first = tokio::spawn(async move {
             upload_file_to(
                 &first_state,
-                &wreq::Client::new(),
+                &first_state.system.ballchasing_client,
                 ("test", "private", &first_endpoint),
                 "one.replay",
                 valid_replay_bytes(),
@@ -1204,7 +1268,7 @@ mod tests {
         let mut second = tokio::spawn(async move {
             upload_file_to(
                 &second_state,
-                &wreq::Client::new(),
+                &second_state.system.ballchasing_client,
                 ("test", "private", &endpoint),
                 "two.replay",
                 valid_replay_bytes(),

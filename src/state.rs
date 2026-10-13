@@ -1428,7 +1428,7 @@ impl AppState {
         let http_client = Arc::new(
             wreq::Client::builder()
                 .timeout(std::time::Duration::from_secs(15))
-                .emulation(wreq_util::Emulation::Chrome128)
+                .emulation(wreq_util::Profile::Chrome128)
                 .redirect(wreq::redirect::Policy::limited(10))
                 .build()
                 .expect("Failed to build shared HTTP client"),
@@ -1436,7 +1436,7 @@ impl AppState {
         let ballchasing_client = Arc::new(
             wreq::Client::builder()
                 .timeout(std::time::Duration::from_secs(15))
-                .emulation(wreq_util::Emulation::Chrome128)
+                .emulation(wreq_util::Profile::Chrome128)
                 .redirect(wreq::redirect::Policy::none())
                 .build()
                 .expect("Failed to build Ballchasing HTTP client"),

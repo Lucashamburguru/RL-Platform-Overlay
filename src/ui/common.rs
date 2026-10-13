@@ -291,8 +291,8 @@ mod tests {
         let ctx = egui::Context::default();
         let mut opacity = 173;
         let mut scale = 1.234;
-        let _ = ctx.run(egui::RawInput::default(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
+        let _ = crate::ui::review_renderer::run_ui(&ctx, egui::RawInput::default(), |root_ui| {
+            egui::CentralPanel::default().show(root_ui, |ui| {
                 opacity_slider(ui, &mut opacity, 40);
                 scale_slider(ui, &mut scale, 0.5, 2.5);
             });

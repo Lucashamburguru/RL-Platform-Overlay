@@ -172,7 +172,7 @@ pub(crate) fn render_item_swapper_settings_tab(
                     }) {
                         let response = ui.add_enabled(
                             bank.unavailable.is_none(),
-                            egui::SelectableLabel::new(
+                            egui::Button::selectable(
                                 edit.sound_bank.as_deref() == Some(bank.file.as_str()),
                                 &bank.label,
                             ),
@@ -416,7 +416,7 @@ fn render_picker(
             for package in &filtered[rows] {
                 let response = ui.add_enabled(
                     package.unavailable.is_none(),
-                    egui::SelectableLabel::new(
+                    egui::Button::selectable(
                         selected.as_deref() == Some(&package.package),
                         package.display_name(),
                     ),

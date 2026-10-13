@@ -159,6 +159,171 @@ mod page_tour;
 mod tests {
     use super::*;
 
+    #[test]
+    fn setup_account_selection_releases_config_guard_and_persists_identity() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            runtime.block_on(async {
+                let state = AppState::new();
+                state.update_local_player_identity(crate::state::LocalPlayerIdentity {
+                    name: "Current".into(),
+                    platform: "Steam".into(),
+                    primary_id: "Steam|current|0".into(),
+                });
+                let other = crate::state::PlayerInfo {
+                    name: "Other".into(),
+                    platform: "Steam".into(),
+                    primary_id: "Steam|other|0".into(),
+                    team: 1,
+                    ..Default::default()
+                };
+                state
+                    .game
+                    .players
+                    .store(Arc::new(std::collections::HashMap::from([(
+                        crate::state::PlayerKey::from_account(&other).unwrap(),
+                        other,
+                    )])));
+                let mut app = MainApp::new(state.clone(), None);
+                app.settings_tab = SettingsTab::Setup;
+                app.last_rl_check = std::time::Instant::now();
+                let ctx = egui::Context::default();
+                for theme in [egui::Theme::Dark, egui::Theme::Light] {
+                    ctx.style_mut_of(theme, |style| style.animation_time = 0.0);
+                }
+                let mut render = |events| {
+                    crate::ui::review_renderer::run_ui(
+                        &ctx,
+                        egui::RawInput {
+                            screen_rect: Some(egui::Rect::from_min_size(
+                                egui::Pos2::ZERO,
+                                egui::vec2(1100.0, 1000.0),
+                            )),
+                            events,
+                            ..Default::default()
+                        },
+                        |root_ui| {
+                            egui::CentralPanel::default().show(root_ui, |ui| {
+                                app.render_settings_content(ui, &ctx, false);
+                            });
+                        },
+                    )
+                };
+                for label in ["Your account", "Current", "Other · Steam"] {
+                    for _ in 0..3 {
+                        let _ = render(Vec::new());
+                    }
+                    let output = render(Vec::new());
+                    let pos = output
+                        .shapes
+                        .iter()
+                        .find_map(|shape| {
+                            if let egui::epaint::Shape::Text(text) = &shape.shape
+                                && text.galley.text() == label
+                            {
+                                Some(text.visual_bounding_rect().center())
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or_else(|| panic!("missing account control: {label}"));
+                    for pressed in [true, false] {
+                        let _ = render(vec![
+                            egui::Event::PointerMoved(pos),
+                            egui::Event::PointerButton {
+                                pos,
+                                button: egui::PointerButton::Primary,
+                                pressed,
+                                modifiers: egui::Modifiers::default(),
+                            },
+                        ]);
+                    }
+                }
+                assert_eq!(
+                    state.game.local_player_identity.load().primary_id,
+                    "Steam|other|0"
+                );
+                assert_eq!(state.game.local_player_name.load().as_str(), "Other");
+                assert_eq!(state.game.local_team.load(Ordering::SeqCst), 1);
+                state.flush_config().unwrap();
+                let (saved, _) =
+                    crate::state::Config::load_from_path(state.paths.config_path.clone());
+                assert_eq!(
+                    saved.cached_local_player_identity.primary_id,
+                    "Steam|other|0"
+                );
+            });
+            tx.send(()).unwrap();
+        });
+        rx.recv_timeout(Duration::from_secs(10))
+            .expect("Setup account selection failed or blocked on the config mutex");
+    }
+
+    #[tokio::test]
+    async fn root_ui_keeps_overlay_transparent_and_click_through() {
+        let state = AppState::new();
+        state.flags.is_launched.store(true, Ordering::SeqCst);
+        state
+            .flags
+            .is_settings_visible
+            .store(false, Ordering::SeqCst);
+        state.update_config(|config| {
+            config.dashboard_enabled = false;
+            config.layout_mode = false;
+        });
+        let mut app = MainApp::new(state, None);
+        app.last_rl_check = std::time::Instant::now();
+        let ctx = egui::Context::default();
+        let mut frame = eframe::Frame::_new_kittest();
+        let output = crate::ui::review_renderer::run_ui(
+            &ctx,
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1280.0, 720.0),
+                )),
+                ..Default::default()
+            },
+            |ui| eframe::App::ui(&mut app, ui, &mut frame),
+        );
+        assert_eq!(
+            eframe::App::clear_color(&app, &egui::Visuals::dark()),
+            [0.0; 4]
+        );
+        let commands = &output.viewport_output[&egui::ViewportId::ROOT].commands;
+        assert!(
+            commands
+                .iter()
+                .any(|command| matches!(command, egui::ViewportCommand::MousePassthrough(true)))
+        );
+        assert!(commands.iter().any(|command| matches!(
+            command,
+            egui::ViewportCommand::WindowLevel(egui::WindowLevel::AlwaysOnTop)
+        )));
+    }
+
+    #[tokio::test]
+    async fn hidden_window_logic_still_logs_health_and_accepts_exit() {
+        let state = AppState::new();
+        state.flags.should_exit.store(true, Ordering::SeqCst);
+        let mut app = MainApp::new(state, None);
+        let ctx = egui::Context::default();
+        let mut frame = eframe::Frame::_new_kittest();
+        let output = ctx.run_logic(&egui::RawInput::default(), |ctx| {
+            eframe::App::logic(&mut app, ctx, &mut frame);
+        });
+        assert!(app.last_runtime_log.is_some());
+        assert!(
+            output.viewport_commands[&egui::ViewportId::ROOT]
+                .iter()
+                .any(|command| matches!(command, egui::ViewportCommand::Close))
+        );
+    }
+
     #[tokio::test]
     async fn settings_pages_fit_supported_sizes_and_keep_footer_visible() {
         let state = AppState::new();
@@ -220,7 +385,8 @@ mod tests {
                     super::super::fonts::install_fallbacks(&ctx);
                 }
                 let mut renderer = super::super::review_renderer::ReviewRenderer::default();
-                let warmup = ctx.run(
+                let warmup = crate::ui::review_renderer::run_ui(
+                    &ctx,
                     egui::RawInput {
                         screen_rect: Some(egui::Rect::from_min_size(
                             egui::Pos2::ZERO,
@@ -281,12 +447,14 @@ mod tests {
                                 .push(egui::Event::PointerMoved(egui::pos2(400.0, 350.0)));
                             input.events.push(egui::Event::MouseWheel {
                                 unit: egui::MouseWheelUnit::Point,
+                                phase: egui::TouchPhase::Move,
                                 delta: egui::vec2(0.0, -450.0),
                                 modifiers: egui::Modifiers::default(),
                             });
                         }
-                        let output = ctx.run(input, |ctx| {
-                            egui::CentralPanel::default().show(ctx, |ui| {
+                        let output = crate::ui::review_renderer::run_ui(&ctx, input, |root_ui| {
+                            let ctx = &root_ui.ctx().clone();
+                            egui::CentralPanel::default().show(root_ui, |ui| {
                                 app.render_settings_content(ui, ctx, false);
                                 assert!(
                                     ui.min_rect().right() <= size[0] + 1.0,
@@ -379,30 +547,41 @@ mod tests {
                 app.last_rl_check = std::time::Instant::now();
                 let mut settled_height = None;
                 for frame in 0..120 {
-                    let _ = ctx.run(egui::RawInput {
-                        screen_rect: Some(egui::Rect::from_min_size(
-                            egui::Pos2::ZERO, egui::vec2(2560.0, 1440.0))),
-                        ..Default::default()
-                    }, |ctx| {
-                        let window = egui::Window::new("RL Overlay Settings")
-                            .default_pos([16.0, 16.0])
-                            .default_size(size)
-                            .min_width(640.0)
-                            .min_height(520.0)
-                            .constrain_to(ctx.screen_rect().shrink(8.0))
-                            .show(ctx, |ui| app.render_settings_content(ui, ctx, true))
-                            .unwrap();
-                        let height = window.response.rect.height();
-                        if frame == 5 {
-                            settled_height = Some(height);
-                        }
-                        if frame > 5 {
-                            assert!(height <= settled_height.unwrap() + 1.0,
-                                "{tab:?} at {size:?} grew on frame {frame}: {height} vs {settled_height:?}");
-                        }
-                        assert!(height < size[1] + 100.0,
-                            "{tab:?} settings exceed intended height: {height}");
-                    });
+                    let _ = crate::ui::review_renderer::run_ui(
+                        &ctx,
+                        egui::RawInput {
+                            screen_rect: Some(egui::Rect::from_min_size(
+                                egui::Pos2::ZERO,
+                                egui::vec2(2560.0, 1440.0),
+                            )),
+                            ..Default::default()
+                        },
+                        |root_ui| {
+                            let ctx = &root_ui.ctx().clone();
+                            let window = egui::Window::new("RL Overlay Settings")
+                                .default_pos([16.0, 16.0])
+                                .default_size(size)
+                                .min_width(640.0)
+                                .min_height(520.0)
+                                .constrain_to(ctx.viewport_rect().shrink(8.0))
+                                .show(ctx, |ui| app.render_settings_content(ui, ctx, true))
+                                .unwrap();
+                            let height = window.response.rect.height();
+                            if frame == 5 {
+                                settled_height = Some(height);
+                            }
+                            if frame > 5 {
+                                assert!(
+                                    height <= settled_height.unwrap() + 1.0,
+                                    "{tab:?} at {size:?} grew on frame {frame}: {height} vs {settled_height:?}"
+                                );
+                            }
+                            assert!(
+                                height < size[1] + 100.0,
+                                "{tab:?} settings exceed intended height: {height}"
+                            );
+                        },
+                    );
                 }
             }
         }
@@ -501,9 +680,7 @@ impl eframe::App for MainApp {
         }
     }
 
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        ctx.set_zoom_factor(1.0);
-
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let now = std::time::Instant::now();
         if self
             .last_runtime_log
@@ -515,6 +692,14 @@ impl eframe::App for MainApp {
 
         if self.state.flags.should_exit.load(Ordering::SeqCst) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+    }
+
+    fn ui(&mut self, root_ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = &root_ui.ctx().clone();
+        ctx.set_zoom_factor(1.0);
+
+        if self.state.flags.should_exit.load(Ordering::SeqCst) {
             return;
         }
 
@@ -672,7 +857,7 @@ impl eframe::App for MainApp {
             // 1. Unified Background (Transparent)
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE.fill(egui::Color32::from_rgba_unmultiplied(0, 0, 0, 0)))
-                .show(ctx, |_ui| {
+                .show(root_ui, |_ui| {
                     if show_hud {
                         render_overlay(ctx, &self.state);
                     }
@@ -785,7 +970,7 @@ impl eframe::App for MainApp {
                             .default_size([760.0, 720.0])
                             .min_width(640.0)
                             .min_height(520.0)
-                            .constrain_to(ctx.screen_rect().shrink(8.0))
+                            .constrain_to(ctx.viewport_rect().shrink(8.0))
                             .open(&mut settings_open)
                             .show(ctx, |ui| {
                                 self.render_settings_content(ui, ctx, is_launched);
@@ -805,13 +990,13 @@ impl eframe::App for MainApp {
         } else {
             // Launcher Stopped: Render dashboard or settings directly filled
             // Custom Title Bar
-            egui::TopBottomPanel::top("custom_title_bar")
+            egui::Panel::top("custom_title_bar")
                 .frame(
                     egui::Frame::default()
                         .fill(egui::Color32::from_rgb(20, 20, 25))
                         .inner_margin(8.0),
                 )
-                .show(ctx, |ui| {
+                .show(root_ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.label(
                             egui::RichText::new("⚙  RL Platform Overlay")
@@ -940,13 +1125,13 @@ impl eframe::App for MainApp {
             if show_settings {
                 egui::CentralPanel::default()
                     .frame(egui::Frame::NONE.inner_margin(12.0))
-                    .show(ctx, |ui| {
+                    .show(root_ui, |ui| {
                         self.render_settings_content(ui, ctx, is_launched);
                     });
             } else {
                 egui::CentralPanel::default()
                     .frame(egui::Frame::NONE.inner_margin(20.0))
-                    .show(ctx, |ui| {
+                    .show(root_ui, |ui| {
                         ui.vertical_centered(|ui| {
                             ui.add_space(100.0);
                             ui.heading("RL Platform Overlay");
@@ -1207,6 +1392,7 @@ impl MainApp {
         let config = Arc::new(config_session.snapshot().clone());
         let config_edit = config_session.config_mut();
         let mut changed = false;
+        let mut account_selection = None;
         if !self.state.debug_enabled && self.settings_tab == SettingsTab::Debug {
             self.settings_tab = SettingsTab::Setup;
         }
@@ -1258,14 +1444,16 @@ impl MainApp {
             .auto_shrink([false, false])
             .max_height(content_height)
             .show(ui, |ui| match self.settings_tab {
-                SettingsTab::Setup => render_setup_settings_tab(
-                    ui,
-                    ctx,
-                    &self.state,
-                    config_edit,
-                    &mut changed,
-                    self.is_rl_running,
-                ),
+                SettingsTab::Setup => {
+                    account_selection = render_setup_settings_tab(
+                        ui,
+                        ctx,
+                        &self.state,
+                        config_edit,
+                        &mut changed,
+                        self.is_rl_running,
+                    );
+                }
                 SettingsTab::Overlay => match self.overlay_subtab {
                     OverlaySubtab::Lobby => render_overlay_settings_tab(
                         ui,
@@ -1424,6 +1612,12 @@ impl MainApp {
                     .player_summaries
                     .store(Arc::new(Default::default()));
             }
+        } else {
+            drop(config_session);
+        }
+        // Account selection updates persistent config; release the edit guard first.
+        if let Some(selection) = account_selection {
+            selection.apply(&self.state);
         }
     }
 

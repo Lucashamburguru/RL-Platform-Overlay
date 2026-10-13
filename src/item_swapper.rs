@@ -8,6 +8,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+// Cover the entire read/modify/write transaction, including game files and backups.
+static SWAP_FILE_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 const CATALOG_URL: &str =
     "https://raw.githubusercontent.com/ShinyEmii/Toga-Files/refs/heads/master/products.csv";
 // Older versions restore a bank as soon as one swap is removed. Shared ownership
@@ -545,6 +548,7 @@ fn apply_at(
     target_id: &str,
     sound: &SoundChoice,
 ) -> Result<String, String> {
+    let _guard = SWAP_FILE_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     if donor_id == target_id && *sound == SoundChoice::Original {
         return Err("Choose a different appearance or a replacement sound.".into());
     }
@@ -725,6 +729,7 @@ fn restore(install: &str, target_id: &str) -> Result<String, String> {
 }
 
 fn restore_at(cooked: &Path, conf: &Path, target_id: &str) -> Result<String, String> {
+    let _guard = SWAP_FILE_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     let mut manifest = load_manifest(conf)?;
     let index = manifest
         .active
@@ -1177,10 +1182,15 @@ fn refresh_active(state: &Arc<crate::state::AppState>, install: &str) {
     let Some(conf) = crate::state::config_dir() else {
         return;
     };
-    let Ok(mut manifest) = load_manifest(&conf) else {
+    let Ok(cooked) = cooked_dir(install) else {
         return;
     };
-    let Ok(cooked) = cooked_dir(install) else {
+    refresh_active_at(state, &conf, &cooked);
+}
+
+fn refresh_active_at(state: &Arc<crate::state::AppState>, conf: &Path, cooked: &Path) {
+    let _guard = SWAP_FILE_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let Ok(mut manifest) = load_manifest(conf) else {
         return;
     };
     let packages = state.item_swapper.snapshot.load().packages.clone();
@@ -1237,7 +1247,7 @@ fn refresh_active(state: &Arc<crate::state::AppState>, install: &str) {
             }
         }
     }
-    let _ = save_manifest(&conf, &manifest);
+    // Health is a view of current files, not a persistent manifest mutation.
     publish(state, |s| s.active = manifest.active);
 }
 
@@ -1517,6 +1527,85 @@ fn hash_file(path: &Path) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn health_inspection_is_read_only_while_apply_and_restore_run() {
+        use base64::Engine;
+        let root = tempfile::tempdir().unwrap();
+        let cooked = root.path().join("cooked");
+        let conf = root.path().join("conf");
+        fs::create_dir_all(&cooked).unwrap();
+        let key = [7; 32];
+        let packages: Vec<_> = ["Wheel_Source", "Wheel_Target"]
+            .into_iter()
+            .map(|id| {
+                let bytes = crate::upk_swap::tests::fixture_with_names(id, &key, 1, 32, &[]);
+                fs::write(package_path(&cooked, id), bytes).unwrap();
+                CatalogPackage {
+                    package: id.into(),
+                    labels: vec![],
+                    slot: ItemSlot::Wheels,
+                    key: base64::engine::general_purpose::STANDARD.encode(key),
+                    unavailable: None,
+                }
+            })
+            .collect();
+        let original = fs::read(package_path(&cooked, "Wheel_Target")).unwrap();
+        let state = crate::state::AppState::new();
+        publish(&state, |snapshot| snapshot.packages = packages.clone());
+
+        apply_at(
+            &cooked,
+            &conf,
+            &packages,
+            "Wheel_Source",
+            "Wheel_Target",
+            &SoundChoice::Original,
+        )
+        .unwrap();
+        let applied = fs::read(package_path(&cooked, "Wheel_Target")).unwrap();
+        let manifest_before = fs::read(manifest_path(&conf)).unwrap();
+        fs::write(package_path(&cooked, "Wheel_Target"), &original).unwrap();
+        refresh_active_at(&state, &conf, &cooked);
+        assert_eq!(
+            state.item_swapper.snapshot.load().active[0].health,
+            SwapHealth::NeedsReapply
+        );
+        assert_eq!(fs::read(manifest_path(&conf)).unwrap(), manifest_before);
+        fs::write(package_path(&cooked, "Wheel_Target"), applied).unwrap();
+        restore_at(&cooked, &conf, "Wheel_Target").unwrap();
+
+        let barrier = std::sync::Barrier::new(2);
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                barrier.wait();
+                for _ in 0..100 {
+                    refresh_active_at(&state, &conf, &cooked);
+                }
+            });
+            barrier.wait();
+            for _ in 0..20 {
+                apply_at(
+                    &cooked,
+                    &conf,
+                    &packages,
+                    "Wheel_Source",
+                    "Wheel_Target",
+                    &SoundChoice::Original,
+                )
+                .unwrap();
+                assert_eq!(load_manifest(&conf).unwrap().active.len(), 1);
+                restore_at(&cooked, &conf, "Wheel_Target").unwrap();
+                assert!(load_manifest(&conf).unwrap().active.is_empty());
+            }
+        });
+        refresh_active_at(&state, &conf, &cooked);
+        assert!(state.item_swapper.snapshot.load().active.is_empty());
+        assert_eq!(
+            fs::read(package_path(&cooked, "Wheel_Target")).unwrap(),
+            original
+        );
+    }
 
     #[test]
     fn shared_sound_reapply_uses_updated_source_and_preserves_restore() {

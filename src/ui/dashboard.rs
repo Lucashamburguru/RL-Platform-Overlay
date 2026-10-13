@@ -94,7 +94,8 @@ pub(crate) fn render_dashboard_viewport(
     ctx.show_viewport_deferred(
         egui::ViewportId::from_hash_of(DASHBOARD_VIEWPORT_ID_SOURCE),
         viewport,
-        move |ctx, _class| {
+        move |root_ui, _class| {
+            let ctx = &root_ui.ctx().clone();
             if ctx.input(|input| input.viewport().close_requested()) {
                 state.update_config(|config| config.dashboard_enabled = false);
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
@@ -119,7 +120,7 @@ pub(crate) fn render_dashboard_viewport(
                         .fill(egui::Color32::from_rgb(10, 12, 16))
                         .inner_margin(egui::Margin::same(18)),
                 )
-                .show(ctx, |ui| {
+                .show(root_ui, |ui| {
                     render_dashboard(ui, &state, config.as_ref());
                 });
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
@@ -2284,7 +2285,7 @@ mod tests {
                     ..Default::default()
                 };
                 let ctx = egui::Context::default();
-                ctx.style_mut(|style| style.animation_time = 0.0);
+                ctx.global_style_mut(|style| style.animation_time = 0.0);
                 egui_extras::install_image_loaders(&ctx);
                 let mut position = None;
                 for frame in 0..8 {
@@ -2304,9 +2305,9 @@ mod tests {
                             modifiers: egui::Modifiers::default(),
                         });
                     }
-                    let output = ctx.run(input, |ctx| {
+                    let output = crate::ui::review_renderer::run_ui(&ctx, input, |root_ui| {
                         egui::CentralPanel::default()
-                            .show(ctx, |ui| render_dashboard(ui, &state, &config));
+                            .show(root_ui, |ui| render_dashboard(ui, &state, &config));
                     });
                     if frame == 1 {
                         position = output.shapes.iter().find_map(|shape| {
@@ -2347,7 +2348,7 @@ mod tests {
     #[test]
     fn clicking_player_name_keeps_account_selection_across_row_updates() {
         let ctx = egui::Context::default();
-        ctx.style_mut(|style| style.animation_time = 0.0);
+        ctx.global_style_mut(|style| style.animation_time = 0.0);
         egui_extras::install_image_loaders(&ctx);
         let config = Config::default();
         let mut first = player("Same name", 0, 150, false);
@@ -2448,8 +2449,9 @@ mod tests {
                     modifiers: egui::Modifiers::default(),
                 });
             }
-            let output = ctx.run(input, |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
+            let output = crate::ui::review_renderer::run_ui(&ctx, input, |root_ui| {
+                let ctx = &root_ui.ctx().clone();
+                egui::CentralPanel::default().show(root_ui, |ui| {
                     for row in &rows {
                         render_player_name(ui, row, 420.0);
                         render_player_details(ui, row);

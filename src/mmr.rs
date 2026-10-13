@@ -92,15 +92,22 @@ static TRACKER_CLIENT: LazyLock<Result<wreq::Client, String>> =
     LazyLock::new(|| build_tracker_client().map_err(|error| error.to_string()));
 
 fn build_tracker_client() -> Result<wreq::Client, wreq::Error> {
+    let mut emulation = wreq::IntoEmulation::into_emulation(
+        wreq_util::Emulation::builder()
+            .profile(wreq_util::Profile::Chrome137)
+            .platform(wreq_util::Platform::Windows)
+            .build(),
+    );
+    // Tracker requests are cross-site JSON fetches, not top-level navigation.
+    // wreq-util 0.2 adds these navigation-only defaults; retaining them with
+    // Sec-Fetch-Mode: cors caused Tracker to reject the request with HTTP 403.
+    emulation.headers.remove("upgrade-insecure-requests");
+    emulation.headers.remove("sec-fetch-user");
+
     wreq::Client::builder()
         .timeout(Duration::from_secs(15))
         .redirect(wreq::redirect::Policy::none())
-        .emulation(
-            wreq_util::EmulationOption::builder()
-                .emulation(wreq_util::Emulation::Chrome137)
-                .emulation_os(wreq_util::EmulationOS::Windows)
-                .build(),
-        )
+        .emulation(emulation)
         .build()
 }
 
@@ -556,7 +563,10 @@ async fn fetch_with_fallback(
             }
         }
     }
-    fallback.fetch(client, xuid_cache, player).await
+    fallback
+        .fetch(client, xuid_cache, player)
+        .await
+        .inspect_err(|error| log::warn!("{} fallback failed: {error}", fallback.name()))
 }
 
 #[derive(Deserialize)]
@@ -1218,6 +1228,66 @@ mod tests {
     use super::*;
     use crate::state::{LocalPlayerIdentity, PlayerInfo, PlayerKey, PlayerMap};
 
+    #[tokio::test]
+    async fn tracker_client_preserves_windows_profile_and_decodes_gzip() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}/profile", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            while !request.windows(4).any(|part| part == b"\r\n\r\n") {
+                let mut buffer = [0; 4096];
+                let count = socket.read(&mut buffer).await.unwrap();
+                assert!(count > 0);
+                request.extend_from_slice(&buffer[..count]);
+            }
+            let headers = String::from_utf8(request).unwrap().to_ascii_lowercase();
+            assert!(headers.contains("windows nt 10.0"));
+            assert!(headers.contains("chrome/137."));
+            assert!(headers.contains("sec-ch-ua-platform: \"windows\""));
+            assert!(!headers.contains("\r\nupgrade-insecure-requests:"));
+            assert!(!headers.contains("\r\nsec-fetch-user:"));
+            assert!(headers.contains("\r\nsec-fetch-mode: cors\r\n"));
+            assert!(headers.contains("\r\nsec-fetch-dest: empty\r\n"));
+            assert!(headers.contains("\r\naccept: application/json, text/plain, */*\r\n"));
+            let encoding = headers
+                .lines()
+                .find_map(|line| line.strip_prefix("accept-encoding:"))
+                .expect("browser profile must advertise response decompression");
+            for supported in ["gzip", "deflate", "br", "zstd"] {
+                assert!(encoding.split(',').any(|value| value.trim() == supported));
+            }
+            // Fixed gzip fixture containing {"ok":true}.
+            let body = [
+                31, 139, 8, 0, 0, 0, 0, 0, 2, 255, 171, 86, 202, 207, 86, 178, 42, 41, 42, 77, 173,
+                5, 0, 144, 95, 212, 167, 11, 0, 0, 0,
+            ];
+            socket
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Encoding: gzip\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
+            socket.write_all(&body).await.unwrap();
+        });
+        let client = build_tracker_client().unwrap();
+        let response = tokio::time::timeout(
+            Duration::from_secs(5),
+            send_tracker_request(&client, &endpoint),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(response.text().await.unwrap(), r#"{"ok":true}"#);
+        server.await.unwrap();
+    }
+
     #[test]
     fn tracker_profile_links_use_platform_identity_and_encode_names() {
         let steam = PlayerInfo {
@@ -1658,7 +1728,7 @@ mod tests {
         };
         println!("Fetching MMR from the default provider...");
         let client = wreq::Client::builder()
-            .emulation(wreq_util::Emulation::Chrome128)
+            .emulation(wreq_util::Profile::Chrome128)
             .build()
             .unwrap();
         let snapshot = fetch_mmr_snapshot(&client, None, &player)
@@ -1987,7 +2057,7 @@ mod tests {
     #[ignore = "hits live geysermc endpoint"]
     async fn test_resolve_xuid_to_gamertag() {
         let client = wreq::Client::builder()
-            .emulation(wreq_util::Emulation::Chrome128)
+            .emulation(wreq_util::Profile::Chrome128)
             .build()
             .unwrap();
         let res = resolve_xuid_to_gamertag(&client, None, "2535432196048835").await;

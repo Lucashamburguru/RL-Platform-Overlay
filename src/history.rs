@@ -1182,6 +1182,36 @@ mod tests {
     }
 
     #[test]
+    fn history_records_final_event_score_instead_of_previous_tie() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let mut session = SessionState::default();
+        session.handle_update_state(
+            &serde_json::json!({
+                "MatchGuid": "overtime-final", "Game": {"bReplay": false,
+                    "Teams": [{"TeamNum": 0, "Score": 2}, {"TeamNum": 1, "Score": 2}]}
+            }),
+            Some(0),
+            SessionMode::Twos,
+        );
+        session.handle_match_ended(
+            &serde_json::json!({
+                "MatchGuid": "overtime-final", "Game": {
+                    "Teams": [{"TeamNum": 0, "Score": 3}, {"TeamNum": 1, "Score": 2}]}
+            }),
+            Some(0),
+        );
+        assert!(
+            insert_completed_match_on_conn(&mut conn, &session, std::iter::empty(), 1000).unwrap()
+        );
+        let saved: (String, u32, u32) = conn.query_row(
+            "SELECT result, blue_score, orange_score FROM matches WHERE match_guid = 'overtime-final'",
+            [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        ).unwrap();
+        assert_eq!(saved, ("win".into(), 3, 2));
+    }
+
+    #[test]
     fn totals_count_results_once_per_match() {
         let mut conn = Connection::open_in_memory().unwrap();
         init_schema(&conn).unwrap();

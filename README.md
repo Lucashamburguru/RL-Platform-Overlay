@@ -68,6 +68,8 @@ Set `PacketSendRate` to a value greater than `0`, for example `30.0`.
 ### Replays
 
 - **Ballchasing:** Upload, download, and organize replays through ballchasing.com.
+  Automatic uploads check uncached files modified in the last 15 minutes at
+  startup and after matches. Use bulk upload to send older replays.
 - **Hoops replay repair:** Repair supported legacy Hoops replays. The app makes
   a backup before it changes the replay.
 

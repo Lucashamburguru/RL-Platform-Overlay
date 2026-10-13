@@ -3,6 +3,32 @@
 use eframe::egui;
 use std::collections::HashMap;
 
+/// Headless frames have no native renderer to consume texture updates. Keep
+/// them available for software rendering, then explicitly discard them on drop.
+pub(super) struct ReviewFrame(egui::FullOutput);
+
+impl std::ops::Deref for ReviewFrame {
+    type Target = egui::FullOutput;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl Drop for ReviewFrame {
+    fn drop(&mut self) {
+        self.0.textures_delta.clear();
+    }
+}
+
+pub(super) fn run_ui(
+    ctx: &egui::Context,
+    input: egui::RawInput,
+    ui: impl FnMut(&mut egui::Ui),
+) -> ReviewFrame {
+    ReviewFrame(ctx.run_ui(input, ui))
+}
+
 #[derive(Default)]
 pub(super) struct ReviewRenderer {
     textures: HashMap<egui::TextureId, egui::ColorImage>,
@@ -16,27 +42,25 @@ impl ReviewRenderer {
         size: [f32; 2],
         path: Option<&std::path::Path>,
     ) {
-        for (id, delta) in &output.textures_delta.set {
-            let image = match &delta.image {
-                egui::ImageData::Color(image) => (**image).clone(),
-                egui::ImageData::Font(image) => egui::ColorImage {
-                    size: image.size,
-                    pixels: image.srgba_pixels(None).collect(),
-                },
-            };
-            if let Some([x, y]) = delta.pos {
-                let target = self
-                    .textures
-                    .get_mut(id)
-                    .expect("partial texture requires original");
-                for row in 0..image.height() {
-                    let start = (y + row) * target.width() + x;
-                    target.pixels[start..start + image.width()].copy_from_slice(
-                        &image.pixels[row * image.width()..(row + 1) * image.width()],
-                    );
+        for (id, deltas) in &output.textures_delta.set {
+            for delta in deltas {
+                let image = match &delta.image {
+                    egui::ImageData::Color(image) => (**image).clone(),
+                };
+                if let Some([x, y]) = delta.pos {
+                    let target = self
+                        .textures
+                        .get_mut(id)
+                        .expect("partial texture requires original");
+                    for row in 0..image.height() {
+                        let start = (y + row) * target.width() + x;
+                        target.pixels[start..start + image.width()].copy_from_slice(
+                            &image.pixels[row * image.width()..(row + 1) * image.width()],
+                        );
+                    }
+                } else {
+                    self.textures.insert(*id, image);
                 }
-            } else {
-                self.textures.insert(*id, image);
             }
         }
         if let Some(path) = path {

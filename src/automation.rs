@@ -1,9 +1,15 @@
+pub(crate) const AUTO_INPUT_SUPPORTED: bool = cfg!(target_os = "windows");
+
 pub async fn simulate_sequence(
     sequence: &str,
     action: &str,
     default_delay_ms: u64,
     system: &mut sysinfo::System,
 ) {
+    if !AUTO_INPUT_SUPPORTED {
+        log::info!("{action} skipped: automatic input is unavailable on this platform.");
+        return;
+    }
     let steps = parse_sequence(sequence, default_delay_ms);
     if steps.is_empty() {
         log::error!("{action} skipped: no valid steps in sequence '{sequence}'.");
@@ -187,7 +193,7 @@ fn rocket_league_accepts_auto_input(system: &mut sysinfo::System) -> bool {
     #[cfg(not(target_os = "windows"))]
     {
         let _ = system;
-        true
+        false
     }
 }
 
@@ -220,6 +226,14 @@ fn is_rocket_league_foreground_window(system: &mut sysinfo::System) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn unsupported_platform_rejects_automatic_input() {
+        assert!(!rocket_league_accepts_auto_input(
+            &mut sysinfo::System::new()
+        ));
+    }
 
     #[test]
     fn test_parse_sequence_delays() {

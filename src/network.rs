@@ -104,9 +104,7 @@ fn handle_event(state: &Arc<AppState>, json: &Value) {
             state.flags.is_watching_replay.store(true, Ordering::SeqCst);
             state.game.session.rcu(|session| {
                 let mut s = (**session).clone();
-                s.is_watching_replay = true;
-                s.replay_file_confirmed = true;
-                s.is_goal_replay = false;
+                s.confirm_replay_playback();
                 Arc::new(s)
             });
         }
@@ -150,7 +148,7 @@ fn handle_event(state: &Arc<AppState>, json: &Value) {
                 let config = state_clone.system.config.load();
                 let mut system = sysinfo::System::new();
 
-                if config.auto_gg {
+                if config.auto_gg && crate::automation::AUTO_INPUT_SUPPORTED {
                     tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
                     log::info!("Auto-GG: sending configured key sequence...");
                     crate::automation::simulate_sequence(
@@ -162,7 +160,7 @@ fn handle_event(state: &Arc<AppState>, json: &Value) {
                     .await;
                 }
 
-                if config.auto_freeplay {
+                if config.auto_freeplay && crate::automation::AUTO_INPUT_SUPPORTED {
                     tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
                     log::info!("Auto-Freeplay: Navigating to Free Play...");
                     crate::automation::simulate_sequence(

@@ -303,9 +303,10 @@ async fn capture_readme_pages() {
                     modifiers: egui::Modifiers::default(),
                 });
             }
-            let output = ctx.run(input, |ctx| {
+            let output = crate::ui::review_renderer::run_ui(&ctx, input, |root_ui| {
+                let ctx = &root_ui.ctx().clone();
                 egui::CentralPanel::default()
-                    .show(ctx, |ui| app.render_settings_content(ui, ctx, false));
+                    .show(root_ui, |ui| app.render_settings_content(ui, ctx, false));
             });
             if frame == 2
                 && let Some(label) = click

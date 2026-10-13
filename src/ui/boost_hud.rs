@@ -107,7 +107,7 @@ pub(super) fn render_teammate_boost(ctx: &egui::Context, state: &Arc<AppState>) 
 
     teammates.sort_by(|a, b| a.boost.cmp(&b.boost).then_with(|| a.name.cmp(&b.name)));
 
-    let screen_rect = ctx.input(|i| i.screen_rect());
+    let screen_rect = ctx.input(|i| i.viewport_rect());
     let width = teammate_boost_width(config.teammate_hud_scale, config.teammate_boost_display);
     let height = teammate_boost_panel_height(
         teammates.len(),
@@ -159,7 +159,7 @@ pub(super) fn render_teammate_boost_position_preview(
 ) {
     let config = state.system.config.load();
     let teammates = preview_teammates(state);
-    let screen_rect = ctx.input(|i| i.screen_rect());
+    let screen_rect = ctx.input(|i| i.viewport_rect());
     let scale = config.teammate_hud_scale;
     let width = teammate_boost_width(scale, config.teammate_boost_display);
     let height = teammate_boost_panel_height(teammates.len(), scale, config.teammate_boost_display);

@@ -105,8 +105,8 @@ fn fallback_monitors(ctx: &egui::Context) -> Vec<MonitorInfo> {
             .monitor_size
             .map(|size| [size.x, size.y])
             .or_else(|| {
-                input.screen_rect().is_positive().then(|| {
-                    let rect = input.screen_rect();
+                input.viewport_rect().is_positive().then(|| {
+                    let rect = input.viewport_rect();
                     [rect.width(), rect.height()]
                 })
             })

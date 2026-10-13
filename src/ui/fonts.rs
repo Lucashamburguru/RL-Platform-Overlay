@@ -81,8 +81,8 @@ mod tests {
         assert!(fonts.font_data.contains_key("system_fallback_1"));
         let ctx = eframe::egui::Context::default();
         ctx.set_fonts(fonts);
-        let output = ctx.run(Default::default(), |ctx| {
-            eframe::egui::CentralPanel::default().show(ctx, |ui| {
+        let output = crate::ui::review_renderer::run_ui(&ctx, Default::default(), |root_ui| {
+            eframe::egui::CentralPanel::default().show(root_ui, |ui| {
                 ui.label("Overlay starts with a corrupt installed font");
             });
         });

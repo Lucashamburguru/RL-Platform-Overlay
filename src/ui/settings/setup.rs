@@ -8,6 +8,23 @@ use eframe::egui;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
+pub(crate) struct AccountSelection {
+    identity: crate::state::LocalPlayerIdentity,
+    team: u8,
+}
+
+impl AccountSelection {
+    pub(crate) fn apply(self, state: &Arc<AppState>) {
+        let name = self.identity.name.clone();
+        let refresh = state.update_local_player_identity(self.identity);
+        state.game.local_player_name.store(Arc::new(name));
+        state.game.local_team.store(self.team, Ordering::SeqCst);
+        if refresh {
+            crate::mmr::start_local_mmr_refresh(state.clone());
+        }
+    }
+}
+
 pub(crate) fn render_setup_settings_tab(
     ui: &mut egui::Ui,
     ctx: &egui::Context,
@@ -15,7 +32,8 @@ pub(crate) fn render_setup_settings_tab(
     config_edit: &mut Config,
     changed: &mut bool,
     is_rl_running: bool,
-) {
+) -> Option<AccountSelection> {
+    let mut account_selection = None;
     render_setup_readiness(ui, state, is_rl_running);
     ui.add_space(8.0);
     ui.collapsing("Your account", |ui| {
@@ -53,17 +71,10 @@ pub(crate) fn render_setup_settings_tab(
                             .on_hover_text(&player.primary_id)
                             .clicked()
                         {
-                            let refresh = state.update_local_player_identity(candidate.clone());
-                            config_edit.cached_local_player_identity = candidate;
-                            *changed = true;
-                            state
-                                .game
-                                .local_player_name
-                                .store(Arc::new(player.name.clone()));
-                            state.game.local_team.store(player.team, Ordering::SeqCst);
-                            if refresh {
-                                crate::mmr::start_local_mmr_refresh(state.clone());
-                            }
+                            account_selection = Some(AccountSelection {
+                                identity: candidate,
+                                team: player.team,
+                            });
                         }
                     }
                 });
@@ -287,6 +298,7 @@ pub(crate) fn render_setup_settings_tab(
 
     ui.add_space(10.0);
     render_hotkey_settings_section(ui, ctx, state, config_edit, changed);
+    account_selection
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

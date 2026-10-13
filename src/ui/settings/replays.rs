@@ -83,6 +83,9 @@ pub(crate) fn render_replays_settings_tab(
             {
                 *changed = true;
             }
+            ui.label(helper_text(
+                "Auto-upload checks replays modified in the last 15 minutes. Use bulk upload for older files.",
+            ));
 
             ui.add_space(6.0);
 

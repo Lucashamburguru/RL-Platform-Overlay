@@ -1,6 +1,6 @@
 [package]
 name = "rl-platform-overlay"
-version = "0.1.58"
+version = "0.1.59"
 edition = "2024"
 
 [features]
@@ -9,9 +9,9 @@ microsoft-store = []
 
 [dependencies]
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
-eframe = "0.31.0"
-egui = "0.31.0"
-egui_extras = { version = "0.31.0", features = ["image"] }
+eframe = { version = "0.36.2", features = ["glow"] }
+egui = "0.36.2"
+egui_extras = { version = "0.36.2", features = ["image"] }
 image = { version = "0.25", features = ["png"] }
 tokio = { version = "1.44.2", features = ["rt-multi-thread", "net", "time", "io-util", "sync", "macros", "fs"] }
 tokio-tungstenite = "0.26.0"
@@ -26,8 +26,8 @@ boxcars = "0.11.5"
 futures-util = "0.3"
 toml = "0.8"
 raw-window-handle = "0.6"
-wreq = { version = "5.3", features = ["multipart"] }
-wreq-util = "2.2"
+wreq = { version = "0.16.1", features = ["multipart", "system-proxy", "charset", "gzip", "brotli", "deflate", "zstd"] }
+wreq-util = { version = "0.2.0", features = ["emulation-compression"] }
 urlencoding = "2.1.3"
 url = "2.5"
 sysinfo = "0.36.1"

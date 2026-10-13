@@ -198,10 +198,15 @@ pub(crate) fn render_overlay_settings_tab(
 
                 #[cfg(not(feature = "microsoft-store"))]
                 right.heading("Automation");
+                #[cfg(all(not(feature = "microsoft-store"), not(target_os = "windows")))]
+                right.weak("Auto chat and Free Play are available on Windows only.");
                 #[cfg(not(feature = "microsoft-store"))]
                 setting_row(right, "Auto Chat", |ui| {
                     if ui
-                        .checkbox(&mut config_edit.auto_gg, "Auto 'GG' at Match End")
+                        .add_enabled(
+                            crate::automation::AUTO_INPUT_SUPPORTED,
+                            egui::Checkbox::new(&mut config_edit.auto_gg, "Auto 'GG' at Match End"),
+                        )
                         .changed()
                     {
                         *changed = true;
@@ -228,9 +233,12 @@ pub(crate) fn render_overlay_settings_tab(
                 #[cfg(not(feature = "microsoft-store"))]
                 setting_row(right, "Auto Play", |ui| {
                     if ui
-                        .checkbox(
-                            &mut config_edit.auto_freeplay,
-                            "Auto Free Play at Match End",
+                        .add_enabled(
+                            crate::automation::AUTO_INPUT_SUPPORTED,
+                            egui::Checkbox::new(
+                                &mut config_edit.auto_freeplay,
+                                "Auto Free Play at Match End",
+                            ),
                         )
                         .changed()
                     {

@@ -210,7 +210,8 @@ pub(super) fn assert_page_layout(name: &str, mut render: impl FnMut(&mut egui::U
                 ctx.set_zoom_factor(zoom);
                 let mut renderer = crate::ui::review_renderer::ReviewRenderer::default();
                 for frame in 0..3 {
-                    let output = ctx.run(
+                    let output = crate::ui::review_renderer::run_ui(
+                        &ctx,
                         egui::RawInput {
                             screen_rect: Some(egui::Rect::from_min_size(
                                 egui::Pos2::ZERO,
@@ -218,11 +219,11 @@ pub(super) fn assert_page_layout(name: &str, mut render: impl FnMut(&mut egui::U
                             )),
                             ..Default::default()
                         },
-                        |ctx| {
-                            egui::TopBottomPanel::bottom("footer").show(ctx, |ui| {
+                        |root_ui| {
+                            egui::Panel::bottom("footer").show(root_ui, |ui| {
                                 ui.label("Launch Overlay    Arrange HUD    Quit");
                             });
-                            egui::CentralPanel::default().show(ctx, |ui| {
+                            egui::CentralPanel::default().show(root_ui, |ui| {
                                 crate::ui::common::settings_style(ui);
                                 let bounds = ui.max_rect();
                                 let page = egui::ScrollArea::vertical()
@@ -287,7 +288,8 @@ mod tests {
             } else {
                 vec!["b".to_owned(), "c".to_owned(), "a".to_owned()]
             };
-            let _ = ctx.run(
+            let _ = crate::ui::review_renderer::run_ui(
+                &ctx,
                 egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(
                         egui::Pos2::ZERO,
@@ -295,8 +297,8 @@ mod tests {
                     )),
                     ..Default::default()
                 },
-                |ctx| {
-                    egui::CentralPanel::default().show(ctx, |ui| {
+                |root_ui| {
+                    egui::CentralPanel::default().show(root_ui, |ui| {
                         if frame == 0 {
                             let id = ui.make_persistent_id("stable").with("selected");
                             ui.data_mut(|d| d.insert_temp(id, "a".to_owned()));
@@ -353,8 +355,8 @@ mod tests {
                     modifiers: egui::Modifiers::NONE,
                 });
             }
-            let _ = ctx.run(input, |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
+            let _ = crate::ui::review_renderer::run_ui(&ctx, input, |root_ui| {
+                egui::CentralPanel::default().show(root_ui, |ui| {
                     show(
                         ui,
                         "test_table",

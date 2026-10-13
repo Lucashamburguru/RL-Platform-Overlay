@@ -66,7 +66,7 @@ pub(super) fn render_drag_position_handle(
 }
 
 pub(super) fn normalized_to_pos(ctx: &egui::Context, position: [f32; 2]) -> egui::Pos2 {
-    let rect = ctx.input(|i| i.screen_rect());
+    let rect = ctx.input(|i| i.viewport_rect());
     egui::pos2(
         rect.left() + rect.width() * position[0].clamp(0.0, 1.0),
         rect.top() + rect.height() * position[1].clamp(0.0, 1.0),
@@ -74,7 +74,7 @@ pub(super) fn normalized_to_pos(ctx: &egui::Context, position: [f32; 2]) -> egui
 }
 
 fn pos_to_normalized(ctx: &egui::Context, pos: egui::Pos2) -> [f32; 2] {
-    let rect = ctx.input(|i| i.screen_rect());
+    let rect = ctx.input(|i| i.viewport_rect());
     [
         ((pos.x - rect.left()) / rect.width().max(1.0)).clamp(0.0, 1.0),
         ((pos.y - rect.top()) / rect.height().max(1.0)).clamp(0.0, 1.0),

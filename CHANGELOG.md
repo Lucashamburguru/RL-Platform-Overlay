@@ -8,6 +8,25 @@ This file describes changes to the app.
 
 ---
 
+## [0.1.59] - 2026-10-12
+
+### Changed
+
+- **Replay Uploads**: Automatic uploads only check replays modified in the last 15 minutes. Older replays remain available through bulk upload.
+- **Networking**: Updated the HTTP client used for rank lookups, downloads, and replay uploads to its current stable release.
+- **Interface**: Updated the overlay and dashboard GUI framework and resolved the XML dependency advisories covered by temporary audit exceptions.
+
+### Fixed
+
+- **Account Selection**: Selecting a different account in Setup no longer freezes the app.
+- **Item Swapper**: Catalog refreshes cannot overwrite swap records or remove access to Restore.
+- **Automation**: Automatic chat and Free Play are disabled outside Windows, where foreground detection is unavailable.
+- **Replay Detection**: Reconnecting from replay playback into a new live match no longer leaves live stats and results suppressed.
+- **Match History**: Final-event scores are saved before recording match results.
+- **Tracker Lookups**: Keep API requests free of page-navigation headers introduced by the HTTP client upgrade, which caused Tracker to reject requests.
+
+---
+
 ## [0.1.58] - 2026-10-06
 
 ### Added

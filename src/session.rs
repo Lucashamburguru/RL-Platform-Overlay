@@ -420,12 +420,31 @@ pub struct SessionState {
     pub is_watching_replay: bool,
     pub is_goal_replay: bool,
     pub(crate) replay_file_confirmed: bool,
+    // None means a playback-start event is waiting for its first match frame.
+    replay_match_id: Option<String>,
     result_recorded_for_match: bool,
     last_recorded_match_id: String,
     last_recorded_result: Option<ResultSignature>,
 }
 
 impl SessionState {
+    pub(crate) fn confirm_replay_playback(&mut self) {
+        self.is_watching_replay = true;
+        self.replay_file_confirmed = true;
+        self.replay_match_id = None;
+        self.is_goal_replay = false;
+    }
+
+    pub(crate) fn handle_transport_disconnect(&mut self) {
+        // A confirmation with no match frame belongs only to this connection.
+        // Keep a bound confirmation so reconnecting to the same replay remains safe.
+        if self.replay_match_id.is_none() {
+            self.replay_file_confirmed = false;
+            self.is_watching_replay = false;
+        }
+        self.is_goal_replay = false;
+    }
+
     pub fn would_change(
         &self,
         real_data: &Value,
@@ -547,11 +566,19 @@ impl SessionState {
 
             // A reset event may have been missed while disconnected. Clear all
             // per-match state, preserving session totals and result deduplication.
-            let replay_file_confirmed = self.replay_file_confirmed;
+            let replay_file_confirmed = self.replay_file_confirmed
+                && self
+                    .replay_match_id
+                    .as_deref()
+                    .is_none_or(|replay_match_id| replay_match_id == match_guid);
             self.handle_reset_event();
             self.replay_file_confirmed = replay_file_confirmed;
             self.active_match_id = match_guid.to_string();
             self.last_result = MatchResult::Unknown;
+        }
+
+        if self.replay_file_confirmed && !self.active_match_id.is_empty() {
+            self.replay_match_id = Some(self.active_match_id.clone());
         }
 
         let more_authoritative = mode_source == SessionModeSource::PlaylistId
@@ -598,6 +625,8 @@ impl SessionState {
             let b_replay = bool_field(game, &["bReplay", "b_replay", "replay"]);
             if game.get("Frame").is_some() || game.get("Elapsed").is_some() {
                 self.replay_file_confirmed = true;
+                self.replay_match_id =
+                    (!self.active_match_id.is_empty()).then(|| self.active_match_id.clone());
             }
             if self.replay_file_confirmed {
                 self.is_watching_replay = true;
@@ -717,6 +746,18 @@ impl SessionState {
             self.local_team = Some(team);
         }
 
+        let game = real_data
+            .get("Game")
+            .or_else(|| real_data.get("game"))
+            .unwrap_or(&real_data);
+        let (blue_score, orange_score) = payload_team_scores(game);
+        if let Some(score) = blue_score {
+            self.blue_score = score;
+        }
+        if let Some(score) = orange_score {
+            self.orange_score = score;
+        }
+
         let Some(local_team) = self.local_team.and_then(standard_team) else {
             self.last_result = MatchResult::Unknown;
             return;
@@ -754,19 +795,6 @@ impl SessionState {
         }
 
         if result == MatchResult::Unknown {
-            let (blue, orange) =
-                if let Some(game) = real_data.get("Game").or_else(|| real_data.get("game")) {
-                    team_scores(game)
-                } else {
-                    team_scores(&real_data)
-                };
-            if blue > 0 || orange > 0 {
-                result =
-                    result_from_score(blue, orange, local_team).unwrap_or(MatchResult::Unknown);
-            }
-        }
-
-        if result == MatchResult::Unknown {
             result = result_from_score(self.blue_score, self.orange_score, local_team)
                 .unwrap_or(MatchResult::Unknown);
         }
@@ -790,6 +818,7 @@ impl SessionState {
         self.is_watching_replay = false;
         self.is_goal_replay = false;
         self.replay_file_confirmed = false;
+        self.replay_match_id = None;
     }
 
     pub fn team_name(&self, team: u8) -> &str {
@@ -1541,6 +1570,38 @@ mod tests {
         assert_eq!(session.matches_played, 1);
         assert_eq!(session.last_result, MatchResult::Loss);
         assert_eq!(session.mode_records[&SessionMode::Hoops].losses, 1);
+    }
+
+    #[test]
+    fn match_ended_scores_preserve_missing_and_invalid_team_values() {
+        for data in [
+            json!({"Teams": [{"TeamNum": 0, "Score": 0}, {"TeamNum": 1, "Score": -1}]}),
+            json!({"game": {"teams": [{"teamNum": 0, "score": 0}]}}),
+        ] {
+            let mut session = SessionState::default();
+            session.active_match_id = "partial-final".into();
+            session.local_team = Some(0);
+            session.blue_score = 2;
+            session.orange_score = 3;
+            session.handle_match_ended(&data, None);
+            assert_eq!((session.blue_score, session.orange_score), (0, 3));
+            assert_eq!(session.last_result, MatchResult::Loss);
+        }
+    }
+
+    #[test]
+    fn match_ended_explicit_winner_keeps_final_scores_on_forfeit() {
+        let mut session = SessionState::default();
+        session.local_team = Some(0);
+        session.handle_match_ended(
+            &json!({
+                "MatchGuid": "forfeit", "WinnerTeamNum": 0,
+                "Game": {"Teams": [{"TeamNum": 0, "Score": 1}, {"TeamNum": 1, "Score": 3}]}
+            }),
+            None,
+        );
+        assert_eq!(session.last_result, MatchResult::Win);
+        assert_eq!((session.blue_score, session.orange_score), (1, 3));
     }
 
     #[test]
