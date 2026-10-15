@@ -1578,11 +1578,13 @@ mod tests {
             json!({"Teams": [{"TeamNum": 0, "Score": 0}, {"TeamNum": 1, "Score": -1}]}),
             json!({"game": {"teams": [{"teamNum": 0, "score": 0}]}}),
         ] {
-            let mut session = SessionState::default();
-            session.active_match_id = "partial-final".into();
-            session.local_team = Some(0);
-            session.blue_score = 2;
-            session.orange_score = 3;
+            let mut session = SessionState {
+                active_match_id: "partial-final".into(),
+                local_team: Some(0),
+                blue_score: 2,
+                orange_score: 3,
+                ..Default::default()
+            };
             session.handle_match_ended(&data, None);
             assert_eq!((session.blue_score, session.orange_score), (0, 3));
             assert_eq!(session.last_result, MatchResult::Loss);
@@ -1591,8 +1593,10 @@ mod tests {
 
     #[test]
     fn match_ended_explicit_winner_keeps_final_scores_on_forfeit() {
-        let mut session = SessionState::default();
-        session.local_team = Some(0);
+        let mut session = SessionState {
+            local_team: Some(0),
+            ..Default::default()
+        };
         session.handle_match_ended(
             &json!({
                 "MatchGuid": "forfeit", "WinnerTeamNum": 0,

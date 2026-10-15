@@ -1195,7 +1195,7 @@ fn refresh_active_at(state: &Arc<crate::state::AppState>, conf: &Path, cooked: &
     };
     let packages = state.item_swapper.snapshot.load().packages.clone();
     for record in &mut manifest.active {
-        let target_path = package_path(&cooked, &record.target_package);
+        let target_path = package_path(cooked, &record.target_package);
         record.health = match hash_file(&target_path) {
             Ok(hash) if hash == record.applied_sha256 => SwapHealth::Active,
             Ok(hash) if hash == record.original_sha256 => SwapHealth::NeedsReapply,
@@ -1231,7 +1231,7 @@ fn refresh_active_at(state: &Arc<crate::state::AppState>, conf: &Path, cooked: &
                     SwapHealth::NeedsReapply
                 }
                 Ok(_)
-                    if package_was_updated(&cooked, record).unwrap_or(false)
+                    if package_was_updated(cooked, record).unwrap_or(false)
                         && fs::read(cooked.join(file)).is_ok_and(|bytes| {
                             crate::boost_audio::validate(&bytes, file).is_ok()
                         }) =>

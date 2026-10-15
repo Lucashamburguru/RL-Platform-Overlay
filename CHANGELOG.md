@@ -8,7 +8,7 @@ This file describes changes to the app.
 
 ---
 
-## [0.1.59] - 2026-10-12
+## [0.1.60] - 2026-10-15
 
 ### Changed
 
@@ -18,6 +18,7 @@ This file describes changes to the app.
 
 ### Fixed
 
+- **Release Builds**: Fixed the failed Linux and Windows checks that prevented v0.1.59 from being published.
 - **Account Selection**: Selecting a different account in Setup no longer freezes the app.
 - **Item Swapper**: Catalog refreshes cannot overwrite swap records or remove access to Restore.
 - **Automation**: Automatic chat and Free Play are disabled outside Windows, where foreground detection is unavailable.
