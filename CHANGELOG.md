@@ -6,6 +6,10 @@ This file describes changes to the app in each release.
 
 ## [Unreleased]
 
+---
+
+## [0.1.61] - 2026-10-20
+
 ### Changed
 
 - **Display Performance**: The overlay copies less player data during live updates and rendering. Replay and history pages reuse search and sort results until their inputs change.
