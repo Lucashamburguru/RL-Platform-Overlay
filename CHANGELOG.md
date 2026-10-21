@@ -6,6 +6,10 @@ This file describes changes to the app in each release.
 
 ## [Unreleased]
 
+---
+
+## [0.1.62] - 2026-10-20
+
 ### Fixed
 
 - **Certificate Trust**: The app uses an updated root certificate bundle that removes trust in the affected emSign certificate chain. This update resolves the dependency audit failure that blocked v0.1.61 release files.
