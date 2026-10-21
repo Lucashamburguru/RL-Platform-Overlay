@@ -1,5 +1,6 @@
 use crate::state::{AppState, PlayerInfo, TeammateBoostDisplay};
 use eframe::egui;
+use std::borrow::Borrow;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
@@ -90,7 +91,7 @@ pub(super) fn render_teammate_boost(ctx: &egui::Context, state: &Arc<AppState>) 
     };
 
     // Find all teammates (excluding ourselves)
-    let mut teammates: Vec<PlayerInfo> = players
+    let mut teammates: Vec<&PlayerInfo> = players
         .values()
         .filter(|p| {
             p.team == my_team
@@ -98,7 +99,6 @@ pub(super) fn render_teammate_boost(ctx: &egui::Context, state: &Arc<AppState>) 
                 // ⚡ Bolt: Use .eq_ignore_ascii_case() to prevent heap allocations in render loop
                 && (local_name_trimmed.is_empty() || !p.name.trim().eq_ignore_ascii_case(local_name_trimmed))
         })
-        .cloned()
         .collect();
 
     if teammates.is_empty() {
@@ -201,7 +201,7 @@ pub(super) fn render_teammate_boost_position_preview(
 
 pub(super) fn draw_teammate_boost_panel(
     ui: &mut egui::Ui,
-    teammates: &[PlayerInfo],
+    teammates: &[impl Borrow<PlayerInfo>],
     my_team: u8,
     scale: f32,
     display: TeammateBoostDisplay,
@@ -211,7 +211,7 @@ pub(super) fn draw_teammate_boost_panel(
     frame.show(ui, |ui| {
         ui.set_min_width(teammate_boost_width(scale, display) - 10.0 * scale);
         for (index, player) in teammates.iter().enumerate() {
-            draw_teammate_boost_row(ui, player, my_team, scale, display);
+            draw_teammate_boost_row(ui, player.borrow(), my_team, scale, display);
             if index + 1 < teammates.len() {
                 ui.add_space(3.0 * scale);
             }
@@ -236,6 +236,8 @@ fn draw_teammate_boost_row(
     let team_color = overlay_team_color(my_team);
 
     let low_boost_alpha = if player.boost <= 20 {
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(16));
         let pulse = (ui.input(|i| i.time) * 5.0).sin() as f32;
         (24.0 + 20.0 * ((pulse + 1.0) * 0.5)) as u8
     } else {

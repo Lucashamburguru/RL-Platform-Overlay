@@ -1,10 +1,22 @@
 # Changelog
 
-This file describes changes to the app.
+This file describes changes to the app in each release.
 
-<!-- Use short sentences and consistent technical terms. Keep release notes about changes that affect users. Put implementation details in commits and review documents. -->
+<!-- Use ASD-STE100 descriptive writing rules: short sentences, one topic per paragraph, and consistent technical terms. Keep product names and interface labels unchanged. Describe changes that affect users. Put implementation details in commits and review documents. -->
 
 ## [Unreleased]
+
+### Changed
+
+- **Display Performance**: The overlay copies less player data during live updates and rendering. Replay and history pages reuse search and sort results until their inputs change.
+- **Display Refresh**: Unchanged HUDs and dashboards refresh less often. Live data and hotkeys trigger updates. Low-boost pulses and HUD dragging keep a fast refresh rate.
+- **Controller Input**: The hotkey listener waits for controller events instead of checking for them every five milliseconds.
+
+### Fixed
+
+- **Rank Lookups**: The app uses the Epic account ID for rank requests and Tracker links when the player name contains asterisks.
+- **Dashboard**: A lobby containing only bots shows a waiting message instead of causing the app to close.
+- **Windows Overlay Border**: The app disables the window shadow that can draw a thin line at the top of the overlay.
 
 ---
 
@@ -12,19 +24,19 @@ This file describes changes to the app.
 
 ### Changed
 
-- **Replay Uploads**: Automatic uploads only check replays modified in the last 15 minutes. Older replays remain available through bulk upload.
-- **Networking**: Updated the HTTP client used for rank lookups, downloads, and replay uploads to its current stable release.
-- **Interface**: Updated the overlay and dashboard GUI framework and resolved the XML dependency advisories covered by temporary audit exceptions.
+- **Replay Uploads**: The app checks only replays changed in the last 15 minutes for automatic upload. You can upload older replays with bulk upload.
+- **Networking**: The app uses the current stable release of the HTTP client. The app uses this client for rank requests, downloads, and replay uploads.
+- **Interface**: The overlay and dashboard use an updated GUI framework. The XML dependencies no longer need temporary exceptions for security checks.
 
 ### Fixed
 
-- **Release Builds**: Fixed the failed Linux and Windows checks that prevented v0.1.59 from being published.
-- **Account Selection**: Selecting a different account in Setup no longer freezes the app.
-- **Item Swapper**: Catalog refreshes cannot overwrite swap records or remove access to Restore.
-- **Automation**: Automatic chat and Free Play are disabled outside Windows, where foreground detection is unavailable.
-- **Replay Detection**: Reconnecting from replay playback into a new live match no longer leaves live stats and results suppressed.
-- **Match History**: Final-event scores are saved before recording match results.
-- **Tracker Lookups**: Keep API requests free of page-navigation headers introduced by the HTTP client upgrade, which caused Tracker to reject requests.
+- **Release Builds**: Linux and Windows checks now pass. These checks prevented the publication of v0.1.59.
+- **Account Selection**: The app continues to respond when you select a different account in Setup.
+- **Item Swapper**: Catalog updates cannot replace swap records. The Restore control stays available.
+- **Automation**: Automatic chat and Free Play operate only on Windows. Other operating systems cannot identify the foreground application.
+- **Replay Detection**: Live statistics and results are available when the app connects to a new live match after replay playback.
+- **Match History**: The app saves scores from the final event before it records the match result.
+- **Tracker Lookups**: API requests do not include page navigation headers. The HTTP client update added these headers, which caused Tracker to reject requests.
 
 ---
 
@@ -32,13 +44,13 @@ This file describes changes to the app.
 
 ### Added
 
-- **Crash Logs**: The app automatically saves panic reports and rotating runtime logs. Windows exception reports and periodic memory and handle counts help investigate crashes after extended use. Support can copy the log folder path.
+- **Crash Logs**: The app automatically saves panic reports and runtime logs. It rotates the runtime logs. Windows exception reports help identify the cause of crashes after long periods of operation. The app also records memory use and handle counts at regular intervals. You can copy the log folder path for support.
 
 ### Fixed
 
-- **Windows Builds**: The crash-report test accepts the source path emitted by the Windows compiler. This fixes the failed Windows checks in v0.1.57.
-- **Windows Keyboard Listener**: Corrected the message loop so messages arriving after startup do not cause it to fail or stop listening.
-- **System Fonts**: Invalid installed fallback fonts are skipped instead of causing a startup panic.
+- **Windows Builds**: The crash report test accepts the source path from the Windows compiler. This change corrects the failed Windows checks in v0.1.57.
+- **Windows Keyboard Listener**: The Windows keyboard listener continues to process messages that arrive after the app starts.
+- **System Fonts**: The app does not use invalid system fonts for replacement characters. These fonts no longer cause a panic when the app starts.
 
 ---
 
@@ -46,12 +58,12 @@ This file describes changes to the app.
 
 ### Added
 
-- **Crash Logs**: The app automatically saves panic reports and rotating runtime logs. Windows exception reports and periodic memory and handle counts help investigate crashes after extended use. Support can copy the log folder path.
+- **Crash Logs**: The app automatically saves panic reports and runtime logs. It rotates the runtime logs. Windows exception reports help identify the cause of crashes after long periods of operation. The app also records memory use and handle counts at regular intervals. You can copy the log folder path for support.
 
 ### Fixed
 
-- **Windows Keyboard Listener**: Corrected the message loop so messages arriving after startup do not cause it to fail or stop listening.
-- **System Fonts**: Invalid installed fallback fonts are skipped instead of causing a startup panic.
+- **Windows Keyboard Listener**: The Windows keyboard listener continues to process messages that arrive after the app starts.
+- **System Fonts**: The app does not use invalid system fonts for replacement characters. These fonts no longer cause a panic when the app starts.
 
 ---
 
@@ -59,15 +71,15 @@ This file describes changes to the app.
 
 ### Changed
 
-- **Game Mode Detection**: Improved game mode detection.
+- **Game Mode Detection**: The app identifies game modes more accurately.
 
 ### Fixed
 
-- **Goal Replays**: Goal replays no longer block live match results. Player statistics update when live play resumes. Saved replay files do not change live results.
-- **Your Account**: Camera focus no longer selects your account. Select your player in Setup if the app has no saved account.
-- **Free-for-All History**: Bullet Ball and Knockout players count as opponents. Results stay unknown when the API does not identify the winning player.
-- **Custom Teams**: Match results use the winning team name. A team can win by forfeit when its score is lower.
-- **Bullet Ball Detection**: The app recognizes Bullet Ball from its playlist identifier. The mode stays correct as players leave the arena.
+- **Goal Replays**: Goal replays do not prevent updates to live match results. Player statistics update when live play starts again. Saved replay files do not change live results.
+- **Your Account**: Camera focus does not select your account. You can select your player in Setup if the app has no saved account.
+- **Free-for-All History**: The app records Bullet Ball and Knockout players as opponents. Results stay unknown when the API does not identify the winning player.
+- **Custom Teams**: Match results use the winning team name. A team can win by forfeit with a lower score.
+- **Bullet Ball Detection**: The app identifies Bullet Ball from its playlist identifier. Players who leave the arena do not change the identified mode.
 
 ---
 
@@ -75,17 +87,17 @@ This file describes changes to the app.
 
 ### Added
 
-- **Dashboard Player Details**: Select a player name to open details below the player. Select the name again to close the details. The table shows rank, MMR, and available match counts for each mode. The current mode uses a highlight color. Details include the recorded peak and season, encounter history, and a link to the player's Tracker profile.
+- **Dashboard Player Details**: You can select a player name to open or close details below that player. The table shows rank, MMR, and available match counts for each mode. A different color identifies the current mode. The details show the recorded peak, season, and encounter history. The details also include a link to the player's Tracker profile.
 - **App Page Tour**: The README includes an animated tour of the app pages and record details. The tour uses sample data. Setup shows a sample game folder and an active Stats API connection.
 
 ### Changed
 
-- **README**: Screenshots appear before Quick Start. Windows instructions identify the executable file to download and open. Setup instructions use the current button name.
+- **README**: Screenshots are before Quick Start. Windows instructions identify the executable file that you can download and open. Setup instructions use the current button name.
 
 ### Fixed
 
 - **Dashboard Preview**: Player details stay open when the dashboard shows sample players before a live match.
-- **Missing Match Counts**: Unavailable playlist match counts show a dash. A recorded count of zero still shows zero.
+- **Missing Match Counts**: The app shows a dash when playlist match counts are not available. A recorded count of zero shows zero.
 
 ---
 
@@ -93,23 +105,23 @@ This file describes changes to the app.
 
 ### Added
 
-- **Engine Audio**: You can copy an installed engine sound to another engine in the Engine Audio category of Item Swapper. The app makes backups. You can apply the replacement again or restore the original sound. Packages that the app cannot change show as unavailable.
+- **Engine Audio**: You can copy an installed engine sound to another engine in the Engine Audio category of Item Swapper. The app makes backups. You can apply the replacement again or restore the original sound. The app identifies packages that it cannot change as unavailable.
 
 ### Changed
 
-- **Replay Library and Player History**: The tables fill the available space. You can sort the columns and open details below each row. Replay filters show local copies, cloud copies, or both. Dates use the same format. Local and cloud copies of the same replay appear in one row.
-- **History Records**: Total wins, losses, and win rate appear beside the match count. Player win rates use colors at all window sizes. The details show teammate and opponent records with win rate bars.
-- **Replay Details**: Replay details show a blue and orange scoreboard and player statistics. You can open or close the goal list.
+- **Replay Library and Player History**: The tables use all available space. You can sort columns and open details below each row. Replay filters show local copies, cloud copies, or both. Dates use the same format. Local and cloud copies of the same replay are in one row.
+- **History Records**: Total wins, losses, and win rate are beside the match count. Colors identify player win rates at all window sizes. The details show teammate and opponent records with win rate bars.
+- **Replay Details**: Replay details show a scoreboard with blue and orange teams and player statistics. You can open or close the goal list.
 
 ### Fixed
 
 - **Dashboard Players**: The dashboard does not show bots. This includes bots that replace players who leave before the match ends. The dashboard keeps the recorded statistics of players who leave.
-- **Shared Boost Sounds**: Standard boost and its painted variants can use the same replacement sound. If you restore one appearance, the other variants keep the replacement sound. The original sound returns when you restore the last replacement.
+- **Shared Boost Sounds**: Standard boost and its painted variants can use the same replacement sound. If you restore one appearance, the other variants keep the replacement sound. The app restores the original sound when you restore the last replacement.
 - **Sound Reapply**: If the source sound changes, the app uses the new sound when you apply a shared boost replacement again.
 - **Stats API Setup**: Setup corrects the port number when necessary. The Stats API and overlay use port 49123.
 - **Session Results**: If a match reset does not occur, the app clears the previous match state when it finds a new match identifier.
-- **Replay Uploads**: Cloud synchronization does not identify changed local replays as files that were already uploaded. The changed files remain available for upload.
-- **Lobby Ranks**: The app gets new ratings when the previous ratings expire, including when players stay in the lobby.
+- **Replay Uploads**: Cloud synchronization does not identify changed local replays as previously uploaded files. You can upload the changed files.
+- **Lobby Ranks**: The app gets new ratings when the previous ratings expire. This update also occurs when players stay in the lobby.
 
 ---
 
@@ -117,18 +129,18 @@ This file describes changes to the app.
 
 ### Added
 
-- **Boost Sounds**: You can keep the original boost sound, use the sound for the new appearance, or select another installed boost sound. You can also change only the sound.
+- **Boost Sounds**: You can keep the original boost sound or use the sound for the new appearance. You can also select another installed boost sound or change only the sound.
 
 ### Changed
 
-- **Gold Rush Audio**: The Gold Rush preset makes its replacement sound from installed game files. The app makes backups of the appearance and sound. It applies and restores them together. Checks include sound banks that more than one boost uses.
+- **Gold Rush Audio**: The Gold Rush preset makes its replacement sound from installed game files. The app makes backups of the appearance and sound. The app applies and restores the appearance and sound together. The checks include sound banks that more than one boost uses.
 
 ### Fixed
 
 - **Dev Boost**: Item Swapper can change encrypted Dev Boost packages with the current catalog key.
-- **Alpha Preset Status**: The Gold Rush checkbox is selected only when the boost uses both the Alpha appearance and Alpha sound. Other combinations show as custom replacements.
-- **Version Checks**: Version checks correctly compare release tags with four number parts to the equivalent app versions.
-- **Build Checks**: Checks include the normal app build and the Microsoft Store build. These checks find Item Swapper errors before release.
+- **Alpha Preset Status**: The Gold Rush checkbox is selected only when the boost uses the Alpha appearance and Alpha sound. The app identifies other combinations as custom replacements.
+- **Version Checks**: Version checks correctly compare release tags that have four number parts with the equivalent app versions.
+- **Build Checks**: The checks include the normal app build and the Microsoft Store build. These checks find Item Swapper errors before release.
 
 ---
 
@@ -141,7 +153,7 @@ This file describes changes to the app.
 ### Changed
 
 - **Rank and MMR Sources**: Tracker Network is the primary data source. If Tracker Network is unavailable, the app uses Rocket League MMR. If peak data is unavailable, the display identifies the current rank.
-- **Settings Navigation**: The Overlay tab contains the Lobby, Session, and Boost tabs. Dashboard remains a separate tab.
+- **Settings Navigation**: The Overlay tab contains the Lobby, Session, and Boost tabs. Dashboard stays in a separate tab.
 
 ---
 
@@ -149,13 +161,13 @@ This file describes changes to the app.
 
 ### Added
 
-- **Item Swapper**: You can browse and search the Rocket League item catalog and change item appearances locally. The catalog includes bodies, wheels, boosts, trails, goal explosions, toppers, antennas, and paint finishes. The app makes replacements from installed game files. Each item has a separate backup of the original file for restoration.
-- **Gold Rush Appearance**: The app makes the Alpha Boost appearance from installed UPK files and current package keys. It adjusts to game updates and keeps verified backups.
+- **Item Swapper**: You can browse and search the Rocket League item catalog. You can change item appearances locally. The catalog includes bodies, wheels, boosts, trails, goal explosions, toppers, antennas, and paint finishes. The app makes replacements from installed game files. Each item has a separate backup of the original file for restoration.
+- **Gold Rush Appearance**: The app makes the Alpha Boost appearance from installed UPK files and current package keys. The app adjusts to game updates and keeps verified backups.
 
 ### Changed
 
 - **Rank and MMR Sources**: If the primary MMR provider temporarily refuses PsyNet access, the app uses Tracker Network. A delay between requests helps keep rank data available.
-- **Code Structure**: Separate modules contain network data transport, touch tracking, and Ballchasing cloud synchronization and download services. This change makes code maintenance easier.
+- **Code Structure**: Separate modules contain network data transport, touch tracking, and Ballchasing cloud synchronization and download services. This structure makes code maintenance easier.
 
 ### Fixed
 
@@ -168,11 +180,11 @@ This file describes changes to the app.
 ### Added
 
 - **Window Controls**: The title bar has buttons to minimize, maximize, restore, and close the settings window. You can also double-click the title bar to maximize or restore the window.
-- **Window Size**: You can change the size of the settings window. Use the control at the bottom right or move a window edge.
+- **Window Size**: You can change the settings window size with the control at the bottom right. You can also move a window edge.
 
 ### Fixed
 
-- **Settings Footer**: Correct layout measurements keep the bottom controls in position. The window size does not change unexpectedly, and the page content stays in view.
+- **Settings Footer**: Correct layout measurements keep the bottom controls in position. The window size does not change unexpectedly. The page content stays in view.
 
 ---
 
@@ -187,9 +199,9 @@ This file describes changes to the app.
 
 ### Changed
 
-- **Rank Data Source**: The app uses a faster and more reliable rank provider. It does not extract MMR data from web pages. This change prevents missing or delayed MMR results.
-- **Replay Database**: A separate database contains records of uploaded replays. These records are no longer in the settings file. Settings remain separate, and replay scans stay fast as the replay collection increases.
-- **Settings Layout**: The settings layout adjusts to smaller windows. Sliders show percentages. Setup Readiness appears at the top of the Setup tab.
+- **Rank Data Source**: The app uses a faster and more reliable rank provider. The app does not get MMR data from web pages. This change prevents missing or delayed MMR results.
+- **Replay Database**: A separate database contains records of uploaded replays. The settings file no longer contains these records. Replay scans stay fast as the replay collection increases.
+- **Settings Layout**: The settings layout adjusts to smaller windows. Sliders show percentages. Setup Readiness is at the top of the Setup tab.
 - **Configuration Permissions**: On Linux and macOS, only the file owner can access configuration files. These permissions protect saved API credentials.
 
 ### Fixed
@@ -208,12 +220,12 @@ This file describes changes to the app.
 
 ### Changed
 
-- **Support Data Privacy**: By default, support bundles remove personal paths, player details, account details, match identifiers, replay identifiers, filenames, and recent logs. You can examine the exact content before you copy it. An option lets you include identifiable details.
+- **Support Data Privacy**: Support bundles remove personal paths, player details, account details, match identifiers, and replay identifiers by default. They also remove filenames and recent logs. You can examine the exact content before you copy it. An option lets you include details that identify you.
 
 ### Fixed
 
 - **Local Rank Updates**: Rank requests do not run at the same time. If the local player changes during a request, the app does not use the previous account's result.
-- **Team Assignment**: Missing or invalid game data does not assign players to Blue. The app keeps known team assignments when updates are incomplete. Players with unknown teams remain separate.
+- **Team Assignment**: Missing or invalid game data does not assign players to Blue. The app keeps known team assignments when updates are incomplete. Players with unknown teams stay separate.
 
 ---
 
@@ -221,12 +233,12 @@ This file describes changes to the app.
 
 ### Changed
 
-- **Player Tracking**: Players with the same name remain separate. The app does not assign delayed rank results to the wrong player.
+- **Player Tracking**: Players with the same name stay separate. The app does not assign delayed rank results to the wrong player.
 
 ### Fixed
 
 - **Replay Files**: The app rejects corrupt or invalid replay files before upload, download, replacement, or Hoops repair.
-- **Hoops Repair**: The repair tool changes only recognized legacy Hoops replays. It verifies backups before it replaces or restores files.
+- **Hoops Repair**: The repair tool changes only recognized legacy Hoops replays. The tool verifies backups before it replaces or restores files.
 
 ---
 
@@ -234,20 +246,20 @@ This file describes changes to the app.
 
 ### Added
 
-- **Setup Readiness**: Setup shows the status of the installation, Stats API configuration, restart, connection, and live data.
+- **Setup Readiness**: Setup shows the installation status, Stats API configuration, restart status, connection status, and live data status.
 - **Arrange HUD**: You can move HUD panels. The controls include Done, Cancel, and Reset All.
-- **Release Notes**: The update tool shows the release notes before it installs an update.
+- **Release Notes**: The update tool shows release notes before it installs an update.
 
 ### Changed
 
 - **Display Performance**: The dashboard and Replay Library draw faster, especially with large replay collections.
-- **Dashboard Layout**: The layout adjusts to narrow windows. Event Feed is now Match Highlights. HUD colors are more consistent.
+- **Dashboard Layout**: The layout adjusts to narrow windows. Match Highlights replaces Event Feed. HUD colors are more consistent.
 
 ### Fixed
 
-- **Overlay Start**: If the Stats API is disabled, the overlay start control returns you to Setup. Setup shows instructions.
+- **Overlay Start**: If the Stats API is disabled, the overlay start control opens Setup. Setup shows instructions.
 - **Team Names**: Long club names do not move dashboard status details outside the window.
-- **Replay Metadata**: The app rejects damaged replay headers and replay headers with unreasonable values.
+- **Replay Metadata**: The app rejects damaged replay headers. The app also rejects replay headers with unreasonable values.
 
 ---
 
@@ -255,7 +267,7 @@ This file describes changes to the app.
 
 ### Note
 
-- **Unpublished Release**: The continuous integration checks failed for this tag. Thus, the tag did not produce release files. Release `0.1.46` includes all changes that were planned for this release.
+- **Unpublished Release**: The continuous integration checks failed for this tag. The tag did not produce release files. Release `0.1.46` includes all changes planned for this release.
 
 ---
 
@@ -263,7 +275,7 @@ This file describes changes to the app.
 
 ### Added
 
-- **Club Team Names**: Dashboard score labels and player lists use team names from the Stats API. If the names are unavailable, the display uses Blue and Orange.
+- **Club Team Names**: Dashboard score labels and player lists use team names from the Stats API. If names are unavailable, the display uses Blue and Orange.
 - **Replay Metadata**: Replay details include player statistics, goal times, match duration, and match type.
 
 ---
@@ -272,7 +284,7 @@ This file describes changes to the app.
 
 ### Fixed
 
-- **Mode Detection**: Mode detection uses active Stats API players when this data is available. If a player replaces a bot during a 2v2 match, the session mode does not lock to 3v3.
+- **Mode Detection**: The app uses active Stats API players to identify the mode when this data is available. A player who replaces a bot during a 2v2 match does not lock the session mode to 3v3.
 - **Statistics**: Invalid game data does not cause incorrect dashboard scores, percentages, average MMR values, or history totals.
 
 ---
@@ -281,15 +293,15 @@ This file describes changes to the app.
 
 ### Added
 
-- **Replay Touch Counts**: The app subtracts touch counts that occur during goal replays. Dashboard and overlay ball touch counts and car touch counts do not increase because of goal replays.
+- **Replay Touch Counts**: The app subtracts touch counts that occur during goal replays. Goal replays do not increase ball touch counts or car touch counts on the dashboard or overlay.
 
 ### Changed
 
-- **Touch Settings**: The Touch Counters and Estimate teammate bumps options are in the Dashboard settings tab. Previously, these options were in the Overlay settings tab. Touch Counters removes duplicate touch counts.
+- **Touch Settings**: The Dashboard settings tab contains the Touch Counters and Estimate teammate bumps options. These options were previously in the Overlay settings tab. Touch Counters removes duplicate touch counts.
 
 ### Fixed
 
-- **Session Mode**: The session mode locks after the first goal. Temporary changes to the lobby players do not change the mode. For example, Twos does not change to Threes.
+- **Session Mode**: The session mode locks after the first goal. Temporary changes to lobby players do not change the mode. For example, Twos does not change to Threes.
 
 ---
 
@@ -297,7 +309,7 @@ This file describes changes to the app.
 
 ### Added
 
-- **Completed Match Statistics**: Player statistics remain on the dashboard until the next match starts. They do not disappear when players leave the lobby after a match.
+- **Completed Match Statistics**: Player statistics stay on the dashboard until the next match starts. The statistics do not disappear when players leave the lobby after a match.
 - **Touch Controls**: Optional controls remove duplicate ball touch counts and car touch counts. An experimental comparison statistic estimates teammate bumps.
 - **Steam Player Display**: Steam players have a different display style in the lobby and dashboard.
 
@@ -312,7 +324,7 @@ This file describes changes to the app.
 
 ### Fixed
 
-- **Windows Overlay Borders**: Native window borders and title bar buttons do not return while the overlay runs.
+- **Windows Overlay Borders**: Native window borders and title bar buttons do not return while the overlay operates.
 
 ---
 
@@ -337,7 +349,7 @@ This file describes changes to the app.
 
 ### Fixed
 
-- **Windows Overlay Transparency**: The overlay does not become a black full-screen surface after start or a settings change.
+- **Windows Overlay Transparency**: The overlay does not change to a black full-screen surface after the app starts or after a settings change.
 
 ---
 
@@ -345,7 +357,7 @@ This file describes changes to the app.
 
 ### Added
 
-- **MMR Tracking**: The app detects player ranks more consistently across platforms and teams.
+- **MMR Tracking**: The app identifies player ranks more consistently across platforms and teams.
 
 ---
 
@@ -374,7 +386,7 @@ This file describes changes to the app.
 ### Added
 
 - **MMR and Rank Tracking**: The app gets current player MMR and ranks through tracker.gg APIs.
-- **Background Gamepad Input**: Windows gamepad input works when the app is in the background and the game has focus.
+- **Background Gamepad Input**: Windows gamepad input operates when the app is in the background and the game has focus.
 
 ---
 
@@ -382,7 +394,7 @@ This file describes changes to the app.
 
 ### Changed
 
-- The code includes general corrections and alignment corrections in ui.rs.
+- The ui.rs file includes general code corrections and alignment corrections.
 
 ---
 
@@ -399,7 +411,7 @@ This file describes changes to the app.
 
 ### Changed
 
-- The user interface and documentation include improvements.
+- The user interface and documentation have improvements.
 
 ---
 
@@ -407,4 +419,4 @@ This file describes changes to the app.
 
 ### Added
 
-- This release adds teammate HUD overlays, corrections to hotkey focus, full keyboard controls, and improvements to the user interface.
+- This release adds teammate HUD overlays and full keyboard controls. It also corrects hotkey focus and improves the user interface.

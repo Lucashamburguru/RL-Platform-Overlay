@@ -87,46 +87,65 @@ pub(crate) fn render_history_settings_tab(
         }
     });
     let query = search.trim().to_lowercase();
-    let mut players: Vec<_> = snapshot
-        .players
-        .iter()
-        .filter(|p| {
-            query.is_empty()
-                || p.name.to_lowercase().contains(&query)
-                || p.platform.to_lowercase().contains(&query)
-        })
-        .collect();
     let sort_id = ui.make_persistent_id("history_sort");
     let mut sort = ui
         .data(|d| d.get_temp::<(usize, bool)>(sort_id))
         .unwrap_or((7, true));
-    players.sort_by(|a, b| {
-        let order = match sort.0 {
-            0 => a.name_normalized.cmp(&b.name_normalized),
-            1 => a.platform_normalized.cmp(&b.platform_normalized),
-            2 => a.total_games().cmp(&b.total_games()),
-            3 => a.games_with.cmp(&b.games_with),
-            4 => a.games_against.cmp(&b.games_against),
-            5 => rounded_percent_u64(
-                u64::from(a.wins_with),
-                u64::from(a.wins_with) + u64::from(a.losses_with),
-            )
-            .cmp(&rounded_percent_u64(
-                u64::from(b.wins_with),
-                u64::from(b.wins_with) + u64::from(b.losses_with),
-            )),
-            6 => rounded_percent_u64(
-                u64::from(a.wins_against),
-                u64::from(a.wins_against) + u64::from(a.losses_against),
-            )
-            .cmp(&rounded_percent_u64(
-                u64::from(b.wins_against),
-                u64::from(b.wins_against) + u64::from(b.losses_against),
-            )),
-            _ => a.last_seen_unix_ms.cmp(&b.last_seen_unix_ms),
-        };
-        (if sort.1 { order.reverse() } else { order }).then_with(|| a.player_key.cmp(&b.player_key))
-    });
+    let indices = library_table::cached_order(
+        ui,
+        "history_order",
+        &snapshot,
+        (query.clone(), 0, sort),
+        || {
+            let mut indices: Vec<_> = snapshot
+                .players
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| {
+                    query.is_empty()
+                        || p.name.to_lowercase().contains(&query)
+                        || p.platform.to_lowercase().contains(&query)
+                })
+                .map(|(index, _)| index)
+                .collect();
+            indices.sort_by(|&a, &b| {
+                let a = &snapshot.players[a];
+                let b = &snapshot.players[b];
+                let order = match sort.0 {
+                    0 => a.name_normalized.cmp(&b.name_normalized),
+                    1 => a.platform_normalized.cmp(&b.platform_normalized),
+                    2 => a.total_games().cmp(&b.total_games()),
+                    3 => a.games_with.cmp(&b.games_with),
+                    4 => a.games_against.cmp(&b.games_against),
+                    5 => rounded_percent_u64(
+                        u64::from(a.wins_with),
+                        u64::from(a.wins_with) + u64::from(a.losses_with),
+                    )
+                    .cmp(&rounded_percent_u64(
+                        u64::from(b.wins_with),
+                        u64::from(b.wins_with) + u64::from(b.losses_with),
+                    )),
+                    6 => rounded_percent_u64(
+                        u64::from(a.wins_against),
+                        u64::from(a.wins_against) + u64::from(a.losses_against),
+                    )
+                    .cmp(&rounded_percent_u64(
+                        u64::from(b.wins_against),
+                        u64::from(b.wins_against) + u64::from(b.losses_against),
+                    )),
+                    _ => a.last_seen_unix_ms.cmp(&b.last_seen_unix_ms),
+                };
+                (if sort.1 { order.reverse() } else { order })
+                    .then_with(|| a.player_key.cmp(&b.player_key))
+            });
+
+            indices
+        },
+    );
+    let players: Vec<_> = indices
+        .iter()
+        .map(|&index| &snapshot.players[index])
+        .collect();
 
     ui.weak(format!(
         "{} of {} players · Click a row for details",

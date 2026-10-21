@@ -978,7 +978,7 @@ pub struct ReplayUploadProgress {
     pub recent_events: Vec<String>,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PlayerInfo {
     pub name: String,
     pub primary_id: String,
@@ -1066,8 +1066,8 @@ pub type PlayerMap = HashMap<PlayerKey, PlayerInfo>;
 #[derive(Clone, Debug, Default)]
 pub struct DashboardMatchSnapshot {
     pub match_guid: String,
-    pub players: PlayerMap,
-    pub session: SessionState,
+    pub players: Arc<PlayerMap>,
+    pub session: Arc<SessionState>,
     pub local_team: Option<u8>,
     pub team_bumps: [u32; 2],
 }
@@ -1328,6 +1328,7 @@ pub struct SystemState {
 }
 
 pub struct AppState {
+    pub(crate) ui_repaint: crate::ui_repaint::UiRepaintSignal,
     pub paths: AppPaths,
     pub debug_enabled: bool,
     pub debug_logging_enabled: AtomicBool,
@@ -1458,6 +1459,7 @@ impl AppState {
             };
 
         Arc::new(Self {
+            ui_repaint: crate::ui_repaint::UiRepaintSignal::default(),
             paths,
             debug_enabled,
             debug_logging_enabled: AtomicBool::new(debug_logging_enabled),
@@ -1589,6 +1591,48 @@ impl AppState {
         })
     }
 
+    pub(crate) fn request_ui_repaint(&self) {
+        let dashboard = self.system.config.load().dashboard_enabled;
+        self.ui_repaint.request(
+            Some(std::time::Duration::ZERO),
+            dashboard.then_some(std::time::Duration::ZERO),
+        );
+    }
+
+    pub(crate) fn request_game_repaint(&self, players_changed: bool, session_changed: bool) {
+        if !players_changed && !session_changed {
+            return;
+        }
+        let config = self.system.config.load();
+        let visible = self
+            .flags
+            .is_visible
+            .load(std::sync::atomic::Ordering::SeqCst);
+        let launched = self
+            .flags
+            .is_launched
+            .load(std::sync::atomic::Ordering::SeqCst)
+            && (!config.dashboard_enabled || config.dashboard_keep_overlay_enabled);
+        let session_visible = config.session_overlay_enabled
+            && (!config.session_overlay_follow_lobby_hotkey || visible || config.layout_mode);
+        let live_hud_visible = visible
+            || config.layout_mode
+            || (config.show_teammate_boost
+                && !self
+                    .flags
+                    .is_settings_visible
+                    .load(std::sync::atomic::Ordering::SeqCst));
+        let root = launched && (live_hud_visible || (session_changed && session_visible));
+        self.ui_repaint.request(
+            // A nonzero delay lets packet updates coalesce without egui's extra
+            // settling frame for each immediate repaint request.
+            root.then_some(std::time::Duration::from_millis(16)),
+            config
+                .dashboard_enabled
+                .then_some(std::time::Duration::from_millis(100)),
+        );
+    }
+
     pub fn update_config<R>(&self, update: impl FnOnce(&mut Config) -> R) -> R {
         let _guard = self
             .config_update_mutex
@@ -1613,10 +1657,12 @@ impl AppState {
             .config_update_mutex
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        let config = (**self.system.config.load()).clone();
+        let original = self.system.config.load_full();
+        let config = (*original).clone();
         ConfigEditSession {
             state: self,
             _guard: guard,
+            original,
             config,
         }
     }
@@ -1640,6 +1686,7 @@ impl AppState {
             status.last_error = error;
             self.system.config_status.store(Arc::new(status));
         }
+        self.request_ui_repaint();
     }
 
     pub fn update_local_player_identity(self: &Arc<Self>, identity: LocalPlayerIdentity) -> bool {
@@ -1696,12 +1743,13 @@ impl AppState {
 pub(crate) struct ConfigEditSession<'a> {
     state: &'a AppState,
     _guard: std::sync::MutexGuard<'a, ()>,
+    original: Arc<Config>,
     config: Config,
 }
 
 impl ConfigEditSession<'_> {
-    pub fn snapshot(&self) -> &Config {
-        &self.config
+    pub fn original_snapshot(&self) -> Arc<Config> {
+        self.original.clone()
     }
 
     pub fn config_mut(&mut self) -> &mut Config {

@@ -59,6 +59,7 @@ pub enum ConfirmAction {
 
 pub struct MainApp {
     state: Arc<AppState>,
+    repaint_context: Option<Arc<egui::Context>>,
     settings_tab: SettingsTab,
     overlay_subtab: OverlaySubtab,
     is_rl_running: bool,
@@ -90,6 +91,7 @@ impl MainApp {
     pub fn new(state: Arc<AppState>, hwnd: Option<isize>) -> Self {
         Self {
             state,
+            repaint_context: None,
             settings_tab: SettingsTab::Overlay,
             overlay_subtab: OverlaySubtab::Lobby,
             is_rl_running: false,
@@ -322,6 +324,82 @@ mod tests {
                 .iter()
                 .any(|command| matches!(command, egui::ViewportCommand::Close))
         );
+    }
+
+    #[tokio::test]
+    async fn settled_huds_only_animate_low_boost() {
+        for mode in ["lobby", "session", "boost_high", "boost_empty", "boost_low"] {
+            let state = AppState::new();
+            state.update_config(|config| {
+                config.dashboard_enabled = false;
+                config.layout_mode = false;
+                config.session_overlay_enabled = mode == "session";
+                config.session_overlay_follow_lobby_hotkey = false;
+                config.show_teammate_boost = mode.starts_with("boost");
+            });
+            state.flags.is_launched.store(true, Ordering::SeqCst);
+            state
+                .flags
+                .is_settings_visible
+                .store(false, Ordering::SeqCst);
+            state
+                .flags
+                .is_visible
+                .store(mode == "lobby", Ordering::SeqCst);
+            state.game.local_team.store(0, Ordering::SeqCst);
+            if mode != "boost_empty" {
+                let teammate = crate::state::PlayerInfo {
+                    name: "Teammate".into(),
+                    team: 0,
+                    boost: if mode == "boost_low" { 10 } else { 80 },
+                    boost_known: true,
+                    ..Default::default()
+                };
+                state
+                    .game
+                    .players
+                    .store(Arc::new(std::collections::HashMap::from([(
+                        crate::state::PlayerKey::for_match(&teammate, "test", None, 0),
+                        teammate,
+                    )])));
+            }
+            let mut app = MainApp::new(state, None);
+            let ctx = egui::Context::default();
+            let mut frame = eframe::Frame::_new_kittest();
+            for pass in 0..12 {
+                let output = crate::ui::review_renderer::run_ui(
+                    &ctx,
+                    egui::RawInput {
+                        time: Some(pass as f64),
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(1280.0, 720.0),
+                        )),
+                        ..Default::default()
+                    },
+                    |ui| eframe::App::ui(&mut app, ui, &mut frame),
+                );
+                if pass >= 8 {
+                    let root = &output.viewport_output[&egui::ViewportId::ROOT];
+                    if mode == "boost_low" {
+                        assert!(root.repaint_delay <= Duration::from_millis(16));
+                    } else {
+                        assert!(
+                            root.repaint_delay >= Duration::from_millis(900),
+                            "{mode} still requests rapid redraws: {:?}; causes: {:?}",
+                            root.repaint_delay,
+                            ctx.repaint_causes()
+                        );
+                    }
+                    assert!(
+                        !root.commands.iter().any(|command| matches!(
+                            command,
+                            egui::ViewportCommand::WindowLevel(_)
+                        ))
+                    );
+                }
+            }
+        }
     }
 
     #[tokio::test]
@@ -621,39 +699,14 @@ mod tests {
     }
 
     #[test]
-    fn dashboard_only_repaint_uses_dashboard_cadence() {
-        let inputs = RepaintInputs {
-            is_launched: false,
-            show_settings: false,
-            show_hud: false,
-            show_session_overlay: false,
-            show_boost_panel: false,
-            show_dashboard: true,
-            layout_mode: false,
-        };
-
+    fn static_content_uses_slow_fallback_but_interaction_stays_fast() {
+        assert_eq!(repaint_delay(false, false, false), Duration::from_secs(1));
         assert_eq!(
-            repaint_delay(&inputs, false, false),
-            Duration::from_millis(100)
+            repaint_delay(true, false, false),
+            Duration::from_millis(250)
         );
-    }
-
-    #[test]
-    fn visible_hud_keeps_interactive_repaint_cadence() {
-        let inputs = RepaintInputs {
-            is_launched: true,
-            show_settings: false,
-            show_hud: true,
-            show_session_overlay: false,
-            show_boost_panel: false,
-            show_dashboard: false,
-            layout_mode: false,
-        };
-
-        assert_eq!(
-            repaint_delay(&inputs, false, false),
-            Duration::from_millis(16)
-        );
+        assert_eq!(repaint_delay(false, true, false), Duration::from_millis(16));
+        assert_eq!(repaint_delay(true, false, true), Duration::from_millis(16));
     }
 }
 
@@ -697,6 +750,9 @@ impl eframe::App for MainApp {
 
     fn ui(&mut self, root_ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = &root_ui.ctx().clone();
+        if self.repaint_context.as_deref() != Some(ctx) {
+            self.repaint_context = Some(self.state.ui_repaint.bind(ctx));
+        }
         ctx.set_zoom_factor(1.0);
 
         if self.state.flags.should_exit.load(Ordering::SeqCst) {
@@ -834,6 +890,11 @@ impl eframe::App for MainApp {
             target_size,
         );
         if self.last_viewport_state != Some(viewport_state) {
+            if is_launched {
+                ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
+                    egui::WindowLevel::AlwaysOnTop,
+                ));
+            }
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(fullscreen));
             ctx.send_viewport_cmd(egui::ViewportCommand::MousePassthrough(mouse_passthrough));
             if self
@@ -892,11 +953,6 @@ impl eframe::App for MainApp {
                     if config.layout_mode {
                         super::layout::render_arrange_hud_banner(ctx);
                     }
-
-                    // Keep window on top every frame when launched
-                    ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
-                        egui::WindowLevel::AlwaysOnTop,
-                    ));
 
                     // Show gear icon ONLY if settings are hidden AND mouse is in top-left
                     if !show_settings {
@@ -1209,19 +1265,7 @@ impl eframe::App for MainApp {
             self.dashboard_viewport_state = DashboardViewportState::default();
         }
 
-        schedule_repaint(
-            ctx,
-            &self.state,
-            RepaintInputs {
-                is_launched,
-                show_settings,
-                show_hud,
-                show_session_overlay,
-                show_boost_panel: show_boost_hud || show_boost_position_preview,
-                show_dashboard,
-                layout_mode: config.layout_mode,
-            },
-        );
+        schedule_repaint(ctx, &self.state, show_settings, config.layout_mode);
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
@@ -1231,39 +1275,29 @@ impl eframe::App for MainApp {
     }
 }
 
-struct RepaintInputs {
-    is_launched: bool,
+fn schedule_repaint(
+    ctx: &egui::Context,
+    state: &Arc<AppState>,
     show_settings: bool,
-    show_hud: bool,
-    show_session_overlay: bool,
-    show_boost_panel: bool,
-    show_dashboard: bool,
     layout_mode: bool,
+) {
+    let has_drag_input = layout_mode && ctx.input(|input| input.pointer.any_down());
+    let has_spinner = show_settings
+        && (state.mmr.local_mmr.load().fetching
+            || state.diagnostics.debug_capture_status.load().running
+            || boost_operation_running(state));
+    ctx.request_repaint_after(repaint_delay(show_settings, has_drag_input, has_spinner));
 }
 
-fn schedule_repaint(ctx: &egui::Context, state: &Arc<AppState>, inputs: RepaintInputs) {
-    let has_drag_input = inputs.layout_mode && ctx.input(|input| input.pointer.any_down());
-    let has_spinner = state.mmr.local_mmr.load().fetching
-        || state.diagnostics.debug_capture_status.load().running
-        || boost_operation_running(state);
-    ctx.request_repaint_after(repaint_delay(&inputs, has_drag_input, has_spinner));
-}
-
-fn repaint_delay(inputs: &RepaintInputs, has_drag_input: bool, has_spinner: bool) -> Duration {
-    let needs_animation = inputs.show_hud
-        || inputs.show_session_overlay
-        || inputs.show_boost_panel
-        || has_drag_input
-        || has_spinner;
-
-    if needs_animation {
+fn repaint_delay(show_settings: bool, has_drag_input: bool, has_spinner: bool) -> Duration {
+    if has_drag_input || has_spinner {
         Duration::from_millis(16)
-    } else if inputs.is_launched || inputs.show_dashboard {
-        Duration::from_millis(100)
-    } else if inputs.show_settings {
+    } else if show_settings {
         Duration::from_millis(250)
     } else {
-        Duration::from_millis(1000)
+        // Data publishers and global hotkeys wake the UI directly. Keep a slow
+        // fallback for health checks, monitor changes, and other background work.
+        Duration::from_secs(1)
     }
 }
 
@@ -1389,7 +1423,7 @@ impl MainApp {
 
         self.refresh_rocket_league_process_detection();
         let mut config_session = self.state.begin_config_edit();
-        let config = Arc::new(config_session.snapshot().clone());
+        let config = config_session.original_snapshot();
         let config_edit = config_session.config_mut();
         let mut changed = false;
         let mut account_selection = None;

@@ -48,6 +48,7 @@ rdev = { path = "vendor/rdev" }
 
 
 [target.'cfg(windows)'.dependencies]
+winit = { version = "0.30", default-features = false }
 winapi = { version = "0.3", features = ["windef", "winuser", "dwmapi", "uxtheme", "errhandlingapi", "fileapi", "processthreadsapi", "psapi", "sysinfoapi"] }
 gilrs = { version = "0.11.0", default-features = false, features = ["xinput"] }
 

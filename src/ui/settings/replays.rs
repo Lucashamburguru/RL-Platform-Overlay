@@ -651,31 +651,54 @@ fn render_replay_cache(
     });
     ui.data_mut(|d| d.insert_temp(filter_id, filter));
     let query = search.trim().to_lowercase();
-    let mut rows: Vec<_> = all_rows
-        .iter()
-        .filter(|r| {
-            (query.is_empty() || row_matches_query(r, &query))
-                && match filter {
-                    1 => r.has_local,
-                    2 => !r.cloud_ids.is_empty(),
-                    _ => true,
-                }
-        })
-        .collect();
     let sort_id = ui.make_persistent_id("replay_sort");
     let mut sort = ui
         .data(|d| d.get_temp::<(usize, bool)>(sort_id))
         .unwrap_or((1, true));
-    rows.sort_by(|a, b| {
-        let ordering = match sort.0 {
-            0 => a.primary.to_lowercase().cmp(&b.primary.to_lowercase()),
-            2 => a.map.cmp(&b.map),
-            3 => a.score_value.cmp(&b.score_value),
-            4 => a.source_label.cmp(b.source_label),
-            _ => a.date_key.cmp(&b.date_key),
-        };
-        (if sort.1 { ordering.reverse() } else { ordering }).then_with(|| a.key.cmp(&b.key))
-    });
+    let indices = library_table::cached_order(
+        ui,
+        "replay_order",
+        &all_rows,
+        (query.clone(), filter, sort),
+        || {
+            let mut indices: Vec<_> = all_rows
+                .iter()
+                .enumerate()
+                .filter(|(_, r)| {
+                    (query.is_empty() || row_matches_query(r, &query))
+                        && match filter {
+                            1 => r.has_local,
+                            2 => !r.cloud_ids.is_empty(),
+                            _ => true,
+                        }
+                })
+                .map(|(index, _)| index)
+                .collect();
+            let titles: Vec<_> = if sort.0 == 0 {
+                all_rows
+                    .iter()
+                    .map(|row| row.primary.to_lowercase())
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            indices.sort_by(|&a, &b| {
+                let title_order = (sort.0 == 0).then(|| titles[a].cmp(&titles[b]));
+                let a = &all_rows[a];
+                let b = &all_rows[b];
+                let ordering = match sort.0 {
+                    0 => title_order.unwrap(),
+                    2 => a.map.cmp(&b.map),
+                    3 => a.score_value.cmp(&b.score_value),
+                    4 => a.source_label.cmp(b.source_label),
+                    _ => a.date_key.cmp(&b.date_key),
+                };
+                (if sort.1 { ordering.reverse() } else { ordering }).then_with(|| a.key.cmp(&b.key))
+            });
+            indices
+        },
+    );
+    let rows: Vec<_> = indices.iter().map(|&index| &all_rows[index]).collect();
     ui.weak(format!("{} shown · Click a row for details", rows.len()));
     if rows.is_empty() {
         ui.label(if all_rows.is_empty() {

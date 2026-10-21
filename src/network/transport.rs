@@ -1,4 +1,6 @@
-use super::{clear_lobby_state, handle_event, update_diagnostics};
+#[cfg(test)]
+use super::handle_event;
+use super::{clear_lobby_state, handle_owned_event, update_diagnostics};
 use crate::state::AppState;
 use crate::stats_api::{StatsApiTransport, TcpJsonSplitter};
 use futures_util::StreamExt;
@@ -94,7 +96,7 @@ fn process_payload(state: &Arc<AppState>, transport: StatsApiTransport, payload:
     match serde_json::from_str::<Value>(payload) {
         Ok(json) => {
             record_recent_api_payload(state, transport, &json, payload);
-            handle_event(state, &json);
+            handle_owned_event(state, json);
         }
         Err(error) => {
             record_recent_api_payload(state, transport, &Value::Null, payload);
@@ -124,6 +126,7 @@ fn mark_connected(state: &AppState, transport: StatsApiTransport) {
         diagnostics.transport = transport;
         diagnostics.last_connection_error.clear();
     });
+    state.request_ui_repaint();
 }
 
 fn mark_disconnected(state: &AppState) {
@@ -138,6 +141,7 @@ fn mark_disconnected(state: &AppState) {
         Ordering::SeqCst,
     );
     clear_lobby_state(state);
+    state.request_ui_repaint();
 }
 
 fn is_raw_tcp_handshake(error: &tokio_tungstenite::tungstenite::Error) -> bool {
@@ -153,12 +157,14 @@ fn update_parse_error(state: &AppState, error: String) {
     update_diagnostics(state, |diagnostics| {
         diagnostics.last_parse_error = error.clone();
     });
+    state.request_ui_repaint();
 }
 
 fn update_connection_error(state: &AppState, error: String) {
     update_diagnostics(state, |diagnostics| {
         diagnostics.last_connection_error = error.clone();
     });
+    state.request_ui_repaint();
 }
 
 #[cfg(test)]

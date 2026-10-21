@@ -126,6 +126,26 @@ fn is_tracked_playlist(playlist_id: i32) -> bool {
     MMR_TRACKED_PLAYLIST_IDS.contains(&playlist_id)
 }
 
+fn epic_tracker_account<'a>(name: &'a str, account_id: &'a str) -> &'a str {
+    // Rocket League can censor the display name while still exposing PrimaryId.
+    // Keep normal name lookups, but never search for a censored Epic name when
+    // we have its account ID. Tracker accepts both compact and dashed Epic IDs.
+    let valid_id = (account_id.len() == 32 && account_id.bytes().all(|b| b.is_ascii_hexdigit()))
+        || (account_id.len() == 36
+            && account_id.bytes().enumerate().all(|(i, b)| {
+                if matches!(i, 8 | 13 | 18 | 23) {
+                    b == b'-'
+                } else {
+                    b.is_ascii_hexdigit()
+                }
+            }));
+    if name.contains('*') && valid_id {
+        account_id
+    } else {
+        name
+    }
+}
+
 fn tracker_api_url(player: &TrackerPlayer) -> String {
     let (tracker_platform, use_id) = match player.platform.to_lowercase().as_str() {
         "steam" => ("steam", true),
@@ -137,6 +157,8 @@ fn tracker_api_url(player: &TrackerPlayer) -> String {
 
     let search_term = if use_id {
         &player.player_id
+    } else if tracker_platform == "epic" {
+        epic_tracker_account(&player.player_name, &player.player_id)
     } else {
         &player.player_name
     };
@@ -165,7 +187,15 @@ pub(crate) fn tracker_profile_url(info: &PlayerInfo) -> Option<String> {
             }
             ("steam", id)
         }
-        "epic" => ("epic", info.name.trim()),
+        "epic" => {
+            let mut parts = info.primary_id.split('|');
+            let account_id = if parts.next().is_some_and(|p| p.eq_ignore_ascii_case("epic")) {
+                parts.next().unwrap_or("").trim()
+            } else {
+                ""
+            };
+            ("epic", epic_tracker_account(info.name.trim(), account_id))
+        }
         "ps4" | "ps5" | "psn" | "playstation" => ("psn", info.name.trim()),
         "xbox" | "xbl" | "xboxone" | "xboxseries" => ("xbl", info.name.trim()),
         "switch" | "nintendo" => ("switch", info.name.trim()),
@@ -767,6 +797,7 @@ fn apply_player_mmr(
         }
         Arc::new(players_map)
     });
+    state.request_ui_repaint();
 }
 
 pub fn start_mmr_fetch_task(state: Arc<AppState>) {
@@ -1021,6 +1052,7 @@ fn claim_local_mmr_refresh(state: &AppState, identity: &LocalPlayerIdentity) -> 
         next.error.clear();
         Arc::new(next)
     });
+    state.request_ui_repaint();
     Some(generation)
 }
 
@@ -1049,6 +1081,7 @@ fn publish_local_mmr_start_error(
         next.error.clone_from(&message);
         Arc::new(next)
     });
+    state.request_ui_repaint();
 }
 
 fn complete_local_mmr_refresh(
@@ -1089,6 +1122,7 @@ fn complete_local_mmr_refresh(
         }
         Arc::new(next)
     });
+    state.request_ui_repaint();
     identity_is_current
 }
 
@@ -1286,6 +1320,51 @@ mod tests {
         .unwrap();
         assert_eq!(response.text().await.unwrap(), r#"{"ok":true}"#);
         server.await.unwrap();
+    }
+
+    #[test]
+    fn masked_epic_names_use_account_id_for_rank_requests_and_profile_links() {
+        for account_id in [
+            "6ab1738e78a24012843b95ed46742ab7",
+            "6ab1738e-78a2-4012-843b-95ed46742ab7",
+        ] {
+            for name in ["*****", "Player***"] {
+                let info = PlayerInfo {
+                    name: name.into(),
+                    platform: "Epic".into(),
+                    primary_id: format!("Epic|{account_id}|0"),
+                    ..Default::default()
+                };
+                let (_, player) = tracker_player_from_info(&info).unwrap();
+                assert_eq!(
+                    tracker_api_url(&player),
+                    format!(
+                        "{MMR_TRACKER_API_HOST}/api/v2/rocket-league/standard/profile/epic/{account_id}"
+                    )
+                );
+                assert_eq!(
+                    tracker_profile_url(&info).unwrap(),
+                    format!(
+                        "https://rocketleague.tracker.network/rocket-league/profile/epic/{account_id}/overview"
+                    )
+                );
+                assert_eq!(rocket_league_player_id(&player), info.primary_id);
+            }
+            assert_eq!(
+                epic_tracker_account("Visible Name", account_id),
+                "Visible Name"
+            );
+        }
+        for account_id in ["", "*****", "123", "not-an-epic-account-id"] {
+            assert_eq!(epic_tracker_account("*****", account_id), "*****");
+        }
+        let steam = TrackerPlayer {
+            platform: "Steam".into(),
+            player_name: "*****".into(),
+            player_id: "76561198000000000".into(),
+            primary_id: "Steam|76561198000000000|0".into(),
+        };
+        assert!(tracker_api_url(&steam).ends_with("/steam/76561198000000000"));
     }
 
     #[test]

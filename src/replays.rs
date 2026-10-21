@@ -422,6 +422,7 @@ fn set_status(state: &AppState, status: &str) {
     if let Ok(mut status_lock) = state.replays.ballchasing_status.lock() {
         *status_lock = status.to_string();
     }
+    state.request_ui_repaint();
 }
 
 /// Waits for three consecutive stable size/mtime samples before enqueueing a replay.
@@ -939,6 +940,7 @@ fn update_upload_progress(state: &AppState, update: impl FnOnce(&mut ReplayUploa
     progress.stop_requested = state.replays.upload_stop_requested.load(Ordering::SeqCst);
     update(&mut progress);
     state.replays.upload_progress.store(Arc::new(progress));
+    state.request_ui_repaint();
 }
 
 fn push_event(progress: &mut ReplayUploadProgress, event: String) {

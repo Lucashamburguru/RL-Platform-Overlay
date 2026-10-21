@@ -420,6 +420,7 @@ fn publish_player_snapshot(state: &AppState, revision: u64, snapshot: HistoryPla
         .unwrap_or_else(|e| e.into_inner());
     if revision == state.history.revision.load(Ordering::SeqCst) {
         state.history.all_players_snapshot.store(Arc::new(snapshot));
+        state.request_ui_repaint();
     }
 }
 
@@ -919,6 +920,7 @@ fn set_status(state: &Arc<AppState>, message: &str) {
     if let Ok(mut status) = state.history.status.lock() {
         *status = message.to_string();
     }
+    state.request_ui_repaint();
 }
 
 #[cfg(test)]

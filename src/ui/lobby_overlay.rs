@@ -2,6 +2,7 @@ use crate::mmr::TrackerSnapshot;
 use crate::session::SessionMode;
 use crate::state::{AppState, LocalPlayerIdentity, PlayerInfo, standard_team};
 use eframe::egui;
+use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -200,10 +201,12 @@ pub(super) fn render_overlay(ctx: &egui::Context, state: &Arc<AppState>) {
     };
 
     let area_response = area.show(ctx, |ui| {
-        let players_vec: Vec<PlayerInfo> = if config.layout_mode {
-            preview_lobby_players(state)
+        let preview;
+        let players_vec: Vec<&PlayerInfo> = if config.layout_mode {
+            preview = preview_lobby_players(state);
+            preview.iter().collect()
         } else {
-            players.values().cloned().collect()
+            players.values().collect()
         };
         let local_identity = state.game.local_player_identity.load();
         let local_player_name = state.game.local_player_name.load();
@@ -239,7 +242,7 @@ pub(super) fn render_overlay(ctx: &egui::Context, state: &Arc<AppState>) {
 #[allow(clippy::too_many_arguments)]
 pub(super) fn draw_lobby_panel(
     ui: &mut egui::Ui,
-    players: &[PlayerInfo],
+    players: &[impl Borrow<PlayerInfo>],
     config: &crate::state::Config,
     is_connected: bool,
     local_identity: Option<&LocalPlayerIdentity>,
@@ -315,6 +318,7 @@ pub(super) fn draw_lobby_panel(
             let player_count = players.len();
             let mut sorted_players: Vec<_> = players
                 .iter()
+                .map(Borrow::borrow)
                 .filter(|p| config.show_bots || !p.is_bot)
                 .collect();
             sorted_players.sort_by(|a, b| {

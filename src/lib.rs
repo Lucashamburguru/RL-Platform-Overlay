@@ -22,6 +22,7 @@ pub mod session;
 mod setup;
 pub mod state;
 mod ui;
+mod ui_repaint;
 #[cfg(not(feature = "microsoft-store"))]
 pub mod update;
 mod upk_swap;
@@ -83,6 +84,16 @@ pub async fn run(debug_enabled: bool) -> eframe::Result<()> {
             #[cfg(target_os = "windows")]
             {
                 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+                use winit::platform::windows::WindowExtWindows;
+
+                // egui-winit 0.36 enables a drop shadow on undecorated Windows
+                // windows. It also draws a 1px top border, visible over the game.
+                // Disable it through winit so later window updates retain this
+                // setting. ViewportBuilder::with_has_shadow only affects macOS.
+                if let Some(window) = cc.winit_window() {
+                    window.set_undecorated_shadow(false);
+                }
+
                 if let Ok(handle) = cc.window_handle()
                     && let RawWindowHandle::Win32(win32_handle) = handle.as_raw()
                 {

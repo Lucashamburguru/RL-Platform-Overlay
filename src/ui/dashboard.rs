@@ -3,6 +3,7 @@ use crate::mmr::TrackerSnapshot;
 use crate::session::SessionMode;
 use crate::state::{AppState, Config, DashboardPlayerLayout, LocalPlayerIdentity, PlayerInfo};
 use eframe::egui;
+use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -10,8 +11,6 @@ use std::sync::atomic::Ordering;
 use super::common::contains_ignore_ascii_case;
 use super::lobby_overlay::preview_lobby_players;
 use super::monitor;
-
-const DASHBOARD_VIEWPORT_ID_SOURCE: &str = "second_monitor_dashboard";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct DashboardViewportState {
@@ -92,10 +91,11 @@ pub(crate) fn render_dashboard_viewport(
     viewport_state.placement = Some(placement);
 
     ctx.show_viewport_deferred(
-        egui::ViewportId::from_hash_of(DASHBOARD_VIEWPORT_ID_SOURCE),
+        crate::ui_repaint::dashboard_viewport_id(),
         viewport,
         move |root_ui, _class| {
             let ctx = &root_ui.ctx().clone();
+            let config = state.system.config.load();
             if ctx.input(|input| input.viewport().close_requested()) {
                 state.update_config(|config| config.dashboard_enabled = false);
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
@@ -106,11 +106,13 @@ pub(crate) fn render_dashboard_viewport(
                 ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
                 ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(placement.position));
                 ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(placement.size.into()));
+                ctx.request_repaint_of(egui::ViewportId::ROOT);
                 ctx.request_repaint();
             } else if pending_fullscreen_restore {
                 ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(placement.position));
                 ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(placement.size.into()));
                 ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
+                ctx.request_repaint_of(egui::ViewportId::ROOT);
                 ctx.request_repaint();
             }
 
@@ -123,7 +125,7 @@ pub(crate) fn render_dashboard_viewport(
                 .show(root_ui, |ui| {
                     render_dashboard(ui, &state, config.as_ref());
                 });
-            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+            ctx.request_repaint_after(std::time::Duration::from_secs(1));
         },
     );
 }
@@ -143,9 +145,9 @@ pub(crate) fn render_dashboard(ui: &mut egui::Ui, state: &Arc<AppState>, config:
     let snapshot_active =
         !dashboard_snapshot.match_guid.is_empty() && !dashboard_snapshot.players.is_empty();
     let dashboard_session = if snapshot_active {
-        dashboard_snapshot.session.clone()
+        dashboard_snapshot.session.as_ref()
     } else {
-        (**session).clone()
+        &**session
     };
     let local_team = if snapshot_active {
         dashboard_snapshot.local_team
@@ -156,13 +158,13 @@ pub(crate) fn render_dashboard(ui: &mut egui::Ui, state: &Arc<AppState>, config:
         let team = state.game.local_team.load(Ordering::SeqCst);
         crate::state::standard_team(team)
     });
-    let dashboard_players: Vec<PlayerInfo> = if snapshot_active {
-        dashboard_snapshot.players.values().cloned().collect()
+    let dashboard_players = if snapshot_active {
+        dashboard_snapshot.players.as_ref()
     } else {
-        players.values().cloned().collect()
+        &**players
     };
     let rows = build_dashboard_rows(
-        dashboard_players,
+        dashboard_players.values(),
         DashboardRowsContext {
             config,
             mode: dashboard_session.active_mode,
@@ -189,7 +191,7 @@ pub(crate) fn render_dashboard(ui: &mut egui::Ui, state: &Arc<AppState>, config:
         [0, 0]
     };
 
-    render_top_band(ui, is_connected, &dashboard_session, rows.len());
+    render_top_band(ui, is_connected, dashboard_session, rows.len());
     ui.add_space(10.0);
 
     let available = ui.available_size();
@@ -221,7 +223,7 @@ pub(crate) fn render_dashboard(ui: &mut egui::Ui, state: &Arc<AppState>, config:
                             config,
                             &rows,
                             team_bumps,
-                            &dashboard_session,
+                            dashboard_session,
                         );
                     });
             },
@@ -240,7 +242,7 @@ pub(crate) fn render_dashboard(ui: &mut egui::Ui, state: &Arc<AppState>, config:
                         history: &history,
                         state,
                         rows: &rows,
-                        session: &dashboard_session,
+                        session: dashboard_session,
                     },
                 );
             },
@@ -1654,6 +1656,13 @@ fn render_empty_state(ui: &mut egui::Ui, state: &Arc<AppState>, config: &Config)
             history_summaries: &history,
         },
     );
+    // A nonempty bot-only roster does not produce preview humans. Terminate
+    // here instead of entering render_team_columns with another empty roster.
+    if rows.is_empty() {
+        ui.heading("Waiting for live match");
+        ui.label("Waiting for human players to join.");
+        return;
+    }
     ui.set_min_size(ui.available_size());
     let frame = egui::Frame::default()
         .fill(egui::Color32::from_rgb(15, 18, 24))
@@ -1782,13 +1791,18 @@ fn render_side_rail(ui: &mut egui::Ui, context: SideRailContext<'_>) {
     if context.config.dashboard_show_replay_upload {
         ui.add_space(8.0);
         render_status_panel(ui, "Replay Upload", |ui| {
-            let status = context
-                .state
-                .replays
-                .ballchasing_status
-                .lock()
-                .map(|status| status.clone())
-                .unwrap_or_else(|_| "Status unavailable".to_string());
+            let status_id = ui.make_persistent_id("dashboard_upload_status");
+            let status = match context.state.replays.ballchasing_status.try_lock() {
+                Ok(status) => {
+                    let status = status.clone();
+                    ui.data_mut(|data| data.insert_temp(status_id, status.clone()));
+                    status
+                }
+                Err(std::sync::TryLockError::WouldBlock) => ui
+                    .data(|data| data.get_temp::<String>(status_id))
+                    .unwrap_or_default(),
+                Err(std::sync::TryLockError::Poisoned(_)) => "Status unavailable".to_string(),
+            };
             let progress = context.state.replays.upload_progress.load();
             ui.label(status);
             if context.state.replays.upload_running.load(Ordering::SeqCst) || progress.running {
@@ -2037,9 +2051,10 @@ struct DashboardRowsContext<'a> {
 }
 
 fn build_dashboard_rows(
-    players: Vec<PlayerInfo>,
+    players: impl IntoIterator<Item = impl Borrow<PlayerInfo>>,
     context: DashboardRowsContext<'_>,
 ) -> Vec<DashboardPlayerRow> {
+    let players: Vec<_> = players.into_iter().collect();
     let playlist_player_count = players.len();
     let inferred_local_team = context
         .local_team
@@ -2047,21 +2062,23 @@ fn build_dashboard_rows(
         .or_else(|| {
             players
                 .iter()
+                .map(Borrow::borrow)
                 .find(|player| player.is_local)
                 .and_then(|player| crate::state::standard_team(player.team))
         });
     let mut rows: Vec<_> = players
         .into_iter()
-        .filter(|player| !player.is_bot)
+        .filter(|player| !player.borrow().is_bot)
         .map(|player| {
+            let player = player.borrow();
             let is_local = super::lobby_overlay::is_local_lobby_player(
-                &player,
+                player,
                 context.local_identity,
                 context.local_player_name,
                 playlist_player_count,
             );
             let history_summary = (!is_local)
-                .then(|| player_key(&player))
+                .then(|| player_key(player))
                 .flatten()
                 .and_then(|key| context.history_summaries.get(key.as_str()).cloned());
             let mmr_snapshot = player
@@ -2094,7 +2111,7 @@ fn build_dashboard_rows(
             DashboardPlayerRow {
                 rank_snapshot,
                 active_playlist: super::lobby_overlay::lobby_playlist_id(context.mode),
-                key: player_key(&player)
+                key: player_key(player)
                     .map(|key| key.as_str().to_owned())
                     .unwrap_or_else(|| {
                         format!(
@@ -2102,14 +2119,14 @@ fn build_dashboard_rows(
                             player.platform, player.primary_id, player.name, player.team
                         )
                     }),
-                tracker_url: crate::mmr::tracker_profile_url(&player),
-                primary_id: player.primary_id,
+                tracker_url: crate::mmr::tracker_profile_url(player),
+                primary_id: player.primary_id.clone(),
                 name: if player.name.trim().is_empty() {
                     "Unknown".to_string()
                 } else {
-                    player.name
+                    player.name.clone()
                 },
-                platform: player.platform,
+                platform: player.platform.clone(),
                 team: player.team,
                 is_local,
                 is_bot: player.is_bot,
@@ -2261,6 +2278,87 @@ fn short_match_id(match_id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn unchanged_dashboard_uses_slow_fallback_in_its_own_viewport() {
+        let state = AppState::new();
+        state.update_config(|config| config.dashboard_enabled = true);
+        let ctx = egui::Context::default();
+        ctx.set_embed_viewports(false);
+        let mut viewport_state = DashboardViewportState::default();
+        let root = crate::ui::review_renderer::run_ui(&ctx, egui::RawInput::default(), |ui| {
+            render_dashboard_viewport(
+                ui.ctx(),
+                state.clone(),
+                state.system.config.load_full(),
+                &mut viewport_state,
+            );
+        });
+        let id = crate::ui_repaint::dashboard_viewport_id();
+        let callback = root.viewport_output[&id].viewport_ui_cb.clone().unwrap();
+        let mut input = egui::RawInput {
+            viewport_id: id,
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 720.0),
+            )),
+            ..Default::default()
+        };
+        input.viewports.insert(
+            id,
+            egui::ViewportInfo {
+                parent: Some(egui::ViewportId::ROOT),
+                ..Default::default()
+            },
+        );
+        for pass in 0..12 {
+            input.time = Some(pass as f64);
+            let output = crate::ui::review_renderer::run_ui(&ctx, input.clone(), |ui| callback(ui));
+            if pass >= 8 {
+                assert!(
+                    output.viewport_output[&id].repaint_delay
+                        >= std::time::Duration::from_millis(900)
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn bot_only_dashboard_renders_a_terminal_waiting_state() {
+        let state = AppState::new();
+        let bot = PlayerInfo {
+            is_bot: true,
+            name: "Bot".into(),
+            ..Default::default()
+        };
+        state.game.players.store(Arc::new(HashMap::from([(
+            crate::state::PlayerKey::for_match(&bot, "test-match", None, 0),
+            bot,
+        )])));
+        for layout in [DashboardPlayerLayout::Cards, DashboardPlayerLayout::Table] {
+            let ctx = egui::Context::default();
+            let config = Config {
+                dashboard_player_layout: layout,
+                ..Default::default()
+            };
+            let output = crate::ui::review_renderer::run_ui(
+                &ctx,
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1280.0, 720.0),
+                    )),
+                    ..Default::default()
+                },
+                |ui| render_dashboard(ui, &state, &config),
+            );
+            assert!(output.shapes.iter().any(|shape| matches!(
+                &shape.shape,
+                egui::epaint::Shape::Text(text)
+                    if text.galley.text() == "Waiting for human players to join."
+            )));
+        }
+    }
 
     #[tokio::test]
     async fn player_names_open_details_in_complete_dashboard_layouts() {

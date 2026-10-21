@@ -29,6 +29,88 @@ fn handle_update_state_payload(state: &Arc<AppState>, data: &Value) {
 
 // Parsing and configuration compatibility
 
+#[tokio::test]
+async fn incoming_data_wakes_visible_huds_and_batches_dashboard_redraws() {
+    let state = AppState::new();
+    state.update_config(|config| {
+        config.session_overlay_enabled = true;
+        config.session_overlay_follow_lobby_hotkey = false;
+        config.show_teammate_boost = false;
+        config.show_lobby_ranks = false;
+        config.dashboard_enabled = false;
+    });
+    state.flags.is_launched.store(true, Ordering::SeqCst);
+    state
+        .flags
+        .is_settings_visible
+        .store(false, Ordering::SeqCst);
+    let context = eframe::egui::Context::default();
+    let _handle = state.ui_repaint.bind(&context);
+    let mut payload = json!({
+        "MatchGuid": "wake-test",
+        "Game": {"SecondsRemaining": 300, "bReplay": false},
+        "Players": [{"Name": "Me", "PrimaryId": "Steam|1|0", "TeamNum": 0,
+            "Score": 100, "IsLocalPlayer": true}]
+    });
+    let requests = crate::ui_repaint::observe_repaints(&context);
+    handle_update_state_payload(&state, &payload);
+    assert!(
+        requests
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|info| info.viewport_id == eframe::egui::ViewportId::ROOT
+                && info.delay == std::time::Duration::ZERO)
+    );
+
+    // Identical packets do not wake a session-only HUD.
+    let requests = crate::ui_repaint::observe_repaints(&context);
+    handle_update_state_payload(&state, &payload);
+    assert!(requests.lock().unwrap().is_empty());
+
+    state.flags.is_visible.store(true, Ordering::SeqCst);
+    payload["Players"][0]["Score"] = json!(200);
+    let requests = crate::ui_repaint::observe_repaints(&context);
+    handle_update_state_payload(&state, &payload);
+    assert!(
+        requests
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|info| info.viewport_id == eframe::egui::ViewportId::ROOT)
+    );
+
+    state.update_config(|config| {
+        config.dashboard_enabled = true;
+        config.dashboard_keep_overlay_enabled = false;
+    });
+    // Settle the config change's immediate child wakeup before testing packet batching.
+    let mut input = eframe::egui::RawInput {
+        viewport_id: crate::ui_repaint::dashboard_viewport_id(),
+        ..Default::default()
+    };
+    input
+        .viewports
+        .insert(input.viewport_id, eframe::egui::ViewportInfo::default());
+    for _ in 0..3 {
+        let mut output = context.run_ui(input.clone(), |_| {});
+        output.textures_delta.clear();
+    }
+    let requests = crate::ui_repaint::observe_repaints(&context);
+    payload["Players"][0]["Score"] = json!(300);
+    handle_update_state_payload(&state, &payload);
+    let requests = requests.lock().unwrap();
+    assert!(
+        requests
+            .iter()
+            .all(|info| info.viewport_id != eframe::egui::ViewportId::ROOT)
+    );
+    assert!(requests.iter().any(|info| info.viewport_id
+        == crate::ui_repaint::dashboard_viewport_id()
+        && info.delay > std::time::Duration::ZERO
+        && info.delay <= std::time::Duration::from_millis(100)));
+}
+
 #[test]
 fn test_parse_platform() {
     assert_eq!(parse_platform("Steam|123|0"), ("Steam".to_string(), false));
@@ -95,6 +177,115 @@ fn test_parse_auto_gg_key_sequences() {
 }
 
 // Player publication, dashboard snapshots, and replay touch integration
+
+#[test]
+fn shared_snapshots_reuse_rosters_and_retain_immutable_results() {
+    let state = AppState::new();
+    state.update_config(|config| {
+        config.show_lobby_ranks = false;
+        config.history_enabled = false;
+        config.debounce_touch_counters = false;
+    });
+    let first = json!({
+        "MatchGuid": "shared-match",
+        "Players": [
+            {"Name": "Me", "PrimaryId": "Steam|1|0", "TeamNum": 0, "Score": 100},
+            {"Name": "Opponent", "PrimaryId": "Epic|2|0", "TeamNum": 1, "Score": 200}
+        ]
+    });
+    handle_update_state_payload(&state, &first);
+    let snapshot = state.game.dashboard_match_snapshot.load_full();
+    assert!(Arc::ptr_eq(&snapshot.players, &state.game.players.load()));
+    assert!(Arc::ptr_eq(
+        &snapshot.players,
+        &state.game.match_roster.load()
+    ));
+    assert!(Arc::ptr_eq(&snapshot.session, &state.game.session.load()));
+
+    handle_update_state_payload(&state, &first);
+    assert!(Arc::ptr_eq(
+        &snapshot,
+        &state.game.dashboard_match_snapshot.load()
+    ));
+
+    handle_update_state_payload(
+        &state,
+        &json!({
+            "MatchGuid": "shared-match",
+            "Players": [{"Name": "Me", "PrimaryId": "Steam|1|0", "TeamNum": 0, "Score": 500}]
+        }),
+    );
+    let updated = state.game.dashboard_match_snapshot.load_full();
+    assert!(Arc::ptr_eq(
+        &updated.players,
+        &state.game.match_roster.load()
+    ));
+    assert_eq!(updated.players.len(), 2);
+    assert_eq!(player_named(&updated.players, "Me").score, 500);
+    assert_eq!(player_named(&snapshot.players, "Me").score, 100);
+    assert_eq!(player_named(&updated.players, "Opponent").score, 200);
+}
+
+#[test]
+fn player_publication_keeps_concurrent_mmr_updates_and_latest_game_stats() {
+    let state = AppState::new();
+    state.update_config(|config| config.history_enabled = false);
+    let key = test_player_key("Opponent");
+    let mut player = PlayerInfo {
+        name: "Opponent".into(),
+        platform: "Epic".into(),
+        primary_id: "Epic|2|0".into(),
+        ..Default::default()
+    };
+    let mut rank = crate::mmr::TrackerSnapshot::default();
+    rank.playlists.insert(
+        13,
+        crate::mmr::TrackerPlaylistSnapshot {
+            name: "Standard".into(),
+            rating: 0,
+            tier_name: "Champion I".into(),
+            matches: None,
+        },
+    );
+    player.mmr = Some(rank);
+    store_players_preserving_mmr(&state, HashMap::from([(key.clone(), player.clone())]));
+    let start = Arc::new(std::sync::Barrier::new(2));
+    let worker_state = state.clone();
+    let worker_key = key.clone();
+    let worker_start = start.clone();
+    let worker = std::thread::spawn(move || {
+        worker_start.wait();
+        for rating in 1..200 {
+            worker_state.game.players.rcu(|current| {
+                let mut next = (**current).clone();
+                next.get_mut(&worker_key)
+                    .unwrap()
+                    .mmr
+                    .as_mut()
+                    .unwrap()
+                    .playlists
+                    .get_mut(&13)
+                    .unwrap()
+                    .rating = rating;
+                Arc::new(next)
+            });
+        }
+    });
+    player.mmr = None;
+    start.wait();
+    for score in 1..200 {
+        player.score = score;
+        store_players_preserving_mmr(
+            &state,
+            Arc::new(HashMap::from([(key.clone(), player.clone())])),
+        );
+    }
+    worker.join().unwrap();
+    let current = state.game.players.load();
+    let current = current.get(&key).unwrap();
+    assert_eq!(current.score, 199);
+    assert_eq!(current.mmr.as_ref().unwrap().playlists[&13].rating, 199);
+}
 
 #[test]
 fn store_players_preserves_existing_mmr_when_update_omits_it() {

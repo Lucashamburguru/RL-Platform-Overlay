@@ -1,5 +1,30 @@
 //! Shared, virtualized tables with a full-width detail row and a fixed header.
 use eframe::egui;
+use std::sync::Arc;
+
+type OrderKey = (String, usize, (usize, bool));
+type OrderCache<T> = (Arc<T>, OrderKey, Arc<Vec<usize>>);
+
+// Keep the source alive so pointer identity cannot be reused for stale indices.
+pub(super) fn cached_order<T: Send + Sync + 'static>(
+    ui: &mut egui::Ui,
+    salt: &str,
+    source: &Arc<T>,
+    key: OrderKey,
+    build: impl FnOnce() -> Vec<usize>,
+) -> Arc<Vec<usize>> {
+    let id = ui.make_persistent_id(salt);
+    if let Some((previous, previous_key, indices)) =
+        ui.data(|data| data.get_temp::<OrderCache<T>>(id))
+        && Arc::ptr_eq(&previous, source)
+        && previous_key == key
+    {
+        return indices;
+    }
+    let indices = Arc::new(build());
+    ui.data_mut(|data| data.insert_temp(id, (source.clone(), key, indices.clone())));
+    indices
+}
 
 pub(super) struct Column {
     pub label: &'static str,
@@ -271,6 +296,42 @@ pub(super) fn assert_page_layout(name: &str, mut render: impl FnMut(&mut egui::U
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cached_order_reuses_indices_and_invalidates_on_source_and_controls() {
+        let ctx = egui::Context::default();
+        let source = Arc::new(vec![1, 2]);
+        let replacement = Arc::new(vec![2, 1]);
+        let mut builds = 0;
+        let _ = crate::ui::review_renderer::run_ui(&ctx, egui::RawInput::default(), |ui| {
+            let mut get_order = |source: &Arc<Vec<i32>>, query: &str, filter, sort| {
+                cached_order(
+                    ui,
+                    "test_order",
+                    source,
+                    (query.into(), filter, sort),
+                    || {
+                        builds += 1;
+                        vec![1, 0]
+                    },
+                )
+            };
+            let first = get_order(&source, "", 0, (0, false));
+            let same = get_order(&source, "", 0, (0, false));
+            assert!(Arc::ptr_eq(&first, &same));
+            for order in [
+                get_order(&source, "name", 0, (0, false)),
+                get_order(&source, "name", 1, (0, false)),
+                get_order(&source, "name", 1, (0, true)),
+                get_order(&replacement, "name", 1, (0, true)),
+            ] {
+                assert!(!Arc::ptr_eq(&first, &order));
+                assert_eq!(&*order, &[1, 0]);
+            }
+        });
+        assert_eq!(builds, 5);
+    }
+
     #[test]
     fn expanded_key_survives_reordering_and_background_refresh() {
         let ctx = egui::Context::default();

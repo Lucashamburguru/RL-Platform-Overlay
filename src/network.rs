@@ -1,7 +1,7 @@
 use crate::session::SessionMode;
 use crate::state::{AppState, DashboardMatchSnapshot, PlayerInfo, PlayerMap, standard_team};
 use crate::stats_api_parser::{
-    RosterSignature, StatsApiEvent, StatsApiParseContext, parse_stats_api_event,
+    RosterSignature, StatsApiEvent, StatsApiParseContext, parse_owned_stats_api_event,
 };
 use serde_json::Value;
 use std::collections::HashMap;
@@ -63,11 +63,18 @@ fn handle_match_reset(state: &Arc<AppState>, early_leave: bool) {
     log::info!("Match ended, clearing player list.");
 }
 
+#[cfg(test)]
 fn handle_event(state: &Arc<AppState>, json: &Value) {
+    handle_owned_event(state, json.clone());
+}
+
+fn handle_owned_event(state: &Arc<AppState>, json: Value) {
+    let previous_session = state.game.session.load_full();
+    let previous_players = state.game.players.load_full();
     let parsed_event = parse_event_for_state(state, json);
     update_last_event(state, &parsed_event.event_name);
     match parsed_event.event_name.as_str() {
-        "UpdateState" => handle_update_state(state, &parsed_event),
+        "UpdateState" => handle_update_state(state, parsed_event),
         "ClockUpdatedSeconds" => {
             state.game.session.rcu(|current_session| {
                 let mut session = (**current_session).clone();
@@ -191,9 +198,16 @@ fn handle_event(state: &Arc<AppState>, json: &Value) {
         }
         _ => log::debug!("Received event: {}", parsed_event.event_name),
     }
+    let players = state.game.players.load();
+    let players_changed =
+        !Arc::ptr_eq(&previous_players, &players) && previous_players.as_ref() != players.as_ref();
+    state.request_game_repaint(
+        players_changed,
+        !Arc::ptr_eq(&previous_session, &state.game.session.load()),
+    );
 }
 
-fn parse_event_for_state(state: &Arc<AppState>, json: &Value) -> StatsApiEvent {
+fn parse_event_for_state(state: &Arc<AppState>, json: Value) -> StatsApiEvent {
     let current_local_name = state.game.local_player_name.load();
     let cached_identity = state.game.local_player_identity.load();
     let previous_players = state.game.players.load();
@@ -206,7 +220,7 @@ fn parse_event_for_state(state: &Arc<AppState>, json: &Value) -> StatsApiEvent {
     } else {
         active_match_id
     };
-    parse_stats_api_event(
+    parse_owned_stats_api_event(
         json,
         StatsApiParseContext {
             current_local_name: current_local_name.trim(),
@@ -218,19 +232,19 @@ fn parse_event_for_state(state: &Arc<AppState>, json: &Value) -> StatsApiEvent {
     )
 }
 
-fn handle_update_state(state: &Arc<AppState>, parsed_event: &StatsApiEvent) {
+fn handle_update_state(state: &Arc<AppState>, mut parsed_event: StatsApiEvent) {
     update_match_guid_diagnostics(state, parsed_event.match_guid.as_deref().unwrap_or(""));
 
     let was_goal_replay = state.game.session.load().is_goal_replay;
     if parsed_event.is_replay || state.flags.is_watching_replay.load(Ordering::SeqCst) {
-        update_session_from_event(state, parsed_event, false);
+        update_session_from_event(state, &parsed_event, false);
         let session = state.game.session.load();
         if session.is_watching_replay || session.is_goal_replay {
             return;
         }
     }
     if was_goal_replay && !parsed_event.is_replay {
-        record_replay_touch_offsets(state, parsed_event);
+        record_replay_touch_offsets(state, &parsed_event);
     }
 
     let active_match_id = state.game.session.load().active_match_id.clone();
@@ -245,31 +259,24 @@ fn handle_update_state(state: &Arc<AppState>, parsed_event: &StatsApiEvent) {
             .store(crate::state::NO_TEAM, Ordering::SeqCst);
     }
 
-    apply_local_player_update(state, parsed_event);
+    apply_local_player_update(state, &parsed_event);
 
-    if !parsed_event.players.is_empty() {
-        // println!("State Updated: {} players in lobby", new_players.len());
-    }
-    let mut players = parsed_event.players.clone();
-    apply_replay_touch_offsets(state, parsed_event.match_guid.as_deref(), &mut players);
+    let players = Arc::make_mut(&mut parsed_event.players);
+    apply_replay_touch_offsets(state, parsed_event.match_guid.as_deref(), players);
     let previous_players = state.game.players.load();
     let config = state.system.config.load();
     if config.debounce_touch_counters {
         let now = std::time::Instant::now();
-        debounce_touch_counters(state, &mut players, now);
+        debounce_touch_counters(state, players, now);
         if config.estimate_teammate_bumps {
-            estimate_teammate_bumps(state, &previous_players, &players, now);
+            estimate_teammate_bumps(state, &previous_players, players, now);
         } else {
             clear_teammate_bump_estimator(state);
         }
     } else {
         clear_teammate_bump_estimator(state);
     }
-    let roster_changed = store_players_preserving_mmr(state, players.clone());
-    let parsed_event = StatsApiEvent {
-        players,
-        ..parsed_event.clone()
-    };
+    let roster_changed = store_players_preserving_mmr(state, parsed_event.players.clone());
     update_match_roster(state, &parsed_event);
 
     update_session_from_event(state, &parsed_event, roster_changed);
@@ -282,10 +289,7 @@ fn update_match_roster(state: &Arc<AppState>, parsed_event: &StatsApiEvent) {
         return;
     }
 
-    let frame_roster = parsed_event.players.clone();
-    if frame_roster.is_empty() {
-        return;
-    }
+    let frame_roster = &parsed_event.players;
 
     let current_guid = state.game.match_roster_guid.load();
     if current_guid.as_str() != match_guid {
@@ -293,18 +297,33 @@ fn update_match_roster(state: &Arc<AppState>, parsed_event: &StatsApiEvent) {
             .game
             .match_roster_guid
             .store(Arc::new(match_guid.to_string()));
-        state.game.match_roster.store(Arc::new(frame_roster));
+        state.game.match_roster.store(frame_roster.clone());
         return;
     }
     drop(current_guid);
 
-    state.game.match_roster.rcu(|current_roster| {
-        let mut merged = (**current_roster).clone();
-        for (key, player) in &frame_roster {
-            merged.insert(key.clone(), player.clone());
-        }
-        Arc::new(merged)
-    });
+    state
+        .game
+        .match_roster
+        .rcu(|current_roster| merge_retained_players(current_roster, frame_roster));
+}
+
+fn merge_retained_players(previous: &Arc<PlayerMap>, incoming: &Arc<PlayerMap>) -> Arc<PlayerMap> {
+    if previous.as_ref() == incoming.as_ref() {
+        return previous.clone();
+    }
+    if previous.keys().all(|key| incoming.contains_key(key)) {
+        return incoming.clone();
+    }
+    // Copy each retained player once; incoming entries replace prior statistics.
+    Arc::new(
+        previous
+            .iter()
+            .filter(|(key, _)| !incoming.contains_key(*key))
+            .chain(incoming.iter())
+            .map(|(key, player)| (key.clone(), player.clone()))
+            .collect(),
+    )
 }
 
 fn is_online_player(player: &PlayerInfo) -> bool {
@@ -330,11 +349,11 @@ fn apply_local_player_update(state: &Arc<AppState>, parsed_event: &StatsApiEvent
     }
 }
 
-fn store_players_preserving_mmr(state: &Arc<AppState>, players: PlayerMap) -> bool {
+fn store_players_preserving_mmr(state: &Arc<AppState>, players: impl Into<Arc<PlayerMap>>) -> bool {
+    let new_players_arc = players.into();
     let previous_players = state.game.players.load();
-    let history_roster_changed =
-        RosterSignature::from_players(&previous_players) != RosterSignature::from_players(&players);
-    let new_players_arc = Arc::new(players);
+    let history_roster_changed = RosterSignature::from_players(&previous_players)
+        != RosterSignature::from_players(&new_players_arc);
     state.game.players.rcu(|current_players| {
         let needs_merge = current_players.iter().any(|(name, player)| {
             player.mmr.is_some()
@@ -344,6 +363,9 @@ fn store_players_preserving_mmr(state: &Arc<AppState>, players: PlayerMap) -> bo
         });
 
         if !needs_merge {
+            if current_players.as_ref() == new_players_arc.as_ref() {
+                return current_players.clone();
+            }
             return new_players_arc.clone();
         }
 
@@ -355,7 +377,11 @@ fn store_players_preserving_mmr(state: &Arc<AppState>, players: PlayerMap) -> bo
                 player.mmr = prev.mmr.clone();
             }
         }
-        Arc::new(final_players)
+        if current_players.as_ref() == &final_players {
+            current_players.clone()
+        } else {
+            Arc::new(final_players)
+        }
     });
     if history_roster_changed {
         update_roster_change_diagnostics(state);
@@ -436,14 +462,16 @@ fn update_dashboard_match_snapshot(state: &Arc<AppState>, parsed_event: &StatsAp
         return;
     }
 
-    let current_session = state.game.session.load();
-    if current_session.is_watching_replay {
+    let session = state.game.session.load_full();
+    if session.is_watching_replay {
         return;
     }
 
     let local_team = state.game.local_team.load(Ordering::SeqCst);
     let local_team = standard_team(local_team);
-    let session = (**current_session).clone();
+    // The roster producer already retained departed players for this match.
+    // Share that immutable map instead of rebuilding it a second time.
+    let players = state.game.match_roster.load_full();
     let team_bumps = state
         .game
         .teammate_bump_estimator
@@ -451,24 +479,22 @@ fn update_dashboard_match_snapshot(state: &Arc<AppState>, parsed_event: &StatsAp
         .map(|estimator| estimator.team_bumps)
         .unwrap_or([0, 0]);
     state.game.dashboard_match_snapshot.rcu(|current| {
-        let mut snapshot = if current.match_guid == match_guid {
-            let mut snapshot = (**current).clone();
-            for (name, player) in &parsed_event.players {
-                snapshot.players.insert(name.clone(), player.clone());
-            }
-            snapshot
-        } else {
-            DashboardMatchSnapshot {
-                match_guid: match_guid.to_string(),
-                players: parsed_event.players.clone(),
-                ..Default::default()
-            }
-        };
-
-        snapshot.session = session.clone();
-        snapshot.local_team = local_team.or(session.local_team);
-        snapshot.team_bumps = team_bumps;
-        Arc::new(snapshot)
+        let local_team = local_team.or(session.local_team);
+        if current.match_guid == match_guid
+            && Arc::ptr_eq(&current.players, &players)
+            && Arc::ptr_eq(&current.session, &session)
+            && current.local_team == local_team
+            && current.team_bumps == team_bumps
+        {
+            return current.clone();
+        }
+        Arc::new(DashboardMatchSnapshot {
+            match_guid: match_guid.to_string(),
+            players: players.clone(),
+            session: session.clone(),
+            local_team,
+            team_bumps,
+        })
     });
 }
 

@@ -17,7 +17,37 @@ pub(crate) struct MonitorPlacement {
 pub(crate) fn available_monitors(ctx: &egui::Context) -> Vec<MonitorInfo> {
     #[cfg(target_os = "windows")]
     {
-        windows_monitors(ctx.pixels_per_point())
+        use std::time::{Duration, Instant};
+        #[derive(Clone)]
+        struct MonitorCache {
+            scale: f32,
+            monitor_size: Option<egui::Vec2>,
+            refreshed: Instant,
+            monitors: Vec<MonitorInfo>,
+        }
+        let id = egui::Id::new("windows_monitor_topology");
+        let scale = ctx.pixels_per_point();
+        let monitor_size = ctx.input(|input| input.viewport().monitor_size);
+        if let Some(cache) = ctx.data(|data| data.get_temp::<MonitorCache>(id))
+            && cache.scale == scale
+            && cache.monitor_size == monitor_size
+            && cache.refreshed.elapsed() < Duration::from_secs(1)
+        {
+            return cache.monitors;
+        }
+        let monitors = windows_monitors(scale);
+        ctx.data_mut(|data| {
+            data.insert_temp(
+                id,
+                MonitorCache {
+                    scale,
+                    monitor_size,
+                    refreshed: Instant::now(),
+                    monitors: monitors.clone(),
+                },
+            );
+        });
+        monitors
     }
 
     #[cfg(not(target_os = "windows"))]

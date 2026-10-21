@@ -6,6 +6,7 @@ use crate::session::{MatchResult, SessionMode, SessionModeSource};
 use crate::state::{LocalPlayerIdentity, NO_TEAM, PlayerInfo, PlayerKey, PlayerMap, standard_team};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 #[derive(Clone, Debug)]
 pub struct StatsApiParseContext<'a> {
@@ -16,13 +17,12 @@ pub struct StatsApiParseContext<'a> {
     pub previous_match_scope: &'a str,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct StatsApiEvent {
     pub event_name: String,
     pub data: Value,
     pub match_guid: Option<String>,
-    pub game: Option<Value>,
-    pub players: PlayerMap,
+    pub players: Arc<PlayerMap>,
     pub player_count: Option<usize>,
     pub local_player_hint: Option<LocalPlayerHint>,
     pub session_mode_hint: Option<String>,
@@ -99,12 +99,37 @@ pub fn parse_stats_api_event(raw: &Value, context: StatsApiParseContext<'_>) -> 
     parse_stats_api_data(event_name, data, context)
 }
 
+/// Consumes transport-owned JSON instead of cloning its complete Data object.
+pub fn parse_owned_stats_api_event(
+    mut raw: Value,
+    context: StatsApiParseContext<'_>,
+) -> StatsApiEvent {
+    let event_name = string_field(&raw, &["Event", "event"])
+        .unwrap_or("Unknown")
+        .to_string();
+    let data = raw
+        .as_object_mut()
+        .and_then(|object| object.remove("Data").or_else(|| object.remove("data")))
+        .unwrap_or(raw);
+    let data = match data {
+        Value::String(encoded) => serde_json::from_str(&encoded).unwrap_or(Value::String(encoded)),
+        other => other,
+    };
+    parse_stats_api_data(event_name, data, context)
+}
+
+impl StatsApiEvent {
+    pub fn game(&self) -> Option<&Value> {
+        self.data.get("Game").or_else(|| self.data.get("game"))
+    }
+}
+
 pub fn parse_stats_api_data(
     event_name: String,
     data: Value,
     context: StatsApiParseContext<'_>,
 ) -> StatsApiEvent {
-    let game = data.get("Game").or_else(|| data.get("game")).cloned();
+    let game = data.get("Game").or_else(|| data.get("game"));
     let match_guid = string_field(&data, &["MatchGuid", "matchGuid"])
         .map(str::to_string)
         .unwrap_or_default();
@@ -114,7 +139,7 @@ pub fn parse_stats_api_data(
         &match_guid
     };
     let preserve_previous_teams = player_scope == context.previous_match_scope;
-    let hints = game.as_ref().map(extract_game_hints).unwrap_or_default();
+    let hints = game.map(extract_game_hints).unwrap_or_default();
     let effective_local_name = hints
         .local_name
         .as_deref()
@@ -155,12 +180,10 @@ pub fn parse_stats_api_data(
         .map(|(count, source)| (Some(count), source))
         .unwrap_or((None, SessionModeSource::Unknown));
     let (session_mode_hint, mode_hint_source) = game
-        .as_ref()
         .and_then(session_mode_hint_with_source)
         .map(|(hint, source)| (Some(hint.to_string()), source))
         .unwrap_or((None, SessionModeSource::Unknown));
     let winner_hint = game
-        .as_ref()
         .and_then(|game| string_field(game, &["Winner", "winner"]))
         .map(str::to_string);
     let winner_team_num = number_field(
@@ -170,14 +193,12 @@ pub fn parse_stats_api_data(
     .and_then(checked_u8)
     .and_then(standard_team);
     let has_winner = game
-        .as_ref()
         .and_then(|game| bool_field(game, &["bHasWinner", "hasWinner"]))
         .unwrap_or(false);
     let is_replay = game
-        .as_ref()
         .and_then(|game| bool_field(game, &["bReplay", "b_replay", "replay"]))
         .unwrap_or(false);
-    let (blue_score, orange_score) = game.as_ref().map(team_scores).unwrap_or((0, 0));
+    let (blue_score, orange_score) = game.map(team_scores).unwrap_or((0, 0));
     let score = ScoreSignature {
         match_guid: match_guid.clone(),
         blue_score,
@@ -197,8 +218,7 @@ pub fn parse_stats_api_data(
         event_name,
         data,
         match_guid: (!match_guid.is_empty()).then_some(match_guid),
-        game,
-        players,
+        players: Arc::new(players),
         player_count,
         local_player_hint,
         session_mode_hint,
@@ -708,6 +728,37 @@ mod tests {
     }
 
     #[test]
+    fn owned_parser_preserves_schema_fallbacks_and_moves_json_allocations() {
+        let identity = LocalPlayerIdentity::default();
+        let previous = HashMap::new();
+        let data = json!({
+            "MatchGuid": "owned-test",
+            "Game": {"Arena": "A long arena name whose allocation should be retained"},
+            "Players": [{"Name": "Player", "PrimaryId": "Steam|1|0", "TeamNum": 0}]
+        });
+        for raw in [
+            json!({"Event": "UpdateState", "Data": data}),
+            json!({"Event": "UpdateState", "Data": data.to_string()}),
+            json!({"event": "UpdateState", "data": data}),
+            json!({"Event": "UpdateState", "Data": null, "data": data}),
+            json!({"Event": "UpdateState", "Data": "malformed JSON"}),
+            data.clone(),
+            Value::String(data.to_string()),
+        ] {
+            let expected = parse_stats_api_event(&raw, context(&identity, &previous));
+            let actual = parse_owned_stats_api_event(raw, context(&identity, &previous));
+            assert_eq!(actual, expected);
+        }
+        let raw = json!({"Event": "UpdateState", "Data": data});
+        let arena = raw["Data"]["Game"]["Arena"].as_str().unwrap().as_ptr();
+        let actual = parse_owned_stats_api_event(raw, context(&identity, &previous));
+        assert_eq!(
+            actual.game().unwrap()["Arena"].as_str().unwrap().as_ptr(),
+            arena
+        );
+    }
+
+    #[test]
     fn normalizes_common_update_state_fields() {
         let identity = LocalPlayerIdentity::default();
         let previous = HashMap::new();
@@ -782,7 +833,7 @@ mod tests {
 
     #[test]
     fn incomplete_identity_fallbacks_are_distinct_and_match_scoped() {
-        fn parse_fallbacks(match_guid: &str) -> PlayerMap {
+        fn parse_fallbacks(match_guid: &str) -> Arc<PlayerMap> {
             let identity = LocalPlayerIdentity::default();
             let previous = PlayerMap::new();
             parse_stats_api_event(

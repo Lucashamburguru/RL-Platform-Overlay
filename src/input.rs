@@ -68,6 +68,7 @@ pub fn toggle_settings_hotkey(state: &Arc<AppState>, source: &str) {
         ),
     );
     log::info!("Settings menu visibility toggled to: {}", !current);
+    state.request_ui_repaint();
 }
 
 pub fn try_launch_overlay_at_path(
@@ -104,10 +105,12 @@ pub fn try_launch_overlay_at_path(
             format!("overlay_launch_blocked source={source} reason={detail}"),
         );
         log::warn!("Overlay launch blocked ({source}): {detail}");
+        state.request_ui_repaint();
         return false;
     }
 
     state.flags.is_launched.store(true, Ordering::SeqCst);
+    state.request_ui_repaint();
     true
 }
 
@@ -158,6 +161,7 @@ pub fn toggle_launch_hotkey(state: &Arc<AppState>, source: &str) {
         format!("launch_toggle source={source} current={current} new={new}"),
     );
     log::info!("Overlay launched toggled to: {new}");
+    state.request_ui_repaint();
 }
 
 pub fn handle_hud_hotkey_event(state: &Arc<AppState>, pressed: bool, source: &str) {
@@ -208,6 +212,7 @@ pub fn handle_hud_hotkey_event(state: &Arc<AppState>, pressed: bool, source: &st
             );
         }
     }
+    state.request_ui_repaint();
 }
 
 pub fn start_input_tasks(state: Arc<AppState>) {
@@ -221,9 +226,14 @@ fn start_controller_listener(state_ctrl: Arc<AppState>) {
             log::info!("Gamepad listener started.");
             let mut pressed_controller_hotkeys = HashSet::new();
 
-            loop {
-                // Poll for new events and update gilrs state
-                while let Some(Event { id, event, .. }) = gilrs.next_event() {
+            while !state_ctrl.flags.should_exit.load(Ordering::SeqCst) {
+                // XInput polls on its own backend thread. Wait on its event
+                // channel (epoll on Linux) instead of waking every 5 ms here.
+                // The timeout only lets us notice shutdown; arriving input wakes
+                // this wait immediately, including connect/disconnect events.
+                if let Some(Event { id, event, .. }) =
+                    gilrs.next_event_blocking(Some(std::time::Duration::from_secs(1)))
+                {
                     match event {
                         gilrs::EventType::Connected => {
                             let pad = gilrs.gamepad(id);
@@ -276,10 +286,6 @@ fn start_controller_listener(state_ctrl: Arc<AppState>) {
                         _ => {}
                     }
                 }
-
-                // On Windows, some backends may require explicit polling or status updates
-                // though next_event usually handles it. We sleep a bit less to stay responsive.
-                std::thread::sleep(std::time::Duration::from_millis(5));
             }
         }
         Err(error) => {
@@ -306,6 +312,7 @@ fn start_keyboard_listener(state_kb: Arc<AppState>) {
                         .is_recording_kb
                         .store(false, Ordering::SeqCst);
                     log::info!("Keyboard hotkey updated to: {:?}", key);
+                    state_kb.request_ui_repaint();
                     append_hotkey_debug_log(
                         hotkey_debug_logging_enabled(&state_kb),
                         format!("record_keyboard_hotkey key={key_debug}"),
@@ -321,6 +328,7 @@ fn start_keyboard_listener(state_kb: Arc<AppState>) {
                         .is_recording_settings
                         .store(false, Ordering::SeqCst);
                     log::info!("Settings hotkey updated to: {:?}", key);
+                    state_kb.request_ui_repaint();
                     append_hotkey_debug_log(
                         hotkey_debug_logging_enabled(&state_kb),
                         format!("record_settings_hotkey key={key_debug}"),
@@ -332,6 +340,7 @@ fn start_keyboard_listener(state_kb: Arc<AppState>) {
                         .is_recording_launch
                         .store(false, Ordering::SeqCst);
                     log::info!("Launch hotkey updated to: {:?}", key);
+                    state_kb.request_ui_repaint();
                     append_hotkey_debug_log(
                         hotkey_debug_logging_enabled(&state_kb),
                         format!("record_launch_hotkey key={key_debug}"),
@@ -403,6 +412,7 @@ fn record_controller_hotkey(state: &Arc<AppState>, id: gilrs::GamepadId, button_
         .is_recording_ctrl
         .store(false, Ordering::SeqCst);
     log::info!("Controller hotkey updated: {}", button_str);
+    state.request_ui_repaint();
 }
 
 pub(crate) fn keyboard_hotkey_matches(key_str: &str, configured_hotkey: &str) -> bool {
@@ -442,11 +452,43 @@ fn handle_controller_hotkey(
     } else if pressed_controller_hotkeys.remove(&key) && !config.hotkey_toggle {
         state.flags.is_visible.store(false, Ordering::SeqCst);
     }
+    state.request_ui_repaint();
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn global_hotkeys_wake_a_sleeping_root_on_press_and_release() {
+        let state = AppState::new();
+        state.update_config(|config| config.hotkey_toggle = false);
+        let context = eframe::egui::Context::default();
+        let _handle = state.ui_repaint.bind(&context);
+        for pressed in [true, false] {
+            let requests = crate::ui_repaint::observe_repaints(&context);
+            handle_hud_hotkey_event(&state, pressed, "test");
+            assert_eq!(state.flags.is_visible.load(Ordering::SeqCst), pressed);
+            assert!(
+                requests
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|info| info.viewport_id == eframe::egui::ViewportId::ROOT
+                        && info.delay == std::time::Duration::ZERO)
+            );
+        }
+        let requests = crate::ui_repaint::observe_repaints(&context);
+        toggle_settings_hotkey(&state, "test");
+        assert!(
+            requests
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|info| info.viewport_id == eframe::egui::ViewportId::ROOT
+                    && info.delay == std::time::Duration::ZERO)
+        );
+    }
 
     #[test]
     fn overlay_launch_is_blocked_when_stats_api_file_is_not_enabled() {
