@@ -1,6 +1,6 @@
 [package]
 name = "rl-platform-overlay"
-version = "0.1.62"
+version = "0.1.63"
 edition = "2024"
 
 [features]
@@ -43,7 +43,7 @@ semver = "1.0"
 tempfile = "3.0"
 
 [patch.crates-io]
-# rdev 0.5.3's Windows listener passes a null MSG pointer to GetMessageA.
+# Local Windows message-loop and Linux listener-state fixes; see vendor/rdev/README.overlay.md.
 rdev = { path = "vendor/rdev" }
 
 

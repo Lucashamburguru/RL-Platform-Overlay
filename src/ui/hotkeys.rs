@@ -5,6 +5,47 @@ use std::sync::atomic::Ordering;
 
 use super::common::{helper_text, setting_row, settings_section};
 
+pub(super) fn handle_focused_hotkeys(
+    ctx: &egui::Context,
+    state: &Arc<AppState>,
+    is_launched: bool,
+) {
+    let config = state.system.config.load();
+    // Hotkey actions request repaints. Release egui's input lock before calling
+    // them, since requesting a repaint takes the same context lock.
+    let keys: Vec<_> = ctx.input(|input| {
+        input
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                egui::Event::Key {
+                    key,
+                    pressed,
+                    repeat,
+                    ..
+                } => Some((*key, *pressed, *repeat)),
+                _ => None,
+            })
+            .collect()
+    });
+    for (key, pressed, repeat) in keys {
+        let Some(name) = egui_to_rdev_key(key) else {
+            continue;
+        };
+        if pressed && !repeat {
+            if name == config.hotkey_settings {
+                crate::input::toggle_settings_hotkey(state, "egui");
+            }
+            if name == config.hotkey_launch {
+                crate::input::toggle_launch_hotkey(state, "egui");
+            }
+        }
+        if is_launched && crate::input::keyboard_hotkey_matches(&name, &config.hotkey_kb) {
+            crate::input::handle_hud_hotkey_event(state, pressed, "egui");
+        }
+    }
+}
+
 pub(super) fn render_hotkey_settings_section(
     ui: &mut egui::Ui,
     ctx: &egui::Context,
@@ -335,4 +376,95 @@ pub(super) fn egui_to_rdev_key(key: egui::Key) -> Option<String> {
         _ => return None,
     };
     Some(s.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn focused_tab_holds_and_toggles_hud_with_live_repaints() {
+        for toggle in [false, true] {
+            let state = AppState::new();
+            state.update_config(|config| {
+                config.hotkey_kb = "Tab".to_owned();
+                config.hotkey_toggle = toggle;
+            });
+            let ctx = egui::Context::default();
+            let _repaint_handle = state.ui_repaint.bind(&ctx);
+            let send_key = |pressed, repeat| {
+                let mut output = ctx.run_ui(
+                    egui::RawInput {
+                        events: vec![egui::Event::Key {
+                            key: egui::Key::Tab,
+                            physical_key: Some(egui::Key::Tab),
+                            pressed,
+                            repeat,
+                            modifiers: egui::Modifiers::NONE,
+                        }],
+                        ..Default::default()
+                    },
+                    |_| handle_focused_hotkeys(&ctx, &state, true),
+                );
+                output.textures_delta.clear();
+            };
+            send_key(true, false);
+            assert!(state.flags.is_visible.load(Ordering::SeqCst));
+            send_key(true, true);
+            assert!(state.flags.is_visible.load(Ordering::SeqCst));
+            send_key(false, false);
+            assert_eq!(state.flags.is_visible.load(Ordering::SeqCst), toggle);
+            send_key(true, false);
+            assert_eq!(state.flags.is_visible.load(Ordering::SeqCst), !toggle);
+            send_key(false, false);
+            assert!(!state.flags.is_visible.load(Ordering::SeqCst));
+        }
+    }
+
+    #[test]
+    fn focused_f1_opens_settings_in_both_modes_and_ignores_repeats() {
+        for launched in [false, true] {
+            let state = AppState::new();
+            state.flags.is_launched.store(launched, Ordering::SeqCst);
+            state
+                .flags
+                .is_settings_visible
+                .store(false, Ordering::SeqCst);
+            let ctx = egui::Context::default();
+            let _repaint_handle = state.ui_repaint.bind(&ctx);
+            let send_key = |pressed, repeat| {
+                let mut output = ctx.run_ui(
+                    egui::RawInput {
+                        events: vec![egui::Event::Key {
+                            key: egui::Key::F1,
+                            physical_key: Some(egui::Key::F1),
+                            pressed,
+                            repeat,
+                            modifiers: egui::Modifiers::NONE,
+                        }],
+                        ..Default::default()
+                    },
+                    |_| handle_focused_hotkeys(&ctx, &state, launched),
+                );
+                output.textures_delta.clear();
+            };
+            send_key(true, false);
+            assert!(state.flags.is_settings_visible.load(Ordering::SeqCst));
+            // Let a repeat through past the debounce window to ensure it is
+            // rejected by the focused handler rather than just the timer.
+            state
+                .hotkeys
+                .last_settings_hotkey_unix_ms
+                .store(0, Ordering::SeqCst);
+            send_key(true, true);
+            assert!(state.flags.is_settings_visible.load(Ordering::SeqCst));
+            state
+                .hotkeys
+                .last_settings_hotkey_unix_ms
+                .store(0, Ordering::SeqCst);
+            send_key(false, false);
+            send_key(true, false);
+            assert!(!state.flags.is_settings_visible.load(Ordering::SeqCst));
+        }
+    }
 }

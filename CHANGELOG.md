@@ -8,27 +8,37 @@ This file describes changes to the app in each release.
 
 ---
 
-## [0.1.62] - 2026-10-20
+## [0.1.63] - 2026-10-24
 
 ### Fixed
 
-- **Certificate Trust**: The app uses an updated root certificate bundle that removes trust in the affected emSign certificate chain. This update resolves the dependency audit failure that blocked v0.1.61 release files.
+- **Hotkeys**: Keyboard shortcuts no longer freeze the app when its window has focus. The settings shortcut also works when the overlay is stopped.
+- **Linux Input**: Each input listener keeps its own keyboard and callback state. This change removes unsafe shared state and the related build warnings.
+
+---
+
+## [0.1.62] - 2026-10-20
+
+### Changed
+
+- **Display Performance**: The overlay copies less player data when it receives updates or draws panels. Replay and history pages keep search and sort results until the data or settings change.
+- **Display Refresh**: If panel data does not change, the overlay and dashboard update the panels less often. New data and hotkeys start display updates. Low-boost animation and HUD movement keep a fast refresh rate.
+- **Controller Input**: The hotkey listener waits for controller events. It does not check for events every five milliseconds.
+
+### Fixed
+
+- **Certificate Trust**: The app uses an updated root certificate bundle. This bundle removes trust in the affected emSign certificate chain. The update corrects the security check failure that prevented the publication of release files for version 0.1.61.
+- **Rank Lookups**: If a player name contains asterisks, the app uses the Epic account ID for rank requests and Tracker links.
+- **Dashboard**: If a lobby contains only bots, the dashboard shows a waiting message. The app continues to operate.
+- **Windows Overlay Border**: The app disables the window shadow. This shadow can cause a thin line at the top of the overlay.
 
 ---
 
 ## [0.1.61] - 2026-10-20
 
-### Changed
+### Note
 
-- **Display Performance**: The overlay copies less player data during live updates and rendering. Replay and history pages reuse search and sort results until their inputs change.
-- **Display Refresh**: Unchanged HUDs and dashboards refresh less often. Live data and hotkeys trigger updates. Low-boost pulses and HUD dragging keep a fast refresh rate.
-- **Controller Input**: The hotkey listener waits for controller events instead of checking for them every five milliseconds.
-
-### Fixed
-
-- **Rank Lookups**: The app uses the Epic account ID for rank requests and Tracker links when the player name contains asterisks.
-- **Dashboard**: A lobby containing only bots shows a waiting message instead of causing the app to close.
-- **Windows Overlay Border**: The app disables the window shadow that can draw a thin line at the top of the overlay.
+- **Unpublished Release**: The security check failed for this tag. The tag did not produce release files. Release 0.1.62 includes all changes from this tag.
 
 ---
 

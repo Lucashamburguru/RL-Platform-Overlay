@@ -7,7 +7,7 @@ use std::time::Duration;
 use super::boost_hud::{render_teammate_boost, render_teammate_boost_position_preview};
 use super::dashboard::{DashboardViewportState, render_dashboard_viewport};
 use super::debug::render_debug_settings_tab;
-use super::hotkeys::egui_to_rdev_key;
+use super::hotkeys::handle_focused_hotkeys;
 use super::lobby_overlay::render_overlay;
 use super::session_hud::render_session_overlay;
 use super::settings::OverlaySubtab;
@@ -67,6 +67,7 @@ pub struct MainApp {
     last_rl_check: std::time::Instant,
     last_runtime_log: Option<std::time::Instant>,
     last_logged_show_settings: Option<bool>,
+    last_settings_requested: bool,
     #[allow(clippy::type_complexity)]
     last_viewport_state: Option<(bool, bool, bool, bool, Option<egui::Pos2>, [f32; 2])>,
     dashboard_viewport_state: DashboardViewportState,
@@ -100,6 +101,7 @@ impl MainApp {
                 .checked_sub(std::time::Duration::from_secs(5))
                 .unwrap_or_else(std::time::Instant::now),
             last_logged_show_settings: None,
+            last_settings_requested: false,
             last_runtime_log: None,
             last_viewport_state: None,
             dashboard_viewport_state: DashboardViewportState::default(),
@@ -118,6 +120,26 @@ impl MainApp {
             item_swap_risk_accepted: false,
             settings_content_overflow: false,
         }
+    }
+
+    fn sync_settings_window(&mut self, ctx: &egui::Context) {
+        if self.repaint_context.as_deref() != Some(ctx) {
+            self.repaint_context = Some(self.state.ui_repaint.bind(ctx));
+        }
+        let requested = self.state.flags.is_settings_visible.load(Ordering::SeqCst);
+        if requested && !self.last_settings_requested {
+            // eframe can run logic without UI while the window is occluded or
+            // minimized. Restore it here so opening settings can resume drawing.
+            for command in [
+                egui::ViewportCommand::Visible(true),
+                egui::ViewportCommand::Minimized(false),
+                egui::ViewportCommand::Focus,
+            ] {
+                ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, command);
+            }
+            ctx.request_repaint();
+        }
+        self.last_settings_requested = requested;
     }
 
     fn refresh_rocket_league_process_detection(&mut self) {
@@ -160,6 +182,191 @@ mod page_tour;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn arrange_hud_drag_done_and_cancel_complete_with_live_repaints() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            runtime.block_on(async {
+                let state = AppState::new();
+                let game = tempfile::tempdir().unwrap();
+                let game_config = game.path().join("TAGame/Config");
+                std::fs::create_dir_all(&game_config).unwrap();
+                std::fs::write(
+                    game_config.join("DefaultStatsAPI.ini"),
+                    "[TAGame.MatchStatsExporter_TA]\nPacketSendRate=30\nPort=49123\n",
+                )
+                .unwrap();
+                state.update_config(|config| {
+                    config.rocket_league_path = game.path().to_string_lossy().into_owned();
+                    config.dashboard_enabled = false;
+                    config.session_overlay_enabled = true;
+                    config.show_teammate_boost = true;
+                    // Keep all three drag handles clear of the settings window.
+                    config.lobby_manual_position = Some([0.65, 0.1]);
+                    config.session_manual_position = Some([0.65, 0.45]);
+                    config.teammate_boost_manual_position = Some([0.65, 0.7]);
+                });
+                let mut app = MainApp::new(state.clone(), None);
+                app.last_rl_check = std::time::Instant::now();
+                let ctx = egui::Context::default();
+                let mut frame = eframe::Frame::_new_kittest();
+                let mut render = |events| {
+                    crate::ui::review_renderer::run_ui(
+                        &ctx,
+                        egui::RawInput {
+                            screen_rect: Some(egui::Rect::from_min_size(
+                                egui::Pos2::ZERO,
+                                egui::vec2(1920.0, 1080.0),
+                            )),
+                            events,
+                            ..Default::default()
+                        },
+                        |ui| {
+                            eframe::App::logic(&mut app, &ctx, &mut frame);
+                            eframe::App::ui(&mut app, ui, &mut frame);
+                        },
+                    )
+                };
+                let mut saved_positions = None;
+                for label in ["Arrange HUD", "Done", "Arrange HUD", "Cancel"] {
+                    tx.send(format!("rendering before {label}")).unwrap();
+                    for _ in 0..3 {
+                        let _ = render(vec![]);
+                    }
+                    let output = render(vec![]);
+                    let pos = output
+                        .shapes
+                        .iter()
+                        .find_map(|shape| {
+                            if let egui::epaint::Shape::Text(text) = &shape.shape
+                                && text.galley.text() == label
+                            {
+                                Some(text.visual_bounding_rect().center())
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or_else(|| panic!("missing button: {label}"));
+                    tx.send(format!("clicking {label}")).unwrap();
+                    for pressed in [true, false] {
+                        let _ = render(vec![
+                            egui::Event::PointerMoved(pos),
+                            egui::Event::PointerButton {
+                                pos,
+                                button: egui::PointerButton::Primary,
+                                pressed,
+                                modifiers: egui::Modifiers::NONE,
+                            },
+                        ]);
+                    }
+                    let arranging = label == "Arrange HUD";
+                    assert_eq!(state.system.config.load().layout_mode, arranging);
+                    assert_eq!(state.flags.is_launched.load(Ordering::SeqCst), arranging);
+                    if arranging {
+                        for _ in 0..3 {
+                            let _ = render(vec![]);
+                        }
+                        let output = render(vec![]);
+                        let handles: Vec<_> = output
+                            .shapes
+                            .iter()
+                            .filter_map(|shape| {
+                                if let egui::epaint::Shape::Text(text) = &shape.shape
+                                    && text.galley.text() == "Drag to move"
+                                {
+                                    Some(text.visual_bounding_rect().center())
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect();
+                        assert_eq!(handles.len(), 3);
+                        let before = HudPositionSnapshot::from_config(&state.system.config.load());
+                        for pos in handles {
+                            tx.send("dragging a HUD panel".to_owned()).unwrap();
+                            let _ = render(vec![
+                                egui::Event::PointerMoved(pos),
+                                egui::Event::PointerButton {
+                                    pos,
+                                    button: egui::PointerButton::Primary,
+                                    pressed: true,
+                                    modifiers: egui::Modifiers::NONE,
+                                },
+                            ]);
+                            let end = pos + egui::vec2(70.0, 30.0);
+                            let _ = render(vec![egui::Event::PointerMoved(end)]);
+                            let _ = render(vec![egui::Event::PointerButton {
+                                pos: end,
+                                button: egui::PointerButton::Primary,
+                                pressed: false,
+                                modifiers: egui::Modifiers::NONE,
+                            }]);
+                        }
+                        let after = HudPositionSnapshot::from_config(&state.system.config.load());
+                        assert_ne!(after.lobby, before.lobby);
+                        assert_ne!(after.boost, before.boost);
+                        assert_ne!(after.session, before.session);
+                    } else if label == "Done" {
+                        saved_positions = Some(HudPositionSnapshot::from_config(
+                            &state.system.config.load(),
+                        ));
+                    } else {
+                        assert_eq!(
+                            Some(HudPositionSnapshot::from_config(
+                                &state.system.config.load()
+                            )),
+                            saved_positions
+                        );
+                    }
+                }
+            });
+            tx.send("complete".to_owned()).unwrap();
+        });
+        let mut stage = "starting".to_owned();
+        loop {
+            stage = rx
+                .recv_timeout(Duration::from_secs(10))
+                .unwrap_or_else(|error| panic!("Arrange HUD stalled while {stage}: {error}"));
+            if stage == "complete" {
+                break;
+            }
+        }
+    }
+
+    #[test]
+    fn global_f1_restores_settings_without_a_ui_pass() {
+        let state = AppState::new();
+        state
+            .flags
+            .is_settings_visible
+            .store(false, Ordering::SeqCst);
+        let mut app = MainApp::new(state.clone(), None);
+        let ctx = egui::Context::default();
+        let mut input = egui::RawInput::default();
+        let viewport = input.viewports.get_mut(&egui::ViewportId::ROOT).unwrap();
+        viewport.minimized = Some(true);
+        viewport.occluded = Some(true);
+        let _ = ctx.run_logic(&input, |ctx| app.sync_settings_window(ctx));
+        crate::input::toggle_settings_hotkey(&state, "rdev");
+        let output = ctx.run_logic(&input, |ctx| app.sync_settings_window(ctx));
+        let commands = &output.viewport_commands[&egui::ViewportId::ROOT];
+        assert!(commands.contains(&egui::ViewportCommand::Visible(true)));
+        assert!(commands.contains(&egui::ViewportCommand::Minimized(false)));
+        assert!(commands.contains(&egui::ViewportCommand::Focus));
+        // Opening once must not keep stealing focus on subsequent logic ticks.
+        let output = ctx.run_logic(&input, |ctx| app.sync_settings_window(ctx));
+        assert!(
+            output
+                .viewport_commands
+                .values()
+                .all(|commands| !commands.contains(&egui::ViewportCommand::Focus))
+        );
+    }
 
     #[test]
     fn setup_account_selection_releases_config_guard_and_persists_identity() {
@@ -734,6 +941,7 @@ impl eframe::App for MainApp {
     }
 
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.sync_settings_window(ctx);
         let now = std::time::Instant::now();
         if self
             .last_runtime_log
@@ -772,6 +980,13 @@ impl eframe::App for MainApp {
                 .hotkeys
                 .is_recording_launch
                 .load(Ordering::SeqCst);
+        // Process focused input in both launcher and overlay modes, before
+        // deriving visibility and mouse passthrough for this frame.
+        if !is_recording_any {
+            handle_focused_hotkeys(ctx, &self.state, is_launched);
+            self.sync_settings_window(ctx);
+        }
+        let is_launched = self.state.flags.is_launched.load(Ordering::SeqCst);
         let show_settings =
             self.state.flags.is_settings_visible.load(Ordering::SeqCst) || is_recording_any;
         if self
@@ -978,41 +1193,6 @@ impl eframe::App for MainApp {
                                     }
                                 });
                         }
-                    }
-
-                    let settings_hotkey = config.hotkey_settings.clone();
-                    let launch_hotkey = config.hotkey_launch.clone();
-                    let hud_hotkey = config.hotkey_kb.clone();
-                    if !is_recording_any {
-                        ctx.input(|i| {
-                            for event in &i.events {
-                                if let egui::Event::Key { key, pressed, .. } = event
-                                    && let Some(name) = egui_to_rdev_key(*key)
-                                {
-                                    if *pressed && name == settings_hotkey {
-                                        crate::input::append_hotkey_debug_log(
-                                            self.state.debug_logging_enabled.load(Ordering::SeqCst),
-                                            format!(
-                                                "egui_keypress key={name} settings_match=true"
-                                            ),
-                                        );
-                                        crate::input::toggle_settings_hotkey(&self.state, "egui");
-                                    }
-
-                                    if *pressed && name == launch_hotkey {
-                                        crate::input::toggle_launch_hotkey(&self.state, "egui");
-                                    }
-
-                                    if crate::input::keyboard_hotkey_matches(&name, &hud_hotkey) {
-                                        crate::input::handle_hud_hotkey_event(
-                                            &self.state,
-                                            *pressed,
-                                            "egui",
-                                        );
-                                    }
-                                }
-                            }
-                        });
                     }
 
                     // Float settings Window over overlay
@@ -1233,22 +1413,6 @@ impl eframe::App for MainApp {
                             }
                         });
                     });
-            }
-
-            if !is_recording_any {
-                let launch_hotkey = config.hotkey_launch.clone();
-                ctx.input(|i| {
-                    for event in &i.events {
-                        if let egui::Event::Key {
-                            key, pressed: true, ..
-                        } = event
-                            && let Some(name) = egui_to_rdev_key(*key)
-                            && name == launch_hotkey
-                        {
-                            crate::input::toggle_launch_hotkey(&self.state, "egui");
-                        }
-                    }
-                });
             }
         }
 
