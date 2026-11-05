@@ -79,6 +79,10 @@ pub(super) fn render_local_mmr_panel(
             egui::Color32::from_rgb(230, 120, 80),
             if provider_denied {
                 "The MMR provider has lost access to Rocket League's PsyNet service. This is a provider outage, not a rejection of your player account."
+            } else if local_mmr.error.contains("restricting automated traffic") {
+                "The fallback rank provider is restricting automated requests. Rank data is unavailable until provider access is restored."
+            } else if local_mmr.error.contains("429") {
+                "The rank provider is rate limiting requests. Wait a minute before retrying."
             } else if local_mmr.error.contains("403") {
                 "MMR request denied (403). Retry or use Support diagnostics if it persists."
             } else {

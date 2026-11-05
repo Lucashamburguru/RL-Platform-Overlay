@@ -3,6 +3,11 @@
 .env
 .env.*
 config.toml
+
+# Private MMR API server, deployment files, and credentials
+/packaging/mmr-api/
+/rl-mmr-api/
+
 rl_debug*.txt
 rl_game_output_debug_*.txt
 assets/steam_raw.png

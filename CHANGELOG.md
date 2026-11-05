@@ -8,6 +8,21 @@ This file describes changes to the app in each release.
 
 ---
 
+## [0.1.64] - 2026-11-04
+
+### Changed
+
+- **Rank Lookups**: The app uses the RL Platform rank service. Access is set up automatically on first use.
+
+### Fixed
+
+- **Dependency Security**: Updated compression dependencies to address reported vulnerabilities.
+
+- **Rank Data**: Provider notices and empty responses no longer replace saved ranks. The app shows an error and keeps the last available ranks.
+- **Rank Fallback**: The public fallback is disabled while it restricts automated requests.
+
+---
+
 ## [0.1.63] - 2026-10-24
 
 ### Fixed

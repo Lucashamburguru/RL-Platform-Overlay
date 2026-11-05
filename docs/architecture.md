@@ -168,8 +168,9 @@ The application data directory is `%APPDATA%/RL-Platform-Overlay` on Windows and
 | Destination | Purpose | Trigger |
 | --- | --- | --- |
 | Rocket League loopback endpoint | Live match telemetry | Continuous reconnect while the app runs |
-| mmr.kmdw.dev (mmr-api-v2) | Rank/MMR lookup | Lobby players or explicit local refresh |
-| api.tracker.gg | Rank/MMR fallback | Primary MMR provider reports PsyNet AccessDenied; shared five-minute cooldown before retrying primary |
+| files.pengo.me/api/rl-mmr/v1 | Default rank/MMR service | Automatic installation registration on first lookup; authenticated lobby and local rank requests |
+| api.tracker.gg | Optional rank/MMR provider | Explicit `RL_OVERLAY_MMR_PROVIDER=tracker` override or live diagnostics |
+| Configured `RL_OVERLAY_MMR_API_URL` | Optional rank/MMR provider | Explicit endpoint override |
 | ballchasing.com | Replay upload, listing/sync, metadata, and download | User enables/configures the integration or starts an action |
 | GitHub Releases | Version metadata and release assets | Startup version check or user-approved update |
 | Toga Files on GitHub | Current Rocket League package catalog and AES keys | Opening or refreshing Item Swapper, or applying the Gold Rush preset |

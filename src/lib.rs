@@ -17,6 +17,7 @@ mod input;
 #[cfg(not(feature = "microsoft-store"))]
 mod item_swapper;
 mod mmr;
+mod mmr_service;
 pub mod network;
 pub mod session;
 mod setup;

@@ -92,6 +92,8 @@ is not written to disk until you click the save button.
 - Check that lobby ranks are enabled in the overlay or dashboard settings.
 - Check that the player’s platform and account ID are correct.
 - Use **Refresh** in the local MMR panel if you changed accounts.
+- Rank access activates automatically; no separate login or API key is needed.
+  If the service reports 429, wait before retrying. Contact support for a persistent 403.
 - Some profiles may return no playlist data until Rocket League has published
   current skill information for that account.
 

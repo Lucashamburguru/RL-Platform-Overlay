@@ -76,17 +76,22 @@ pub(crate) trait MmrProvider: Send + Sync {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MmrProviderId {
+    Hosted,
     MmrApiV2,
     Tracker,
 }
 
-const DEFAULT_MMR_PROVIDER: MmrProviderId = MmrProviderId::Tracker;
+const DEFAULT_MMR_PROVIDER: MmrProviderId = MmrProviderId::Hosted;
+// Disabled while the fallback provider restricts automated traffic.
+const MMR_FALLBACK_ENABLED: bool = false;
 
 struct MmrApiV2Provider;
 struct TrackerProvider;
+struct HostedProvider;
 
 static MMR_API_V2_PROVIDER: MmrApiV2Provider = MmrApiV2Provider;
 static TRACKER_PROVIDER: TrackerProvider = TrackerProvider;
+static HOSTED_PROVIDER: HostedProvider = HostedProvider;
 static PRIMARY_RETRY_AFTER: Mutex<Option<Instant>> = Mutex::new(None);
 static TRACKER_CLIENT: LazyLock<Result<wreq::Client, String>> =
     LazyLock::new(|| build_tracker_client().map_err(|error| error.to_string()));
@@ -113,13 +118,27 @@ fn build_tracker_client() -> Result<wreq::Client, wreq::Error> {
 
 fn mmr_provider(id: MmrProviderId) -> &'static dyn MmrProvider {
     match id {
+        MmrProviderId::Hosted => &HOSTED_PROVIDER,
         MmrProviderId::MmrApiV2 => &MMR_API_V2_PROVIDER,
         MmrProviderId::Tracker => &TRACKER_PROVIDER,
     }
 }
 
 fn default_mmr_provider() -> &'static dyn MmrProvider {
+    if self_hosted_mmr_api_host().is_some() {
+        return mmr_provider(MmrProviderId::MmrApiV2);
+    }
+    if std::env::var("RL_OVERLAY_MMR_PROVIDER").is_ok_and(|value| value == "tracker") {
+        return mmr_provider(MmrProviderId::Tracker);
+    }
     mmr_provider(DEFAULT_MMR_PROVIDER)
+}
+
+fn self_hosted_mmr_api_host() -> Option<String> {
+    std::env::var("RL_OVERLAY_MMR_API_URL")
+        .ok()
+        .map(|host| host.trim().trim_end_matches('/').to_string())
+        .filter(|host| !host.is_empty())
 }
 
 fn is_tracked_playlist(playlist_id: i32) -> bool {
@@ -515,11 +534,35 @@ impl MmrProvider for MmrApiV2Provider {
     }
 }
 
+impl MmrProvider for HostedProvider {
+    fn name(&self) -> &'static str {
+        "RL Platform rank service"
+    }
+
+    fn fetch<'a>(
+        &'a self,
+        _client: &'a wreq::Client,
+        _xuid_cache: Option<&'a std::sync::Mutex<HashMap<String, String>>>,
+        player: &'a TrackerPlayer,
+    ) -> MmrProviderFuture<'a> {
+        Box::pin(async move {
+            let text = crate::mmr_service::fetch_skills(&rocket_league_player_id(player)).await?;
+            let response: MmrApiV2Response = serde_json::from_str(&text)?;
+            mmr_api_v2_snapshot(response)
+        })
+    }
+}
+
 pub async fn fetch_mmr_snapshot(
     client: &wreq::Client,
     xuid_cache: Option<&std::sync::Mutex<HashMap<String, String>>>,
     player: &TrackerPlayer,
 ) -> Result<TrackerSnapshot, MmrError> {
+    if !MMR_FALLBACK_ENABLED {
+        return default_mmr_provider()
+            .fetch(client, xuid_cache, player)
+            .await;
+    }
     fetch_with_fallback(
         default_mmr_provider(),
         mmr_provider(MmrProviderId::MmrApiV2),
@@ -604,6 +647,8 @@ struct MmrApiV2Response {
     playlists: Option<Vec<MmrApiV2Playlist>>,
     #[serde(default)]
     error: Option<String>,
+    #[serde(default, rename = "notice to people scraping")]
+    traffic_notice: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -620,8 +665,9 @@ async fn fetch_mmr_api_v2_snapshot(
     player: &TrackerPlayer,
 ) -> Result<TrackerSnapshot, MmrError> {
     let primary_id = rocket_league_player_id(player);
+    let host = self_hosted_mmr_api_host().unwrap_or_else(|| MMR_API_V2_HOST.to_string());
     let url = format!(
-        "{MMR_API_V2_HOST}/get-skills?playerId={}",
+        "{host}/get-skills?playerId={}",
         urlencoding::encode(&primary_id)
     );
     let response = client
@@ -645,9 +691,21 @@ fn mmr_api_v2_snapshot(response: MmrApiV2Response) -> Result<TrackerSnapshot, Mm
     if let Some(error) = response.error.filter(|error| !error.trim().is_empty()) {
         return Err(MmrError::ProviderResponse(error));
     }
+    if response.traffic_notice.is_some() {
+        return Err(MmrError::ProviderResponse(
+            "Rocket League MMR is restricting automated traffic and returned a notice instead of ranks. Provider access must be restored before this fallback can supply rank data."
+                .to_string(),
+        ));
+    }
+
+    let playlists = response.playlists.ok_or_else(|| {
+        MmrError::ProviderResponse(
+            "Rocket League MMR response is missing playlist data.".to_string(),
+        )
+    })?;
 
     let mut snapshot = TrackerSnapshot::default();
-    for playlist in response.playlists.unwrap_or_default() {
+    for playlist in playlists {
         if !is_tracked_playlist(playlist.id) {
             continue;
         }
@@ -660,6 +718,11 @@ fn mmr_api_v2_snapshot(response: MmrApiV2Response) -> Result<TrackerSnapshot, Mm
                 tier_name: tier_name(playlist.tier).to_string(),
             },
         );
+    }
+    if snapshot.playlists.is_empty() {
+        return Err(MmrError::ProviderResponse(
+            "Rocket League MMR returned no supported playlist data.".to_string(),
+        ));
     }
     Ok(snapshot)
 }
@@ -1467,9 +1530,13 @@ mod tests {
     }
 
     #[test]
-    fn tracker_is_the_default_provider() {
-        assert_eq!(DEFAULT_MMR_PROVIDER, MmrProviderId::Tracker);
-        assert_eq!(default_mmr_provider().name(), "Tracker Network");
+    fn hosted_service_is_the_default_provider() {
+        assert_eq!(DEFAULT_MMR_PROVIDER, MmrProviderId::Hosted);
+        assert_eq!(default_mmr_provider().name(), "RL Platform rank service");
+        assert_eq!(
+            mmr_provider(MmrProviderId::Tracker).name(),
+            "Tracker Network"
+        );
         assert_eq!(
             mmr_provider(MmrProviderId::MmrApiV2).name(),
             "Rocket League MMR"
@@ -1574,6 +1641,71 @@ mod tests {
             mmr_api_v2_snapshot(response),
             Err(MmrError::ProviderResponse(message)) if message == "Invalid credentials"
         ));
+    }
+
+    #[test]
+    fn mmr_api_v2_rejects_notices_and_empty_data() {
+        for payload in [
+            serde_json::json!({"notice to people scraping": "Traffic restriction"}),
+            serde_json::json!({}),
+            serde_json::json!({"playlists": null}),
+            serde_json::json!({"playlists": []}),
+            serde_json::json!({"playlists": [
+                {"id": 999, "mmr": 1234, "tier": 16, "division": 2}
+            ]}),
+        ] {
+            let response = serde_json::from_value(payload).unwrap();
+            assert!(matches!(
+                mmr_api_v2_snapshot(response),
+                Err(MmrError::ProviderResponse(_))
+            ));
+        }
+        let response = serde_json::from_value(serde_json::json!({
+            "notice to people scraping": "Traffic restriction"
+        }))
+        .unwrap();
+        assert!(
+            mmr_api_v2_snapshot(response)
+                .unwrap_err()
+                .to_string()
+                .contains("restricting automated traffic")
+        );
+    }
+
+    #[test]
+    fn provider_notice_preserves_previous_local_ranks() {
+        let state = AppState::new();
+        let identity = local_identity("Me", "76561198000000000");
+        state
+            .game
+            .local_player_identity
+            .store(Arc::new(identity.clone()));
+        let current = local_snapshot(1234);
+        let previous = local_snapshot(1225);
+        state
+            .mmr
+            .local_mmr
+            .store(Arc::new(crate::state::LocalMmrState {
+                current: Some(current.clone()),
+                previous: Some(previous.clone()),
+                last_updated_unix_ms: 42,
+                ..Default::default()
+            }));
+        let generation = claim_local_mmr_refresh(&state, &identity).unwrap();
+        let response = serde_json::from_value(serde_json::json!({
+            "notice to people scraping": "Traffic restriction"
+        }))
+        .unwrap();
+        let result = mmr_api_v2_snapshot(response).map_err(|error| error.to_string());
+        assert!(complete_local_mmr_refresh(
+            &state, generation, &identity, result
+        ));
+        let mmr = state.mmr.local_mmr.load();
+        assert!(!mmr.fetching);
+        assert!(mmr.error.contains("restricting automated traffic"));
+        assert_eq!(mmr.current.as_ref(), Some(&current));
+        assert_eq!(mmr.previous.as_ref(), Some(&previous));
+        assert_eq!(mmr.last_updated_unix_ms, 42);
     }
 
     #[test]
@@ -1821,6 +1953,39 @@ mod tests {
             "MMR provider chain returned {} playlists",
             snapshot.playlists.len()
         );
+    }
+
+    #[tokio::test]
+    #[ignore = "diagnostic request to the live Tracker provider; requires network access"]
+    async fn tracker_response_diagnostics_live() {
+        let client = build_tracker_client().unwrap();
+        let url = format!(
+            "{MMR_TRACKER_API_HOST}/api/v2/rocket-league/standard/profile/steam/76561198144145654"
+        );
+        let response = send_tracker_request(&client, &url).await.unwrap();
+        println!("Tracker status: {}", response.status());
+        // Never print cookies or authentication headers.
+        for name in [
+            "server",
+            "content-type",
+            "retry-after",
+            "cf-mitigated",
+            "cf-ray",
+            "x-ratelimit-limit",
+            "x-ratelimit-remaining",
+            "x-ratelimit-reset",
+        ] {
+            if let Some(value) = response.headers().get(name) {
+                println!("{name}: {}", value.to_str().unwrap_or("<non-text>"));
+            }
+        }
+        if !response.status().is_success() {
+            let body = response.text().await.unwrap();
+            println!(
+                "Tracker error body (first 1500 chars): {}",
+                body.chars().take(1500).collect::<String>()
+            );
+        }
     }
 
     #[tokio::test]
