@@ -140,7 +140,7 @@ This section describes the development tools and build commands.
 - **Language:** Rust
 - **User interface:** egui / eframe with the Glow renderer
 - **Input:** GilRs for gamepads and rdev for keyboards
-- **Data sources:** Rocket League Stats API and the RL Platform rank service
+- **Data sources:** Rocket League Stats API and the pengo.me rank service, hosted on a Google Cloud VPS
 
 ### Project Documentation
 

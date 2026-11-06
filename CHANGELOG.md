@@ -12,7 +12,7 @@ This file describes changes to the app in each release.
 
 ### Changed
 
-- **Rank Lookups**: The app uses the RL Platform rank service. Access is set up automatically on first use.
+- **Rank Lookups**: The app uses the pengo.me rank service, hosted on a Google Cloud VPS. Access is set up automatically on first use.
 
 ### Fixed
 
