@@ -1,0 +1,45 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index 3c895b7..e2edc89 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -4225,6 +4225,7 @@ dependencies = [
+  "url",
+  "urlencoding",
+  "winapi",
++ "winit",
+  "wreq",
+  "wreq-util",
+ ]
+diff --git a/Cargo.toml b/Cargo.toml
+index 950bf30..ccaffc5 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -48,6 +48,7 @@ rdev = { path = "vendor/rdev" }
+ 
+ 
+ [target.'cfg(windows)'.dependencies]
++winit = { version = "0.30", default-features = false }
+ winapi = { version = "0.3", features = ["windef", "winuser", "dwmapi", "uxtheme", "errhandlingapi", "fileapi", "processthreadsapi", "psapi", "sysinfoapi"] }
+ gilrs = { version = "0.11.0", default-features = false, features = ["xinput"] }
+ 
+diff --git a/src/lib.rs b/src/lib.rs
+index 8c7a546..1bb04b9 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -83,6 +83,16 @@ pub async fn run(debug_enabled: bool) -> eframe::Result<()> {
+             #[cfg(target_os = "windows")]
+             {
+                 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
++                use winit::platform::windows::WindowExtWindows;
++
++                // egui-winit 0.36 enables a drop shadow on undecorated Windows
++                // windows. It also draws a 1px top border, visible over the game.
++                // Disable it through winit so later window updates retain this
++                // setting. ViewportBuilder::with_has_shadow only affects macOS.
++                if let Some(window) = cc.winit_window() {
++                    window.set_undecorated_shadow(false);
++                }
++
+                 if let Ok(handle) = cc.window_handle()
+                     && let RawWindowHandle::Win32(win32_handle) = handle.as_raw()
+                 {

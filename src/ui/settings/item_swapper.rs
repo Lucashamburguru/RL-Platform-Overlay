@@ -101,26 +101,26 @@ pub(crate) fn render_item_swapper_settings_tab(
         render_picker(
             &mut columns[0],
             if is_engine_audio {
-                "1. Engine sound to copy (source)"
+                "1. Engine sound you equip →"
             } else {
-                "1. Appearance to copy (source)"
-            },
-            "item_swap_donor",
-            &packages,
-            &mut edit.donor_search,
-            &mut edit.donor,
-        );
-        render_picker(
-            &mut columns[1],
-            if is_engine_audio {
-                "2. Engine sound you equip (target)"
-            } else {
-                "2. Item being replaced (target)"
+                "1. Item you equip →"
             },
             "item_swap_target",
             &packages,
             &mut edit.target_search,
             &mut edit.target,
+        );
+        render_picker(
+            &mut columns[1],
+            if is_engine_audio {
+                "2. Engine sound you want"
+            } else {
+                "2. Appearance you want"
+            },
+            "item_swap_donor",
+            &packages,
+            &mut edit.donor_search,
+            &mut edit.donor,
         );
     });
 
@@ -133,7 +133,7 @@ pub(crate) fn render_item_swapper_settings_tab(
             if ui
                 .selectable_label(
                     !edit.choose_sound && edit.sound == SoundChoice::Original,
-                    "Keep original target sound",
+                    "Keep original sound",
                 )
                 .clicked()
             {
@@ -245,21 +245,34 @@ pub(crate) fn render_item_swapper_settings_tab(
             ui.group(|ui| {
                 ui.strong("What this swap does");
                 if is_engine_audio {
-                    ui.label(format!("Equip {target_name} in Rocket League's Engine Audio selection to hear {donor_name}."));
-                    ui.monospace(format!("Replace {target}'s engine sound with {donor}"));
+                    ui.label(format!("Your {target_name} engine sound will sound like {donor_name}. Equip {target_name} under Engine Audio in Rocket League."));
+                } else if is_boost {
+                    let sound_summary = if edit.choose_sound && edit.sound_bank.is_none() {
+                        "Choose the sound you want to use.".to_owned()
+                    } else {
+                        match &edit.sound {
+                            SoundChoice::Original => "It will keep its original sound.".to_owned(),
+                            SoundChoice::MatchAppearance => format!("It will also sound like {donor_name}."),
+                            SoundChoice::Bank(bank) => {
+                                let sound_name = snapshot.sounds.iter()
+                                    .find(|info| info.file == *bank)
+                                    .map(|info| info.label.clone())
+                                    .unwrap_or_else(|| crate::boost_audio::display_name(bank));
+                                format!("It will use the {sound_name} sound.")
+                            }
+                        }
+                    };
+                    ui.label(format!("Your {target_name} will look like {donor_name}. {sound_summary}"));
                 } else {
-                    ui.label(format!(
-                        "When Rocket League loads {target_name}, it will show {donor_name}'s appearance."
-                    ));
-                    ui.monospace(format!("Replace {target} with {donor} visuals"));
+                    ui.label(format!("Your {target_name} will look like {donor_name}."));
                 }
             });
         }
         _ => {
             ui.weak(if is_engine_audio {
-                "Choose the engine sound to copy, then an engine sound you can equip in Rocket League."
+                "Choose the engine sound you equip, then the engine sound you want to hear."
             } else {
-                "Choose the appearance to copy, then choose the item that should display it."
+                "Choose the item you equip, then the appearance you want it to have."
             });
         }
     }
@@ -275,11 +288,11 @@ pub(crate) fn render_item_swapper_settings_tab(
         .add_enabled(
             can_apply,
             egui::Button::new(if is_engine_audio {
-                "Replace target engine sound"
+                "Apply engine sound"
             } else if is_boost {
                 "Apply appearance and sound"
             } else {
-                "Replace target with source appearance"
+                "Apply appearance"
             }),
         )
         .clicked()
@@ -313,15 +326,15 @@ pub(crate) fn render_item_swapper_settings_tab(
     if snapshot.active.is_empty() {
         ui.weak("No swaps are recorded.");
     }
+    let all_packages = snapshot.packages.iter().collect::<Vec<_>>();
     for swap in &snapshot.active {
+        let target_name = display_name(&all_packages, &swap.target_package);
+        let donor_name = display_name(&all_packages, &swap.donor_package);
         ui.horizontal_wrapped(|ui| {
             if swap.is_engine_audio() {
-                ui.label(format!("{} now uses {}'s engine sound", swap.target_package, swap.donor_package));
+                ui.label(format!("{target_name} sounds like {donor_name}"));
             } else {
-                ui.label(format!(
-                    "{} now displays {}'s appearance",
-                    swap.target_package, swap.donor_package
-                ));
+                ui.label(format!("{target_name} looks like {donor_name}"));
             }
             if swap.sound_choice() != SoundChoice::Original {
                 let label = match swap.sound_choice() {
@@ -363,7 +376,7 @@ pub(crate) fn render_item_swapper_settings_tab(
             if ui
                 .add_enabled(
                     !snapshot.running && !is_rl_running,
-                    egui::Button::new("Restore"),
+                    egui::Button::new(format!("Restore {target_name}")),
                 )
                 .clicked()
             {
@@ -436,6 +449,7 @@ fn render_picker(
             }
         });
     if let Some(value) = selected.as_deref() {
-        ui.monospace(value);
+        ui.label(format!("Selected: {}", display_name(packages, value)))
+            .on_hover_text(value);
     }
 }
