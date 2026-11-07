@@ -248,8 +248,10 @@ pub(crate) fn render_replays_settings_tab(
                     }
                     let auto_detect_btn = ui.button("Auto-detect");
                     if auto_detect_btn.clicked() {
-                        if let Some(detected) = crate::state::detect_replays_path() {
-                            config_edit.replays_folder = detected;
+                        let paths = state.system.game_paths.load();
+                        if paths.replay_dirs.len() == 1 {
+                            config_edit.replays_folder =
+                                paths.replay_dirs[0].to_string_lossy().into_owned();
                             *changed = true;
                             ui.data_mut(|d| {
                                 d.insert_temp(
@@ -268,6 +270,26 @@ pub(crate) fn render_replays_settings_tab(
                     }
                 });
             });
+
+            let paths = state.system.game_paths.load();
+            if paths.replay_dirs.len() > 1 {
+                egui::ComboBox::from_id_salt("replay_folder_candidates")
+                    .selected_text("Choose a detected replay folder")
+                    .show_ui(ui, |ui| {
+                        for path in &paths.replay_dirs {
+                            if ui
+                                .selectable_label(
+                                    config_edit.replays_folder == path.to_string_lossy(),
+                                    path.to_string_lossy(),
+                                )
+                                .clicked()
+                            {
+                                config_edit.replays_folder = path.to_string_lossy().into_owned();
+                                *changed = true;
+                            }
+                        }
+                    });
+            }
 
             // Folder Path Validation
             let path_valid = if config_edit.replays_folder.trim().is_empty() {

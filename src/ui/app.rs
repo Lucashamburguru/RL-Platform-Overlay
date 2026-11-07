@@ -58,6 +58,7 @@ pub enum ConfirmAction {
 }
 
 pub struct MainApp {
+    encounter_notice: super::encounter_notice::EncounterNotice,
     state: Arc<AppState>,
     repaint_context: Option<Arc<egui::Context>>,
     settings_tab: SettingsTab,
@@ -91,6 +92,7 @@ pub struct MainApp {
 impl MainApp {
     pub fn new(state: Arc<AppState>, hwnd: Option<isize>) -> Self {
         Self {
+            encounter_notice: super::encounter_notice::EncounterNotice::default(),
             state,
             repaint_context: None,
             settings_tab: SettingsTab::Overlay,
@@ -1136,6 +1138,7 @@ impl eframe::App for MainApp {
                 .show(root_ui, |_ui| {
                     if show_hud {
                         render_overlay(ctx, &self.state);
+                        self.encounter_notice.render(ctx, &self.state);
                     }
                     if show_session_overlay {
                         render_session_overlay(ctx, &self.state);
@@ -1793,10 +1796,12 @@ impl MainApp {
                 self.launched_by_layout_mode = false;
             }
             let history_changed = config_edit.history_enabled != config.history_enabled
+                || config_edit.encounter_notices_enabled != config.encounter_notices_enabled
                 || config_edit.lobby_history_indicators_enabled
                     != config.lobby_history_indicators_enabled;
             let history_enabled = config_edit.history_enabled;
-            let history_indicators_enabled = config_edit.lobby_history_indicators_enabled;
+            let history_indicators_enabled = config_edit.lobby_history_indicators_enabled
+                || config_edit.encounter_notices_enabled;
             config_session.commit();
             if history_changed && history_enabled {
                 crate::history::request_all_player_history_refresh(&self.state, true);

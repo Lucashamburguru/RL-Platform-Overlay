@@ -1772,6 +1772,17 @@ fn render_side_rail(ui: &mut egui::Ui, context: SideRailContext<'_>) {
     if context.config.dashboard_show_event_feed {
         ui.add_space(8.0);
         render_status_panel(ui, "Match Highlights", |ui| {
+            let events = context.state.game.match_events.load();
+            if events.match_id == context.session.active_match_id {
+                for event in events.events.iter().rev().take(8) {
+                    feed_row(
+                        ui,
+                        event.kind,
+                        event.detail(),
+                        egui::Color32::from_rgb(145, 200, 250),
+                    );
+                }
+            }
             render_match_highlights(ui, context.rows, context.session);
         });
     }

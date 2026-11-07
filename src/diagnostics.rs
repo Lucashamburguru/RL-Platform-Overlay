@@ -312,6 +312,18 @@ pub fn support_diagnostics_bundle_with_privacy(
 
     lines.push(String::new());
     lines.push("[local_player]".to_string());
+    let game_log = state.system.launch_log.load();
+    lines.push(format!(
+        "log_detection_enabled={}",
+        config.launch_log_enabled
+    ));
+    lines.push(format!("log_status={}", empty_label(&game_log.status)));
+    lines.push(format!("log_current={}", game_log.is_current()));
+    if let Some(map) = &game_log.map {
+        lines.push(format!("log_playlist={:?}", map.playlist));
+        lines.push(format!("log_offline={}", map.offline));
+        lines.push(format!("log_replay={}", map.replay));
+    }
     lines.push(format!(
         "local_name={}",
         support_private_value(local_name.as_str(), privacy)

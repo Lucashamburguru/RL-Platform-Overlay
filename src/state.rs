@@ -4,6 +4,7 @@ use crate::stats_api::StatsApiTransport;
 use arc_swap::ArcSwap;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
+#[cfg(not(test))]
 use std::env;
 use std::fs;
 use std::io::Write;
@@ -79,6 +80,8 @@ pub struct Config {
     pub show_peak_rank: bool,
     pub history_enabled: bool,
     pub lobby_history_indicators_enabled: bool,
+    pub encounter_notices_enabled: bool,
+    pub encounter_notice_min_games: u32,
     pub debug_logging_enabled: bool,
     pub teammate_hud_scale: f32,
     pub teammate_boost_display: TeammateBoostDisplay,
@@ -97,8 +100,11 @@ pub struct Config {
     pub teammate_boost_manual_position: Option<[f32; 2]>,
     pub session_manual_position: Option<[f32; 2]>,
     pub layout_mode: bool,
+    pub hud_profiles: Vec<crate::hud_profiles::HudProfile>,
     pub cached_local_player_identity: LocalPlayerIdentity,
     pub lock_local_player: bool,
+    pub launch_log_enabled: bool,
+    pub launch_log_path: String,
     pub ballchasing_enabled: bool,
     pub ballchasing_api_key: String,
     pub ballchasing_visibility: String,
@@ -116,104 +122,13 @@ pub struct Config {
 }
 
 pub fn detect_rocket_league_path() -> Option<String> {
-    #[cfg(target_os = "windows")]
-    {
-        let candidates = [
-            "C:\\Program Files\\Epic Games\\rocketleague",
-            "C:\\Program Files (x86)\\Steam\\steamapps\\common\\rocketleague",
-        ];
-        for candidate in candidates {
-            let path = std::path::Path::new(candidate);
-            if path.join("TAGame").join("CookedPCConsole").exists() {
-                return Some(candidate.to_string());
-            }
-        }
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        if let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) {
-            let candidates = [
-                home.join(".local/share/Steam/steamapps/common/rocketleague"),
-                home.join(
-                    ".var/app/com.valvesoftware.Steam/data/Steam/steamapps/common/rocketleague",
-                ),
-                home.join(".steam/steam/steamapps/common/rocketleague"),
-                home.join(".steam/root/steamapps/common/rocketleague"),
-            ];
-            for candidate in candidates {
-                if candidate.join("TAGame").join("CookedPCConsole").exists() {
-                    return Some(candidate.to_string_lossy().into_owned());
-                }
-            }
-        }
-    }
-
-    None
+    let paths = crate::game_paths::GamePaths::discover();
+    (paths.installations.len() == 1).then(|| paths.installations[0].to_string_lossy().into_owned())
 }
 
 pub fn detect_replays_path() -> Option<String> {
-    #[cfg(target_os = "windows")]
-    {
-        if let Some(user_profile) = env::var_os("USERPROFILE").map(PathBuf::from) {
-            let candidates = [
-                user_profile
-                    .join("Documents")
-                    .join("My Games")
-                    .join("Rocket League")
-                    .join("TAGame")
-                    .join("Demos"),
-                user_profile
-                    .join("Documents")
-                    .join("My Games")
-                    .join("Rocket League")
-                    .join("TAGame")
-                    .join("DemosEpic"),
-                user_profile
-                    .join("OneDrive")
-                    .join("Documents")
-                    .join("My Games")
-                    .join("Rocket League")
-                    .join("TAGame")
-                    .join("Demos"),
-                user_profile
-                    .join("OneDrive")
-                    .join("Documents")
-                    .join("My Games")
-                    .join("Rocket League")
-                    .join("TAGame")
-                    .join("DemosEpic"),
-            ];
-            for candidate in candidates {
-                if candidate.exists() {
-                    return Some(candidate.to_string_lossy().into_owned());
-                }
-            }
-        }
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        if let Some(home) = env::var_os("HOME").map(PathBuf::from) {
-            let candidates = [
-                home.join(".local/share/Steam/steamapps/compatdata/252950/pfx/drive_c/users/steamuser/Documents/My Games/Rocket League/TAGame/Demos"),
-                home.join(".local/share/Steam/steamapps/compatdata/252950/pfx/drive_c/users/steamuser/Documents/My Games/Rocket League/TAGame/DemosEpic"),
-                home.join(".steam/steam/steamapps/compatdata/252950/pfx/drive_c/users/steamuser/Documents/My Games/Rocket League/TAGame/Demos"),
-                home.join(".steam/steam/steamapps/compatdata/252950/pfx/drive_c/users/steamuser/Documents/My Games/Rocket League/TAGame/DemosEpic"),
-                home.join(".steam/root/steamapps/compatdata/252950/pfx/drive_c/users/steamuser/Documents/My Games/Rocket League/TAGame/Demos"),
-                home.join(".steam/root/steamapps/compatdata/252950/pfx/drive_c/users/steamuser/Documents/My Games/Rocket League/TAGame/DemosEpic"),
-                home.join(".var/app/com.valvesoftware.Steam/data/Steam/steamapps/compatdata/252950/pfx/drive_c/users/steamuser/Documents/My Games/Rocket League/TAGame/Demos"),
-                home.join(".var/app/com.valvesoftware.Steam/data/Steam/steamapps/compatdata/252950/pfx/drive_c/users/steamuser/Documents/My Games/Rocket League/TAGame/DemosEpic"),
-            ];
-            for candidate in candidates {
-                if candidate.exists() {
-                    return Some(candidate.to_string_lossy().into_owned());
-                }
-            }
-        }
-    }
-
-    None
+    let paths = crate::game_paths::GamePaths::discover();
+    (paths.replay_dirs.len() == 1).then(|| paths.replay_dirs[0].to_string_lossy().into_owned())
 }
 
 impl Default for Config {
@@ -253,6 +168,8 @@ impl Default for Config {
             show_peak_rank: false,
             history_enabled: false,
             lobby_history_indicators_enabled: true,
+            encounter_notices_enabled: false,
+            encounter_notice_min_games: 1,
             debug_logging_enabled: false,
             teammate_hud_scale: 2.2,
             teammate_boost_display: TeammateBoostDisplay::Bars,
@@ -271,8 +188,11 @@ impl Default for Config {
             teammate_boost_manual_position: None,
             session_manual_position: None,
             layout_mode: false,
+            hud_profiles: Vec::new(),
             cached_local_player_identity: LocalPlayerIdentity::default(),
             lock_local_player: false,
+            launch_log_enabled: true,
+            launch_log_path: String::new(),
             ballchasing_enabled: false,
             ballchasing_api_key: "".to_string(),
             ballchasing_visibility: "public".to_string(),
@@ -1296,6 +1216,7 @@ pub struct HotkeyRecordingState {
 }
 
 pub struct GameLobbyState {
+    pub match_events: ArcSwap<crate::match_events::MatchEvents>,
     pub local_player_name: ArcSwap<String>,
     pub local_player_identity: ArcSwap<LocalPlayerIdentity>,
     pub local_team: std::sync::atomic::AtomicU8,
@@ -1311,6 +1232,9 @@ pub struct GameLobbyState {
 }
 
 pub struct SystemState {
+    pub game_paths: ArcSwap<crate::game_paths::GamePaths>,
+    pub launch_log: ArcSwap<crate::launch_log::LogSnapshot>,
+    pub log_match_binding: std::sync::Mutex<crate::launch_log::MatchBinding>,
     pub config: ArcSwap<Config>,
     pub config_status: Arc<ArcSwap<ConfigStatus>>,
     pub version_check: ArcSwap<VersionCheck>,
@@ -1481,6 +1405,7 @@ impl AppState {
                 hud_keyboard_down: AtomicBool::new(false),
             },
             game: GameLobbyState {
+                match_events: ArcSwap::from_pointee(crate::match_events::MatchEvents::default()),
                 local_player_name: ArcSwap::from_pointee("".to_string()),
                 local_player_identity: ArcSwap::from_pointee(cached_local_player_identity),
                 local_team: std::sync::atomic::AtomicU8::new(NO_TEAM),
@@ -1495,6 +1420,9 @@ impl AppState {
                 session: ArcSwap::from_pointee(SessionState::default()),
             },
             system: SystemState {
+                game_paths: ArcSwap::from_pointee(crate::game_paths::GamePaths::default()),
+                launch_log: ArcSwap::from_pointee(crate::launch_log::LogSnapshot::default()),
+                log_match_binding: std::sync::Mutex::new(crate::launch_log::MatchBinding::default()),
                 config: ArcSwap::from_pointee(config),
                 config_status,
                 version_check: ArcSwap::from_pointee(VersionCheck::default()),
@@ -1694,6 +1622,12 @@ impl AppState {
             return false;
         }
 
+        // Serialize account selection with settings edits, including the lock.
+        let _config_guard = self
+            .config_update_mutex
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+
         let config = self.system.config.load();
         if config.lock_local_player {
             return false;
@@ -1727,14 +1661,9 @@ impl AppState {
         }
         drop(refresh);
 
-        self.update_config(|config| {
-            if !config.cached_local_player_identity.is_known()
-                || !config.cached_local_player_identity.same_account(&identity)
-                || config.cached_local_player_identity.name != identity.name
-            {
-                config.cached_local_player_identity = identity;
-            }
-        });
+        let mut config = (**config).clone();
+        config.cached_local_player_identity = identity;
+        self.publish_config(config);
 
         first_known_identity || account_changed
     }

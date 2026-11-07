@@ -1,7 +1,10 @@
 pub mod automation;
+pub mod game_paths;
 pub mod history;
 pub mod hoops_fixer;
+pub mod hud_profiles;
 pub mod json_utils;
+pub mod launch_log;
 pub mod replay_ledger;
 pub mod replay_metadata;
 pub mod replays;
@@ -16,6 +19,7 @@ mod diagnostics;
 mod input;
 #[cfg(not(feature = "microsoft-store"))]
 mod item_swapper;
+pub mod match_events;
 mod mmr;
 mod mmr_service;
 pub mod network;
@@ -56,6 +60,7 @@ pub async fn run(debug_enabled: bool) -> eframe::Result<()> {
     });
 
     mmr::start_mmr_fetch_task(state.clone());
+    launch_log::start(&state);
     input::start_input_tasks(state.clone());
     #[cfg(not(feature = "microsoft-store"))]
     update::start_version_check(state.clone());

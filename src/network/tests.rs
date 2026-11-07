@@ -4,6 +4,79 @@ use crate::stats_api_parser::parse_platform;
 use serde_json::json;
 use std::sync::atomic::Ordering;
 
+#[test]
+fn log_playlist_corroborates_current_arena_but_api_metadata_and_disable_win() {
+    let state = AppState::new();
+    state
+        .system
+        .launch_log
+        .store(Arc::new(crate::launch_log::LogSnapshot {
+            checked_at: Some(std::time::Instant::now()),
+            map: Some(crate::launch_log::MapContext {
+                generation: 1,
+                arena: "stadium_p".into(),
+                playlist: Some(11),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }));
+    let mut packet = json!({"Event":"UpdateState", "Data":{"MatchGuid":"one", "Game":{"Arena":"Stadium_P"}, "Players":[]}});
+    let event = parse_event_for_state(&state, packet.clone());
+    assert_eq!(event.mode.inference().mode, SessionMode::Twos);
+    assert_eq!(
+        event.mode.inference().source,
+        crate::session::SessionModeSource::LogPlaylistId
+    );
+    packet["Data"]["Game"]["PlaylistId"] = json!(13);
+    let event = parse_event_for_state(&state, packet.clone());
+    assert_eq!(event.mode.inference().mode, SessionMode::Threes);
+    assert_eq!(
+        event.mode.inference().source,
+        crate::session::SessionModeSource::PlaylistId
+    );
+    packet["Data"]["Game"]
+        .as_object_mut()
+        .unwrap()
+        .remove("PlaylistId");
+    state.update_config(|config| config.launch_log_enabled = false);
+    let event = parse_event_for_state(&state, packet);
+    assert_eq!(event.mode.inference().mode, SessionMode::Unknown);
+}
+
+#[test]
+fn delayed_log_playlist_corrects_count_guess_after_round_starts() {
+    let state = AppState::new();
+    let data = json!({"MatchGuid":"one", "Game":{"Arena":"Stadium_P"}, "Players":[]});
+    let mut session = crate::session::SessionState::default();
+    session.handle_update_state_with_mode_source(
+        &data,
+        None,
+        SessionMode::Threes,
+        crate::session::SessionModeSource::PlayerCount,
+    );
+    session.handle_round_started();
+    state.game.session.store(Arc::new(session));
+    state
+        .system
+        .launch_log
+        .store(Arc::new(crate::launch_log::LogSnapshot {
+            checked_at: Some(std::time::Instant::now()),
+            map: Some(crate::launch_log::MapContext {
+                generation: 1,
+                arena: "stadium_p".into(),
+                playlist: Some(11),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }));
+    handle_update_state_payload(&state, &data);
+    assert_eq!(state.game.session.load().active_mode, SessionMode::Twos);
+    assert_eq!(
+        state.game.session.load().active_mode_source,
+        crate::session::SessionModeSource::LogPlaylistId
+    );
+}
+
 fn test_player_key(name: &str) -> crate::state::PlayerKey {
     crate::state::PlayerKey::for_match(
         &PlayerInfo {

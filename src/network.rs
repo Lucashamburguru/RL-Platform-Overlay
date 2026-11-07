@@ -72,6 +72,21 @@ fn handle_owned_event(state: &Arc<AppState>, json: Value) {
     let previous_session = state.game.session.load_full();
     let previous_players = state.game.players.load_full();
     let parsed_event = parse_event_for_state(state, json);
+    if matches!(
+        parsed_event.event_name.as_str(),
+        "GoalScored" | "StatfeedEvent"
+    ) || (parsed_event.event_name == "UpdateState"
+        && parsed_event
+            .match_guid
+            .as_deref()
+            .is_some_and(|id| id != state.game.match_events.load().match_id))
+    {
+        let mut events = (**state.game.match_events.load()).clone();
+        if events.observe(&parsed_event, &previous_session) {
+            state.game.match_events.store(Arc::new(events));
+            state.request_game_repaint(true, true);
+        }
+    }
     update_last_event(state, &parsed_event.event_name);
     match parsed_event.event_name.as_str() {
         "UpdateState" => handle_update_state(state, parsed_event),
@@ -220,7 +235,7 @@ fn parse_event_for_state(state: &Arc<AppState>, json: Value) -> StatsApiEvent {
     } else {
         active_match_id
     };
-    parse_owned_stats_api_event(
+    let mut event = parse_owned_stats_api_event(
         json,
         StatsApiParseContext {
             current_local_name: current_local_name.trim(),
@@ -229,7 +244,42 @@ fn parse_event_for_state(state: &Arc<AppState>, json: Value) -> StatsApiEvent {
             fallback_match_scope: &fallback_match_scope,
             previous_match_scope: &fallback_match_scope,
         },
-    )
+    );
+    let inference = event.mode.inference();
+    if state.system.config.load().launch_log_enabled
+        && event.event_name == "UpdateState"
+        && !event.is_replay
+        && !matches!(
+            inference.source,
+            crate::session::SessionModeSource::PlaylistId
+                | crate::session::SessionModeSource::PlaylistMetadata
+                | crate::session::SessionModeSource::FreeplayShape
+        )
+    {
+        let arena = event
+            .data
+            .get("Game")
+            .or_else(|| event.data.get("game"))
+            .and_then(|game| crate::json_utils::string_field(game, &["Arena", "arena"]));
+        if let Some(arena) = arena {
+            let snapshot = state.system.launch_log.load();
+            let mut binding = state
+                .system
+                .log_match_binding
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if let Some(mode) = binding.mode(
+                &snapshot,
+                event.match_guid.as_deref().unwrap_or_default(),
+                arena,
+            ) {
+                event.mode.mode_hint = Some(mode.label().into());
+                event.mode.mode_hint_source = crate::session::SessionModeSource::LogPlaylistId;
+                event.session_mode_hint = event.mode.mode_hint.clone();
+            }
+        }
+    }
+    event
 }
 
 fn handle_update_state(state: &Arc<AppState>, mut parsed_event: StatsApiEvent) {
@@ -409,6 +459,11 @@ fn update_session_from_event(
             session_mode,
         );
     let mode_changed = current_session.active_match_id != parsed_event.mode.match_guid
+        || (session_mode != current_session.active_mode
+            && mode_inference.source.is_playlist()
+            && mode_inference
+                .source
+                .is_more_authoritative_than(current_session.active_mode_source))
         || ((!current_session.round_started
             || current_session.active_mode == SessionMode::Unknown)
             && session_mode != SessionMode::Unknown

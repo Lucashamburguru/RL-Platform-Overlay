@@ -20,6 +20,42 @@ not enough.
 
 ## Common fixes
 
+### Account detection and game logs
+
+Open **Setup → Your account** to see the log detection status. Start Rocket League
+and wait for login; entering Free Play is not necessary when the current log
+contains an Epic or Steam account ID. A missing display name can temporarily
+appear as an account label until the Stats API supplies the player's name.
+
+The reader ignores logs from before the current game process started. With
+multiple installations or Wine prefixes, open **Game log location** and select
+the correct `Launch.log`, or enter its path. Automatic selection requires one
+current candidate. Logs are read only; the reader does not change the file or
+use authentication tokens. Disable **Detect account and playlist from Launch.log**
+to use Stats API detection alone. This feature has no guarantee of anti-cheat
+approval.
+
+If the account is locked in Session settings, automatic detection will not change
+it. You can still use the existing Free Play account selector when unlocked.
+For a custom Linux Wine/Bottles/Lutris prefix, set `RL_OVERLAY_WINE_PREFIX` to the
+prefix directory containing `drive_c` before starting the overlay. Detected paths
+refresh within 30 seconds. Setup and replay settings offer candidate selectors
+when more than one installation or replay folder is found.
+
+### HUD profiles and familiar-player notices
+
+Under **Overlay → Lobby → HUD profiles**, name and save the current lobby,
+teammate boost and session appearance/positions. **Copy profile** copies a JSON
+definition that can be pasted into **Import a shared profile**. Import saves the
+definition; select **Apply** to use it. Use **Arrange HUD** for your monitor after
+applying a shared layout. Profiles do not share accounts, credentials or paths.
+
+In **History settings & maintenance**, enable recording and **Show familiar-player
+notices at match start**. Set the minimum past-match count if desired. The notice
+appears after the roster settles, stays for six seconds, and follows lobby HUD
+visibility. It uses completed-match history and shows each player once per match;
+it does not count every lobby appearance. The notices are off by default.
+
 ### The app crashes or closes unexpectedly
 
 Crash logging is automatic and does not require `--debug`. In the app data

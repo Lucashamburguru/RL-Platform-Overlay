@@ -3,6 +3,7 @@ mod boost_hud;
 mod common;
 mod dashboard;
 mod debug;
+mod encounter_notice;
 pub(crate) mod fonts;
 mod hotkeys;
 mod layout;

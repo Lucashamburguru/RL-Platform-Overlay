@@ -39,7 +39,7 @@ open on another monitor.
 1. Open the latest version on [Releases](https://github.com/Lucashamburguru/RL-Platform-Overlay/releases). For Windows, download **rl-platform-overlay.exe** from the **Assets** list. Double-click the downloaded `.exe` file to open the app.
 2. Open **Setup**. Select **Auto-detect** to find your Rocket League folder.
 3. Select **30 Hz Smooth** to enable the Stats API. If Rocket League is open, restart it.
-4. Enter **Free Play** in Rocket League. In **Setup**, open **Your account** and select your account.
+4. In **Setup**, open **Your account**. The app can detect it from the current game log. If it cannot, enter **Free Play** and select your account.
 5. Select your hotkeys. Use **Arrange HUD** to put the panels in position.
 6. Select **Launch Overlay**. Then start a match.
 
@@ -63,6 +63,12 @@ Set `PacketSendRate` to a value greater than `0`, for example `30.0`.
   on another monitor.
 - **Panel positions:** Move the panels to the positions you want. During a
   match, mouse clicks pass through the panels to the game.
+- **HUD profiles:** Save named appearance and position profiles under
+  **Overlay → Lobby → HUD profiles**, or copy and import them to share a layout.
+- **Familiar-player notices:** Enable brief match-start notices in History
+  settings to see players you have met in completed matches.
+- **Match events:** The dashboard shows received goals, assists, saves and demos
+  alongside scoreboard highlights.
 - **Hotkeys:** Show or hide the HUD and settings with a keyboard or controller.
 
 ### Replays
@@ -141,6 +147,8 @@ This section describes the development tools and build commands.
 - **User interface:** egui / eframe with the Glow renderer
 - **Input:** GilRs for gamepads and rdev for keyboards
 - **Data sources:** Rocket League Stats API and the pengo.me rank service, hosted on a Google Cloud VPS
+- **Supplemental context:** Read-only `Launch.log` account and playlist detection
+  with current-launch checks; this can be disabled in Setup.
 
 ### Project Documentation
 

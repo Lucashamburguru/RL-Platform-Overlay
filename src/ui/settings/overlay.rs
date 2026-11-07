@@ -15,6 +15,7 @@ pub(crate) fn render_overlay_settings_tab(
     changed: &mut bool,
     _is_launched: bool,
 ) {
+    render_hud_profiles(ui, config_edit, changed);
     settings_section(ui, "Lobby Overlay Settings", |ui| {
         settings_two_column(ui, |column, is_right| {
             if !is_right {
@@ -278,4 +279,64 @@ pub(crate) fn render_overlay_settings_tab(
             ),
         );
         });
+}
+
+#[derive(Clone, Default)]
+struct ProfileEditor {
+    name: String,
+    exchange: String,
+    status: String,
+}
+
+fn render_hud_profiles(ui: &mut egui::Ui, config: &mut Config, changed: &mut bool) {
+    ui.collapsing("HUD profiles", |ui| {
+        ui.label("Save and share lobby, teammate boost and session appearance and positions. Use Arrange HUD after applying a profile on a different screen.");
+        let id = ui.id().with("hud_profile_editor");
+        let mut editor = ui.data_mut(|data| data.get_temp::<ProfileEditor>(id).unwrap_or_default());
+        ui.horizontal(|ui| {
+            ui.add(egui::TextEdit::singleline(&mut editor.name).hint_text("Profile name").char_limit(64));
+            if ui.button("Save current HUD").clicked() {
+                match crate::hud_profiles::HudProfile::capture(&editor.name, config).and_then(|profile| profile.save(config)) {
+                    Ok(()) => { *changed = true; editor.status = "Profile saved. Saving the same name replaces it.".into(); }
+                    Err(error) => editor.status = error,
+                }
+            }
+        });
+        let profiles = config.hud_profiles.clone();
+        for (index, profile) in profiles.iter().enumerate() {
+            ui.push_id(index, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(&profile.name);
+                    if ui.button("Apply").clicked() {
+                        match profile.apply(config) {
+                            Ok(()) => { *changed = true; editor.status = format!("Applied {}.", profile.name); }
+                            Err(error) => editor.status = error,
+                        }
+                    }
+                    if ui.button("Copy profile").clicked() {
+                        match profile.export() {
+                            Ok(text) => { ui.ctx().copy_text(text); editor.status = "HUD profile copied.".into(); }
+                            Err(error) => editor.status = error,
+                        }
+                    }
+                    if ui.button("Delete").clicked() {
+                        config.hud_profiles.retain(|item| item.name != profile.name);
+                        *changed = true;
+                    }
+                });
+            });
+        }
+        ui.collapsing("Import a shared profile", |ui| {
+            ui.add(egui::TextEdit::multiline(&mut editor.exchange).hint_text("Paste profile JSON").desired_rows(3).desired_width(f32::INFINITY).char_limit(crate::hud_profiles::MAX_IMPORT_BYTES));
+            if ui.button("Add imported profile").clicked() {
+                match crate::hud_profiles::HudProfile::import(&editor.exchange).and_then(|profile| profile.save(config)) {
+                    Ok(()) => { *changed = true; editor.status = "Profile added. Select Apply to use it.".into(); editor.exchange.clear(); }
+                    Err(error) => editor.status = error,
+                }
+            }
+        });
+        if !editor.status.is_empty() { ui.label(&editor.status); }
+        ui.data_mut(|data| data.insert_temp(id, editor));
+    });
+    ui.add_space(8.0);
 }

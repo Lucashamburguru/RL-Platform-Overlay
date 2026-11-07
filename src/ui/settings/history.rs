@@ -40,7 +40,11 @@ pub(crate) fn render_history_settings_tab(
                 "Show encounter counts in lobby",
             )
             .changed();
-        ui.weak("History is stored on this device.");
+        *changed |= ui.checkbox(&mut config.encounter_notices_enabled, "Show familiar-player notices at match start").changed();
+        if config.encounter_notices_enabled {
+            *changed |= ui.add(egui::Slider::new(&mut config.encounter_notice_min_games, 1..=100).text("Minimum past matches")).changed();
+        }
+        ui.weak("History is stored on this device. Notices use completed matches and follow lobby HUD visibility.");
         if ui
             .add_enabled(
                 !state

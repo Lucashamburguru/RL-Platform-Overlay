@@ -6,7 +6,9 @@ This document describes the current runtime architecture, data flow, concurrency
 
 RL Platform Overlay is an out-of-process Rust desktop application. It does not inject code, read Rocket League process memory, or hook the game's renderer. Instead, it configures Rocket League's built-in local Stats API and connects to its loopback endpoint at `127.0.0.1:49123`. The app renders its own transparent, click-through HUD with `eframe`/`egui` and can open a separate second-monitor dashboard.
 
-The local Stats API is the sole source of live game telemetry. BakkesMod is not required.
+The local Stats API is the sole source of live game telemetry. A separate
+read-only `Launch.log` reader can supplement account and playlist identification.
+BakkesMod is not required.
 
 ```mermaid
 flowchart LR
@@ -19,12 +21,14 @@ flowchart LR
     MMR[MMR provider]
     Ballchasing[ballchasing.com]
     Input[Keyboard and controller input]
+    GameLog[Launch.log metadata]
 
     RL --> Transport --> Parser --> Session
     Session --> UI
     Session --> History
     Session --> MMR
     Input --> Session
+    GameLog --> Session
     Ballchasing <--> Session
 ```
 
@@ -74,6 +78,28 @@ The end-user collection and privacy workflow is documented in
 
 ### Parsing and state transitions
 
+[`src/launch_log.rs`](../src/launch_log.rs) reads bounded increments on a dedicated
+thread, retaining only allowlisted account and map/playlist metadata. It requires
+one identifiable running game process and a log modified since that process
+started. Multiple plausible logs require an explicit selection in Setup. Missing,
+unreadable, rotated, truncated or incomplete logs fall back to Stats API detection.
+The account lock remains authoritative. Explicit live account data takes priority;
+an account switch invalidates previous local rank requests and cached results.
+
+Log playlist evidence requires an arena match, a current reader snapshot and a
+map-load generation that has not been associated with another Stats API match
+GUID. Menu, offline and replay map loads discard pending playlist information.
+Stats API playlist IDs and playlist metadata take precedence over log evidence.
+This metadata source can be disabled in Setup. It does not inspect process memory
+or extract authentication tokens. Reading logs is not a guarantee of anti-cheat
+approval.
+
+[`src/game_paths.rs`](../src/game_paths.rs) discovers Steam libraries, arbitrary
+Proton prefix IDs, Heroic per-game prefixes, common Windows Documents locations
+and the optional `RL_OVERLAY_WINE_PREFIX` override. Discovery is refreshed in the
+background. Setup and replay settings consume immutable candidate lists; ambiguous
+installations/replay folders require selection rather than choosing a newest file.
+
 [`src/stats_api_parser.rs`](../src/stats_api_parser.rs) converts loosely shaped JSON into typed parsing results and signatures. It is responsible for:
 
 - normalizing event envelopes and nested `Data` values;
@@ -87,6 +113,14 @@ Completed matches can update SQLite history, trigger post-match automation, and 
 work. [`src/network/touch_tracking.rs`](../src/network/touch_tracking.rs) maintains touch debouncing,
 replay touch offsets, and teammate-bump estimates. Event processing also maintains a stable match
 roster and a coherent `DashboardMatchSnapshot` for completed-match display.
+
+[`src/match_events.rs`](../src/match_events.rs) retains up to 64 received live
+goals, saves and demos, with scorer/assister and match-clock information where
+available. It excludes replay playback and goal replay events, suppresses
+duplicate event signatures, and resets on a new match. The dashboard shows the
+latest eight events for its displayed match. Goal-speed payload values are retained
+without conversion; unit validation against an actual game display is still needed
+before exposing converted speeds.
 
 ## Shared state and concurrency
 
@@ -153,6 +187,11 @@ On non-Windows systems, the launched primary viewport uses the platform's fullsc
 ### Local persistence
 
 - `config.toml` stores user settings, cached local identity, replay settings, and integration credentials. On Unix it is created and repaired with owner-only permissions.
+- Named HUD profiles in the config use an explicit versioned presentation schema
+  (`hud_profiles.rs`). Copy/import includes HUD appearance and positions only;
+  it excludes credentials, account IDs, paths, hotkeys and game-file actions.
+  Imports validate size, schema version, finite scales and positions before
+  application. An import adds a saved profile; applying it is a separate action.
 - `history.sqlite3` stores optional match/player encounter history and uses versioned migrations plus corruption recovery.
 - `replays.sqlite3` stores normalized replay upload membership, content hashes, remote IDs, file fingerprints, and timestamps. Automatic and bulk uploads share a content-keyed coordinator and publish a revisioned in-memory ledger snapshot for the UI.
 - [`src/replays/cloud_sync.rs`](../src/replays/cloud_sync.rs) owns Ballchasing replay-list synchronization, constrained pagination, cloud metadata parsing, and merged-cache publication.
@@ -185,7 +224,7 @@ The `microsoft-store` Cargo feature removes self-update, post-match input automa
 
 ## Architectural boundaries to preserve
 
-- Keep all game access out-of-process and limited to documented local files and the loopback Stats API.
+- Keep all game access out-of-process and limited to local files and the loopback Stats API.
 - Keep Stats API parsing deterministic and independently testable from transport I/O.
 - Never block the egui render loop on HTTP, replay scans, database work, or file modification.
 - Publish compound read-heavy state as immutable snapshots instead of exposing partially mutated values.

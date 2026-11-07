@@ -173,6 +173,7 @@ const PLAYLIST_MODES: &[(i64, SessionMode, &str, &str)] = &[
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SessionModeSource {
     PlaylistId,
+    LogPlaylistId,
     PlaylistMetadata,
     MapIdentifier,
     TeamCapacity,
@@ -188,6 +189,7 @@ impl SessionModeSource {
     pub fn label(self) -> &'static str {
         match self {
             Self::PlaylistId => "playlist_id",
+            Self::LogPlaylistId => "launch_log_playlist_id",
             Self::PlaylistMetadata => "playlist_metadata",
             Self::MapIdentifier => "map_identifier",
             Self::TeamCapacity => "team_capacity",
@@ -203,16 +205,24 @@ impl SessionModeSource {
         self.authority() > other.authority()
     }
 
+    pub(crate) fn is_playlist(self) -> bool {
+        matches!(
+            self,
+            Self::PlaylistId | Self::PlaylistMetadata | Self::LogPlaylistId
+        )
+    }
+
     fn authority(self) -> u8 {
         match self {
-            Self::PlaylistId => 7,
-            Self::PlaylistMetadata => 6,
+            Self::PlaylistId => 8,
+            Self::LogPlaylistId => 6,
+            Self::PlaylistMetadata => 7,
             Self::MapIdentifier => 5,
             Self::TeamCapacity => 4,
             Self::ActivePlayerCount => 3,
             Self::PlayerCount => 2,
             Self::PreviousLocked => 1,
-            Self::FreeplayShape => 8,
+            Self::FreeplayShape => 9,
             Self::Unknown => 0,
         }
     }
@@ -581,10 +591,11 @@ impl SessionState {
             self.replay_match_id = Some(self.active_match_id.clone());
         }
 
-        let more_authoritative = mode_source == SessionModeSource::PlaylistId
+        let more_authoritative = mode_source.is_playlist()
             && mode_source.is_more_authoritative_than(self.active_mode_source);
-        let effective_mode_hint = if self.active_mode_source == SessionModeSource::PlaylistId
-            && mode_source != SessionModeSource::PlaylistId
+        let effective_mode_hint = if self.active_mode_source.is_playlist()
+            && !mode_source.is_more_authoritative_than(self.active_mode_source)
+            && mode_source != self.active_mode_source
         {
             self.active_mode
         } else if more_authoritative {
@@ -601,14 +612,14 @@ impl SessionState {
             self.active_mode = effective_mode_hint;
             self.active_mode_source = if effective_mode_hint == mode_hint {
                 mode_source
-            } else if self.active_mode_source == SessionModeSource::PlaylistId {
-                SessionModeSource::PlaylistId
+            } else if self.active_mode_source.is_playlist() {
+                self.active_mode_source
             } else {
                 SessionModeSource::PreviousLocked
             };
         } else if mode_hint != SessionMode::Unknown
             && mode_hint != self.active_mode
-            && self.active_mode_source != SessionModeSource::PlaylistId
+            && !self.active_mode_source.is_playlist()
         {
             self.active_mode_source = SessionModeSource::PreviousLocked;
         } else if mode_hint == self.active_mode

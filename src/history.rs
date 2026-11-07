@@ -187,7 +187,9 @@ fn initialize_database_path(path: &std::path::Path) -> Result<Connection, Histor
 
 pub fn refresh_lobby_history(state: &Arc<AppState>) {
     let config = state.system.config.load();
-    if !config.history_enabled || !config.lobby_history_indicators_enabled {
+    if !config.history_enabled
+        || (!config.lobby_history_indicators_enabled && !config.encounter_notices_enabled)
+    {
         state
             .history
             .player_summaries

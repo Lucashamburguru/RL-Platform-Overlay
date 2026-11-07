@@ -48,7 +48,34 @@ pub(crate) fn render_setup_settings_tab(
                 .cmp(&b.name)
                 .then_with(|| a.primary_id.cmp(&b.primary_id))
         });
-        ui.label("Enter Free Play in Rocket League. Then select your account below.");
+        ui.label("Your account can be detected from the current game log. You can also enter Free Play and select it below.");
+        if identity.is_known() {
+            ui.label(format!("{} · {}", identity.name, identity.platform));
+        }
+        if ui.checkbox(&mut config_edit.launch_log_enabled, "Detect account and playlist from Launch.log").changed() {
+            *changed = true;
+        }
+        let log = state.system.launch_log.load();
+        if !log.status.is_empty() {
+            ui.weak(&log.status);
+        }
+        ui.collapsing("Game log location", |ui| {
+            ui.label("Leave empty for automatic detection. Select a log if several installations are found.");
+            if ui.add(egui::TextEdit::singleline(&mut config_edit.launch_log_path).hint_text("Path to Launch.log (optional)").desired_width(f32::INFINITY)).changed() {
+                *changed = true;
+            }
+            let paths = state.system.game_paths.load();
+            for data in &paths.data_dirs {
+                let path = data.join("Logs/Launch.log");
+                if ui.selectable_label(config_edit.launch_log_path == path.to_string_lossy(), path.to_string_lossy()).clicked() {
+                    config_edit.launch_log_path = path.to_string_lossy().into_owned();
+                    *changed = true;
+                }
+            }
+            if let Some(path) = &log.path {
+                ui.weak(format!("Reading: {}", path.display()));
+            }
+        });
         ui.add_enabled_ui(!config_edit.lock_local_player, |ui| {
             egui::ComboBox::from_id_salt("confirmed_local_account")
                 .selected_text(if identity.is_known() {
@@ -82,7 +109,7 @@ pub(crate) fn render_setup_settings_tab(
         if config_edit.lock_local_player {
             ui.weak("Unlock the detected player in Session settings to change accounts.");
         } else if players.is_empty() {
-            ui.weak("Enter Free Play to show your account.");
+            ui.weak("Start Rocket League for log detection, or enter Free Play to select an account manually.");
         }
     });
     ui.add_space(12.0);
@@ -106,8 +133,10 @@ pub(crate) fn render_setup_settings_tab(
                 }
                 let auto_detect_btn = ui.button("Auto-detect");
                 if auto_detect_btn.clicked() {
-                    if let Some(path) = crate::state::detect_rocket_league_path() {
-                        config_edit.rocket_league_path = path;
+                    let paths = state.system.game_paths.load();
+                    if paths.installations.len() == 1 {
+                        config_edit.rocket_league_path =
+                            paths.installations[0].to_string_lossy().into_owned();
                         *changed = true;
                         request_stats_api_setup_refresh(
                             state,
@@ -125,6 +154,31 @@ pub(crate) fn render_setup_settings_tab(
                 }
             });
         });
+
+        let paths = state.system.game_paths.load();
+        if paths.installations.len() > 1 {
+            egui::ComboBox::from_id_salt("rl_install_candidates")
+                .selected_text("Choose a detected installation")
+                .show_ui(ui, |ui| {
+                    for path in &paths.installations {
+                        if ui
+                            .selectable_label(
+                                config_edit.rocket_league_path == path.to_string_lossy(),
+                                path.to_string_lossy(),
+                            )
+                            .clicked()
+                        {
+                            config_edit.rocket_league_path = path.to_string_lossy().into_owned();
+                            *changed = true;
+                            request_stats_api_setup_refresh(
+                                state,
+                                config_edit.rocket_league_path.clone(),
+                                true,
+                            );
+                        }
+                    }
+                });
+        }
 
         if ui.data(|d| {
             d.get_temp::<bool>(ui.make_persistent_id("rl_path_autodetect_failed"))
