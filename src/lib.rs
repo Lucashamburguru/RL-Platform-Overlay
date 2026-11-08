@@ -19,6 +19,8 @@ mod diagnostics;
 mod input;
 #[cfg(not(feature = "microsoft-store"))]
 mod item_swapper;
+#[cfg(not(feature = "microsoft-store"))]
+mod item_thumbnails;
 pub mod match_events;
 mod mmr;
 mod mmr_service;

@@ -6,6 +6,13 @@ This file describes changes to the app in each release.
 
 ## [Unreleased]
 
+### Added
+
+- **Item Swapper**: Appearance items show inventory thumbnail previews below the picker when supported images are available. Previews load in the background and stay cached locally.
+- **Active Account Detection**: The app discovers the active player account and selects the active profile automatically.
+- **HUD Profiles**: You can save, switch, and export HUD layouts and display preferences across profiles.
+- **Match Notices**: Optional encounter notices show previous match records for players in the current match.
+
 ---
 
 ## [0.1.64] - 2026-11-04

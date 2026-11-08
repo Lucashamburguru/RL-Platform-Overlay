@@ -4,6 +4,9 @@ use aes::Aes256;
 use aes::cipher::{BlockDecrypt, BlockEncrypt, KeyInit};
 use base64::Engine as _;
 
+#[cfg(not(feature = "microsoft-store"))]
+pub(crate) mod thumbnail;
+
 const MAGIC: u32 = 0x9e2a83c1;
 const FULL_ENCRYPTION: u32 = 0x0800;
 
@@ -238,6 +241,10 @@ impl Summary {
         }
     }
     fn read(bytes: &[u8]) -> Result<(Self, usize), String> {
+        Self::read_versioned(bytes, 32)
+    }
+
+    fn read_versioned(bytes: &[u8], minimum_licensee: u16) -> Result<(Self, usize), String> {
         let mut r = Reader::new(bytes);
         let tag = r.u32()?;
         let version = r.u16()?;
@@ -245,7 +252,7 @@ impl Summary {
         if tag != MAGIC {
             return Err("Invalid UPK magic".into());
         }
-        if version != 868 || licensee < 32 {
+        if version != 868 || licensee < minimum_licensee {
             return Err(format!("Unsupported UPK version {version}/{licensee}"));
         }
         let total_header = r.i32()?;

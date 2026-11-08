@@ -5,6 +5,8 @@ use std::sync::Arc;
 
 #[derive(Default)]
 pub(crate) struct ItemSwapperUiState {
+    target_preview: Option<PreviewTexture>,
+    donor_preview: Option<PreviewTexture>,
     pub slot: Option<ItemSlot>,
     pub donor_search: String,
     pub target_search: String,
@@ -14,6 +16,11 @@ pub(crate) struct ItemSwapperUiState {
     pub sound_search: String,
     pub sound_bank: Option<String>,
     pub choose_sound: bool,
+}
+
+struct PreviewTexture {
+    id: String,
+    texture: egui::TextureHandle,
 }
 
 pub(crate) enum ItemSwapperAction {
@@ -122,6 +129,31 @@ pub(crate) fn render_item_swapper_settings_tab(
             &mut edit.donor_search,
             &mut edit.donor,
         );
+        if !is_engine_audio && (edit.target.is_some() || edit.donor.is_some()) {
+            render_selected_preview(
+                &mut columns[0],
+                state,
+                rocket_league_path,
+                packages
+                    .iter()
+                    .copied()
+                    .find(|item| Some(&item.package) == edit.target.as_ref()),
+                &mut edit.target_preview,
+            );
+            render_selected_preview(
+                &mut columns[1],
+                state,
+                rocket_league_path,
+                packages
+                    .iter()
+                    .copied()
+                    .find(|item| Some(&item.package) == edit.donor.as_ref()),
+                &mut edit.donor_preview,
+            );
+        } else {
+            edit.target_preview = None;
+            edit.donor_preview = None;
+        }
     });
 
     let is_boost = edit.slot == Some(ItemSlot::RocketBoost);
@@ -391,6 +423,58 @@ pub(crate) fn render_item_swapper_settings_tab(
     action
 }
 
+fn render_selected_preview(
+    ui: &mut egui::Ui,
+    state: &AppState,
+    install: &str,
+    package: Option<&CatalogPackage>,
+    texture: &mut Option<PreviewTexture>,
+) {
+    use crate::item_thumbnails::PreviewStatus;
+    ui.add_space(6.0);
+    egui::Frame::group(ui.style()).show(ui, |ui| {
+        ui.allocate_ui_with_layout(egui::vec2((ui.available_width() - 2.0).max(40.0), 132.0), egui::Layout::top_down(egui::Align::Center), |ui| {
+            let Some(package) = package else {
+                *texture = None;
+                ui.add_space(36.0);
+                ui.weak("Select an item to preview");
+                return;
+            };
+            let preview = state.item_swapper.thumbnails.request(install, package,
+                &state.paths.config_dir.join("cache/ItemThumbnails"), ui.ctx());
+            match preview.status {
+                PreviewStatus::Ready(image) => {
+                    if texture.as_ref().is_none_or(|current| current.id != preview.id) {
+                        *texture = Some(PreviewTexture { id: preview.id.clone(), texture: ui.ctx().load_texture(
+                            format!("item-preview-{}", preview.id), (*image).clone(), egui::TextureOptions::LINEAR) });
+                    }
+                    if let Some(texture) = texture {
+                        ui.add(egui::Image::new(&texture.texture).fit_to_exact_size(egui::vec2(124.0, 124.0)).maintain_aspect_ratio(true))
+                            .on_hover_text(if package.labels.len() > 1 {
+                                "Representative inventory thumbnail for this shared package. Variants may differ; this is not a live 3D preview."
+                            } else {
+                                "Inventory thumbnail from installed game files. This is not a live 3D preview."
+                            });
+                    }
+                }
+                PreviewStatus::Queued => {
+                    *texture = None;
+                    ui.add_space(32.0);
+                    ui.spinner();
+                    ui.weak("Loading preview…");
+                    ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
+                }
+                PreviewStatus::Unavailable(reason) => {
+                    *texture = None;
+                    ui.add_space(32.0);
+                    ui.weak("Preview unavailable").on_hover_text(reason);
+                    ui.weak("Item selection still works.");
+                }
+            }
+        });
+    });
+}
+
 fn display_name(packages: &[&CatalogPackage], package: &str) -> String {
     packages
         .iter()
@@ -451,5 +535,97 @@ fn render_picker(
     if let Some(value) = selected.as_deref() {
         ui.label(format!("Selected: {}", display_name(packages, value)))
             .on_hover_text(value);
+    }
+}
+
+#[cfg(test)]
+mod preview_tests {
+    use super::*;
+    #[test]
+    #[ignore = "requires RL_INSTALL, RL_KEY_INDEX and RL_THUMBNAIL_OUTPUT; renders actual installed inventory previews"]
+    fn capture_installed_item_previews() {
+        let install = std::env::var("RL_INSTALL").unwrap();
+        let csv = std::fs::read_to_string(std::env::var("RL_KEY_INDEX").unwrap()).unwrap();
+        let output = std::path::PathBuf::from(std::env::var("RL_THUMBNAIL_OUTPUT").unwrap());
+        std::fs::create_dir_all(&output).unwrap();
+        let packages: Vec<_> = [
+            ("Boost_Standard", "Standard"),
+            ("Boost_AlphaReward", "Gold Rush"),
+        ]
+        .into_iter()
+        .map(|(base, label)| {
+            let key = csv
+                .lines()
+                .skip(1)
+                .find_map(|line| {
+                    let columns: Vec<_> = line.split(',').collect();
+                    (columns.len() >= 9 && columns[7].trim_matches('"') == base)
+                        .then(|| columns[8].trim_matches('"').to_string())
+                })
+                .unwrap();
+            CatalogPackage {
+                package: base.into(),
+                labels: vec![label.into()],
+                slot: ItemSlot::RocketBoost,
+                key,
+                unavailable: None,
+            }
+        })
+        .collect();
+        let state = AppState::new();
+        state
+            .item_swapper
+            .seed_review_catalog(crate::item_swapper::ItemSwapperSnapshot {
+                install_path: install.clone(),
+                packages,
+                catalog_loaded: true,
+                message: "Installed inventory".into(),
+                ..Default::default()
+            });
+        let mut edit = ItemSwapperUiState {
+            slot: Some(ItemSlot::RocketBoost),
+            target: Some("Boost_Standard".into()),
+            donor: Some("Boost_AlphaReward".into()),
+            ..Default::default()
+        };
+        let context = egui::Context::default();
+        crate::ui::fonts::install_fallbacks(&context);
+        let mut renderer = crate::ui::review_renderer::ReviewRenderer::default();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let frame = crate::ui::review_renderer::run_ui(
+                &context,
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1000.0, 900.0),
+                    )),
+                    ..Default::default()
+                },
+                |ui| {
+                    egui::CentralPanel::default().show(ui, |ui| {
+                        render_item_swapper_settings_tab(ui, &state, &mut edit, &install, false);
+                        assert!(ui.min_rect().right() <= 1001.0, "preview page overflow");
+                    });
+                },
+            );
+            let ready = edit.target_preview.is_some() && edit.donor_preview.is_some();
+            renderer.capture(
+                &context,
+                &frame,
+                [1000.0, 900.0],
+                ready
+                    .then(|| output.join("selected-item-previews.png"))
+                    .as_deref(),
+            );
+            if ready {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "preview images did not load"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
     }
 }

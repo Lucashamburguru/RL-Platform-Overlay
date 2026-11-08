@@ -198,6 +198,18 @@ On non-Windows systems, the launched primary viewport uses the platform's fullsc
 - [`src/replays/download.rs`](../src/replays/download.rs) owns replay downloads, including replay-ID normalization, strict payload validation, quarantine of invalid local copies, and atomic replacement.
 - Replay files and backups remain in user-selected Rocket League/replay directories.
 - Item Swapper caches the fetched catalog and stores a versioned manifest plus SHA-addressed pristine package backups under the application data directory.
+- Selected appearance previews use a separate read-only UPK/texture decoder in
+  `src/upk_swap/thumbnail.rs`. It follows inventory thumbnail object references,
+  supports legacy inventory packages independently of the mutation parser, and
+  bounds compressed data, mip dimensions and decoded allocations. The decoder
+  reads `.tfc` texture caches only when referenced by a supported mip.
+- `src/item_thumbnails.rs` owns a lazy worker with a four-job queue, a 64-entry
+  memory cache, and a disk cache capped at 128 PNG/metadata pairs under
+  `cache/ItemThumbnails`. Disk keys include package bytes, key, asset identity and
+  decoder version; referenced texture caches are checked by size and modification
+  time. Catalog refresh invalidates in-memory successes and failures. The UI
+  retains only the two selected preview textures and falls back to text selection
+  when extraction fails. No preview operation writes game packages or texture caches.
 - Diagnostic logs or support exports are created only by the relevant enabled or explicit user action; recent raw Stats API events are otherwise memory-only.
 
 The application data directory is `%APPDATA%/RL-Platform-Overlay` on Windows and `$XDG_CONFIG_HOME/rl-platform-overlay` or `~/.config/rl-platform-overlay` on other supported systems.

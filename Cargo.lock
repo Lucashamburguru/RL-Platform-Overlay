@@ -629,6 +629,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 
 [[package]]
+name = "bcdec_rs"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8d521509f38a9ab0fce76656a0416161ee5d42c1eab6672b958391e2ac7a0e31"
+
+[[package]]
 name = "bindgen"
 version = "0.72.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4198,6 +4204,7 @@ dependencies = [
  "aes",
  "arc-swap",
  "base64",
+ "bcdec_rs",
  "boxcars",
  "chrono",
  "ed25519-dalek",
@@ -4205,6 +4212,7 @@ dependencies = [
  "egui",
  "egui_extras",
  "env_logger",
+ "flate2",
  "futures-util",
  "getrandom 0.3.4",
  "gilrs",

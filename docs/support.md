@@ -56,6 +56,20 @@ appears after the roster settles, stays for six seconds, and follows lobby HUD
 visibility. It uses completed-match history and shows each player once per match;
 it does not count every lobby appearance. The notices are off by default.
 
+### An item preview is missing or outdated
+
+Inventory previews appear below selected appearance items in **Item Swapper**.
+Some packages have no thumbnail, use an unsupported texture layout, or contain
+several images without a unique reference. In these cases the item remains
+selectable and the preview explains that it is unavailable. Hover over the
+placeholder for details. Engine Audio does not show appearance previews.
+
+After updating Rocket League or changing the game folder, use **Refresh catalog**
+to retry previews. PNG copies are cached under `cache/ItemThumbnails` in the app
+data folder; the cache is bounded and can be recreated. Preview extraction reads
+installed files without changing them. Images show inventory artwork rather than
+a 3D car, animation, or an exact rendering of every variant in a shared package.
+
 ### The app crashes or closes unexpectedly
 
 Crash logging is automatic and does not require `--debug`. In the app data

@@ -176,6 +176,7 @@ pub struct ItemSwapperSnapshot {
 }
 
 pub struct ItemSwapperState {
+    pub(crate) thumbnails: crate::item_thumbnails::ThumbnailState,
     pub snapshot: ArcSwap<ItemSwapperSnapshot>,
     catalog_started: AtomicBool,
     operation_running: AtomicBool,
@@ -184,10 +185,19 @@ pub struct ItemSwapperState {
 impl Default for ItemSwapperState {
     fn default() -> Self {
         Self {
+            thumbnails: crate::item_thumbnails::ThumbnailState::default(),
             snapshot: ArcSwap::from_pointee(ItemSwapperSnapshot::default()),
             catalog_started: AtomicBool::new(false),
             operation_running: AtomicBool::new(false),
         }
+    }
+}
+
+#[cfg(test)]
+impl ItemSwapperState {
+    pub(crate) fn seed_review_catalog(&self, snapshot: ItemSwapperSnapshot) {
+        self.snapshot.store(Arc::new(snapshot));
+        self.catalog_started.store(true, Ordering::SeqCst);
     }
 }
 
@@ -203,6 +213,7 @@ pub fn request_catalog(state: &Arc<crate::state::AppState>, install: String, for
         !snapshot.install_path.is_empty() && snapshot.install_path != install
     };
     if force || changed_install {
+        state.item_swapper.thumbnails.invalidate();
         state
             .item_swapper
             .catalog_started

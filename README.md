@@ -93,6 +93,13 @@ another. The catalog includes bodies, wheels, boosts, trails, goal explosions,
 toppers, antennas, and paint finishes. Replacements use current game files.
 You can restore each item separately.
 
+Selecting an appearance item shows its installed inventory thumbnail below the
+picker when a supported image is available. Previews load in the background and
+are cached locally; **Refresh catalog** reloads them after a game update. Missing
+previews do not prevent item selection. These are static inventory images, not
+3D previews, and a shared package may have variants that look different. Engine
+Audio uses the text selector without appearance previews.
+
 For boost sounds, you can:
 
 - Keep the original sound of the target boost.
