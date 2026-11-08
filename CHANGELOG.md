@@ -6,6 +6,10 @@ This file describes changes to the app in each release.
 
 ## [Unreleased]
 
+---
+
+## [0.1.65] - 2026-11-07
+
 ### Added
 
 - **Item Swapper**: Appearance items show inventory thumbnail previews below the picker when supported images are available. Previews load in the background and stay cached locally.
