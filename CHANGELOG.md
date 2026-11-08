@@ -13,9 +13,9 @@ This file describes changes to the app in each release.
 ### Added
 
 - **Item Swapper**: Appearance items show inventory thumbnail previews below the picker when supported images are available. Previews load in the background and stay cached locally.
-- **Active Account Detection**: The app discovers the active player account and selects the active profile automatically.
+- **Active Account Detection**: The app discovers the active player account and selects the active profile automatically. Previously, the app detected accounts only from live Stats API match telemetry or manual selection in Setup. The app now reads account and playlist data from Rocket League launch logs. This identifies your account at game startup and in menus before a match begins. If logs are not available, detection falls back to the Stats API.
 - **HUD Profiles**: You can save, switch, and export HUD layouts and display preferences across profiles.
-- **Match Notices**: Optional encounter notices show previous match records for players in the current match.
+- **Match Notices**: Turn on **Show familiar-player notices at match start** under **History settings & maintenance** in Settings. When a match starts, a **Familiar players** notice appears in the bottom-right corner of the overlay screen. It shows your past match records with teammates and opponents in the current match.
 
 ---
 
